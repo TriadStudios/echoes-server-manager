@@ -1,14 +1,14 @@
 package instances
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +37,25 @@ type rig struct {
 	m   *Manager
 	bus *events.Bus
 	src string
+	log *syncBuffer // everything the managers of this rig log
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func newRig(t *testing.T, tune func(*config.Config)) *rig {
@@ -67,7 +86,7 @@ func newRig(t *testing.T, tune func(*config.Config)) *rig {
 	}
 	bus := events.NewBus(4096)
 	b := builds.New(st, builds.Options{Bus: bus})
-	r := &rig{t: t, st: st, cfg: cfg, b: b, bus: bus, src: t.TempDir()}
+	r := &rig{t: t, st: st, cfg: cfg, b: b, bus: bus, src: t.TempDir(), log: &syncBuffer{}}
 	r.m = r.newManager(sup)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -86,6 +105,7 @@ func newRig(t *testing.T, tune func(*config.Config)) *rig {
 func (r *rig) newManager(sup supervisor.Supervisor) *Manager {
 	r.t.Helper()
 	m, err := New(Options{Store: r.st, Config: r.cfg, Supervisor: sup, Builds: r.b, Bus: r.bus,
+		Logger:        slog.New(slog.NewJSONHandler(r.log, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		WatchInterval: 50 * time.Millisecond, SchedulerInterval: time.Hour})
 	if err != nil {
 		r.t.Fatal(err)
@@ -359,82 +379,6 @@ func TestScheduledWorkAndBackupPruning(t *testing.T) {
 	}
 }
 
-// leakySup is a supervisor whose start errors repeat the whole command
-// line, to prove the manager hides secrets even then.
-type leakySup struct{}
-
-func (leakySup) Start(_ context.Context, spec supervisor.Spec) error {
-	return fmt.Errorf("start failed: %s %s", spec.Executable, strings.Join(spec.Args, " "))
-}
-func (leakySup) Stop(context.Context, string, time.Duration) error { return nil }
-func (leakySup) Status(name string) (supervisor.Proc, error) {
-	return supervisor.Proc{Name: name}, supervisor.ErrNotFound
-}
-func (leakySup) Adopt() ([]supervisor.Proc, error) { return nil, nil }
-func (leakySup) Kind() string                      { return supervisor.KindProcess }
-func (leakySup) LimitsEnforced() bool              { return false }
-func (leakySup) Close() error                      { return nil }
-
-func TestSecretsNeverLeak(t *testing.T) {
-	r := newRig(t, nil)
-	r.install(testkit.BuildOptions{Version: "1.0"})
-	r.create("alpha", nil)
-	m := r.newManager(leakySup{})
-	defer m.Close()
-	const pw, admin = "open sesame 42", "adm1n-secret"
-	if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(pw), AdminPassword: ptr(admin)}); err != nil {
-		t.Fatal(err)
-	}
-	leaks := func(what, s string) {
-		t.Helper()
-		for _, secret := range []string{pw, admin, "sesame"} {
-			if strings.Contains(s, secret) {
-				t.Fatalf("%s shows a password: %q", what, s)
-			}
-		}
-	}
-	_, err := m.Start(context.Background(), "alpha", true)
-	if fault.CodeOf(err) != "start_failed" || !strings.Contains(err.Error(), "-ServerPassword=********") {
-		t.Fatalf("start error: %v", err)
-	}
-	leaks("start error", err.Error())
-
-	// A failing restart after a crash records the error as the reason.
-	in := m.lookup("alpha")
-	in.mu.Lock()
-	in.gen++
-	gen := in.gen
-	m.setLocked(in, Crashed, "test crash")
-	in.mu.Unlock()
-	m.restartAfterCrash(in, gen)
-	st, _ := m.Status("alpha")
-	if st.State != Failed || !strings.Contains(st.Reason, "restart after a crash failed") {
-		t.Fatalf("after a failed restart: %+v", st)
-	}
-	leaks("state reason", st.Reason)
-	in.mu.Lock()
-	m.setLocked(in, Failed, "raw text -AdminPassword="+admin+" and "+pw)
-	reason := in.status.Reason
-	in.mu.Unlock()
-	leaks("raw reason", reason)
-
-	// Lines the server prints are masked in log tails.
-	if err := r.st.WriteFile(consoleFile("alpha"), []byte("argv: -ServerPassword="+pw+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	lines, err := m.Logs("alpha", SourceConsole, 10)
-	if err != nil || len(lines) != 1 {
-		t.Fatalf("logs %q %v", lines, err)
-	}
-	leaks("console tail", lines[0])
-
-	evs, _ := r.bus.Since(0, events.Filter{})
-	raw, _ := json.Marshal(evs)
-	leaks("events", string(raw))
-	state, _ := r.st.ReadFile(stateFile("alpha"))
-	leaks("state.json", string(state))
-}
-
 func TestRestoreRefusesDamagedBackups(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -475,87 +419,5 @@ func TestRestoreRefusesDamagedBackups(t *testing.T) {
 	}
 	if list, _ := r.m.ListBackups("alpha"); len(list) != 1 {
 		t.Fatalf("a refused restore made backups: %+v", list)
-	}
-}
-
-// secrets.json keeps the earlier values of both passwords, newest first and
-// at most maxSecretHistory of each, and the values the last started server
-// was given. A new manager on the same root masks all of them.
-func TestSecretHistory(t *testing.T) {
-	r := newRig(t, nil)
-	r.install(testkit.BuildOptions{Version: "1.0"})
-	r.create("alpha", nil)
-	m := r.newManager(leakySup{})
-	defer m.Close()
-	set := func(server, admin *string) {
-		t.Helper()
-		if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: server, AdminPassword: admin}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	read := func() Secrets {
-		t.Helper()
-		s, err := m.readSecrets("alpha")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	set(ptr("first server"), ptr("first admin"))
-	// A start records what the server is given (the leaky supervisor then
-	// fails it).
-	if _, err := m.Start(context.Background(), "alpha", false); fault.CodeOf(err) != "start_failed" {
-		t.Fatalf("start: %v", err)
-	}
-	if s := read(); !slices.Equal(s.StartedWith, []string{"first server", "first admin"}) {
-		t.Fatalf("started with %q", s.StartedWith)
-	}
-	set(ptr("second server"), nil)
-	set(ptr("third server"), ptr(""))
-	set(ptr("second server"), nil) // used again: current, not earlier
-	s := read()
-	if s.ServerPassword != "second server" || s.AdminPassword != "" ||
-		!slices.Equal(s.PreviousServerPasswords, []string{"third server", "first server"}) ||
-		!slices.Equal(s.PreviousAdminPasswords, []string{"first admin"}) {
-		t.Fatalf("secrets after changes: %+v", s)
-	}
-	for i := range maxSecretHistory + 5 {
-		set(ptr(fmt.Sprintf("server %02d", i)), nil)
-	}
-	s = read()
-	if len(s.PreviousServerPasswords) != maxSecretHistory || s.PreviousServerPasswords[0] != fmt.Sprintf("server %02d", maxSecretHistory+3) {
-		t.Fatalf("history not capped at %d, newest first: %q", maxSecretHistory, s.PreviousServerPasswords)
-	}
-	// Dropped from the earlier values, but the last started server was
-	// given it: still masked, also by a new manager on the same root.
-	m2 := r.newManager(leakySup{})
-	defer m2.Close()
-	text := "-ServerPassword=first server -AdminPassword=first admin -log; again: first server, first admin, server 24, server 05"
-	for what, mm := range map[string]*Manager{"this manager": m, "a new manager": m2} {
-		got := mm.Scrub("alpha", text)
-		for _, v := range []string{"first server", "first admin", "server 24", "server 05"} {
-			if strings.Contains(got, v) {
-				t.Errorf("%s shows %q: %s", what, v, got)
-			}
-		}
-	}
-}
-
-func TestRemember(t *testing.T) {
-	for _, c := range []struct {
-		prev     []string
-		old, now string
-		want     []string
-	}{
-		{nil, "", "a", nil},
-		{nil, "a", "b", []string{"a"}},
-		{[]string{"a"}, "b", "b", []string{"a"}},
-		{[]string{"b", "a"}, "c", "a", []string{"c", "b"}},
-		{[]string{"b", "a"}, "a", "c", []string{"a", "b"}},
-		{[]string{"a"}, "b", "", []string{"b", "a"}},
-	} {
-		if got := remember(c.prev, c.old, c.now); !slices.Equal(got, c.want) {
-			t.Errorf("remember(%q, %q, %q) = %q, want %q", c.prev, c.old, c.now, got, c.want)
-		}
 	}
 }

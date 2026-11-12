@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
-	"runtime"
 	"slices"
 	"strconv"
 	"sync"
@@ -36,6 +35,13 @@ func dataDir(name string) string     { return instDir(name) + "/data" }
 func consoleFile(name string) string { return instDir(name) + "/console.log" }
 func stateFile(name string) string   { return instDir(name) + "/run/state.json" }
 func serverLog(name string) string   { return dataDir(name) + "/" + gameserver.ServerLogRel }
+
+// runSecretsFile is the secrets file a server is started with (the
+// adapter's format). It is written before each start and removed once the
+// server has stopped.
+func runSecretsFile(name string) string {
+	return instDir(name) + "/run/" + gameserver.SecretsFileName
+}
 
 // ErrClosed is returned once the manager is closed.
 var ErrClosed = fault.New(fault.Conflict, "shutting_down", "ESM is shutting down")
@@ -107,62 +113,43 @@ type rt struct {
 	nextRestart  time.Time
 	nextBackup   time.Time
 	deleted      bool
-	// secrets hides every value the instance's passwords have had (see
-	// Secrets.known). It only grows while ESM runs.
-	secrets *gameserver.Scrubber
+	// launching is set while a start of this instance writes the secrets
+	// file and starts the server, so a watcher that sees the earlier server
+	// gone does not remove the file under the new one.
+	launching bool
+	// current are the passwords now set and started the ones the last
+	// started server was given; filter masks both in server output.
+	current []string
+	started []string
+	filter  *gameserver.Scrubber
 }
 
-// scrubLocked hides secrets in text that leaves the manager: every value
-// the instance's passwords have had, in the forms ESM writes them in, the
-// value of anything that looks like a password switch, and API tokens.
-// Every state reason, error, log line and log event of an instance passes
-// through it. in.mu must be held.
-func (in *rt) scrubLocked(s string) string {
-	return scrubWith(in.secrets, s)
+// setFilterLocked rebuilds the filter for server output. in.mu must be
+// held.
+func (in *rt) setFilterLocked() {
+	in.filter = gameserver.NewScrubber(append(slices.Clone(in.current), in.started...))
 }
 
-func scrubWith(sc *gameserver.Scrubber, s string) string {
-	return audit.Scrub(sc.Scrub(s))
-}
-
-func (in *rt) scrub(s string) string {
+// outputFilter returns the filter for the instance's server output.
+func (in *rt) outputFilter() *gameserver.Scrubber {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	return in.scrubLocked(s)
+	return in.filter
 }
 
-// scrubErr returns err with secrets hidden from its message. When nothing
-// needs hiding err is returned as it is; otherwise the result keeps err's
-// kind and code but not its chain, so no unscrubbed text can be read from
-// it.
-func (in *rt) scrubErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	msg := err.Error()
-	clean := in.scrub(msg)
-	if clean == msg {
-		return err
-	}
-	return &fault.Error{Kind: fault.KindOf(err), Code: fault.CodeOf(err), Msg: clean}
-}
-
-// scrubbedStatusLocked returns the status with its reason scrubbed again by
-// the current scrubber. in.mu must be held.
-func (in *rt) scrubbedStatusLocked() Status {
-	st := in.status
-	st.Reason = in.scrubLocked(st.Reason)
-	return st
-}
-
-// Scrub hides the secrets of instance name in text (as every message of
-// that instance is scrubbed), and anything that looks like a password
-// switch or a token. For an unknown name only the generic rules apply.
-func (m *Manager) Scrub(name, text string) string {
-	if in := m.lookup(name); in != nil {
-		return in.scrub(text)
-	}
-	return audit.Scrub(text)
+// showOutput prepares one line a server wrote for showing. By design the
+// line holds no password: a server gets its passwords in a file, not on its
+// command line. As a second line of defence, should a server print them
+// itself, the passwords now set and the ones it was started with are
+// masked, like anything that looks like a password switch or an API token.
+// Then the line is cut.
+//
+// Only what a server wrote is filtered like this. What ESM says itself
+// (state reasons, errors) holds no password and is never matched against
+// one: masking a password out of ESM's own words would only show where it
+// was.
+func showOutput(filter *gameserver.Scrubber, line string) string {
+	return showLine(audit.Scrub(filter.Scrub(line)))
 }
 
 // run is one start of a server process.
@@ -239,16 +226,22 @@ func New(opts Options) (*Manager, error) {
 		r := &rt{name: in.Name, cfg: in}
 		sec, err := m.readSecrets(in.Name)
 		if err != nil {
-			m.log.Warn("cannot read the secrets of an instance; only password switches are masked", "instance", in.Name, "err", err)
+			m.log.Warn("cannot read the secrets of an instance", "instance", in.Name, "err", err)
 		}
-		r.secrets = gameserver.NewScrubber(sec.known())
+		r.current = sec.forServer().Values()
+		// A server that is still running was given what its secrets file
+		// holds.
+		if b, err := m.st.ReadFile(runSecretsFile(in.Name)); err == nil {
+			if given, err := gameserver.ParseSecretsFile(b); err == nil {
+				r.started = given.Values()
+			}
+		}
+		r.setFilterLocked()
 		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build}
 		var last Status
 		if err := m.st.ReadJSON(stateFile(in.Name), &last); err == nil {
 			if last.GaveUp || last.State == Failed {
-				// The reason was written by an earlier ESM, perhaps before
-				// it knew every value; scrub it again.
-				r.status.State, r.status.Reason, r.status.GaveUp = Failed, r.scrubLocked(last.Reason), last.GaveUp
+				r.status.State, r.status.Reason, r.status.GaveUp = Failed, audit.Scrub(last.Reason), last.GaveUp
 			} else if last.State.active() {
 				r.status.Reason = "found not running when ESM started"
 			}
@@ -280,6 +273,13 @@ func (m *Manager) Resume() error {
 	for _, in := range m.all() {
 		in.mu.Lock()
 		auto := in.cfg.Autostart && !in.status.GaveUp
+		if err == nil && !adopted[in.name] {
+			// Its server stopped while ESM was away: the secrets file it
+			// was started with goes.
+			m.dropRunSecretsLocked(in)
+			in.started = nil
+			in.setFilterLocked()
+		}
 		in.mu.Unlock()
 		if auto && !adopted[in.name] {
 			go func(name string) {
@@ -389,11 +389,10 @@ func (m *Manager) setLocked(in *rt, s State, reason string) {
 	m.emitLocked(in)
 }
 
-// emitLocked mirrors the status to state.json and publishes it, with its
-// reason scrubbed. in.mu must be held so events and the file follow the
-// order of changes.
+// emitLocked mirrors the status to state.json and publishes it. in.mu must
+// be held so events and the file follow the order of changes.
 func (m *Manager) emitLocked(in *rt) {
-	in.status.Reason = in.scrubLocked(in.status.Reason)
+	in.status.Reason = audit.Scrub(in.status.Reason)
 	st := in.status
 	if in.deleted {
 		return
@@ -407,7 +406,7 @@ func (m *Manager) emitLocked(in *rt) {
 
 func (m *Manager) view(in *rt) View {
 	in.mu.Lock()
-	v := View{Instance: in.cfg.clone(), Status: in.scrubbedStatusLocked()}
+	v := View{Instance: in.cfg.clone(), Status: in.status}
 	in.mu.Unlock()
 	v.Secrets = m.secretFlags(in.name)
 	return v
@@ -439,7 +438,7 @@ func (m *Manager) Status(name string) (Status, error) {
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	return in.scrubbedStatusLocked(), nil
+	return in.status, nil
 }
 
 // Create makes a new instance. It is stopped until started.
@@ -511,6 +510,7 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 		return View{}, err
 	}
 	r := &rt{name: in.Name, cfg: in}
+	r.setFilterLocked()
 	r.status = Status{Name: in.Name, Build: in.Build}
 	m.insts[in.Name] = r
 	r.mu.Lock()
@@ -530,7 +530,6 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	if req.Build != nil {
 		return View{}, false, invalid("build", "is changed with an update, not here")
 	}
-	defer func() { err = in.scrubErr(err) }()
 	in.op.Lock()
 	defer in.op.Unlock()
 	m.mu.Lock()
@@ -585,7 +584,6 @@ func (m *Manager) Delete(ctx context.Context, name string, purgeBackups bool) (e
 	if err != nil {
 		return err
 	}
-	defer func() { err = in.scrubErr(err) }()
 	in.op.Lock()
 	defer in.op.Unlock()
 	in.mu.Lock()
@@ -766,7 +764,6 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	}
 	in.op.Lock()
 	defer in.op.Unlock()
-	defer func() { err = in.scrubErr(err) }()
 	s, err := m.readSecrets(name)
 	if err != nil {
 		return SecretFlags{}, false, err
@@ -776,9 +773,10 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 		return SecretFlags{}, false, err
 	}
 	in.mu.Lock()
-	// The replaced values stay masked: older log lines and a server that is
-	// still running carry them.
-	in.secrets = in.secrets.With(s.known())
+	// A running server keeps the passwords it was started with; the new
+	// ones reach it with its next start.
+	in.current = s.forServer().Values()
+	in.setFilterLocked()
 	active := in.status.State.active()
 	if active {
 		in.status.RestartRequired = true
@@ -794,9 +792,6 @@ func (m *Manager) Warnings(v View) []string {
 	w := []string{}
 	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
 		w = append(w, fmt.Sprintf("limits are not enforced by the %s supervisor", m.sup.Kind()))
-	}
-	if gameserver.PasswordsOnCommandLine && (v.Secrets.ServerPasswordSet || v.Secrets.AdminPasswordSet) && runtime.GOOS != "windows" {
-		w = append(w, "passwords are passed on the server command line, where other local users can see them")
 	}
 	return w
 }

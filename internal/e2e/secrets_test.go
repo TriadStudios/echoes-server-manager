@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -56,15 +57,17 @@ func passwordPieces(passwords ...string) []string {
 	return out
 }
 
-// noPieces fails the test if raw, or any string inside it when it is JSON
-// (so escaped characters are compared as they are meant), contains one of
-// pieces.
+// noPieces fails the test if raw, or any string inside it when it (or one
+// of its lines) is JSON, so escaped characters are compared as they are
+// meant, contains one of pieces.
 func noPieces(t *testing.T, what string, raw []byte, pieces []string) {
 	t.Helper()
 	texts := []string{string(raw)}
-	var v any
-	if json.Unmarshal(raw, &v) == nil {
-		texts = jsonStrings(v, texts)
+	for _, part := range append([]string{string(raw)}, strings.Split(string(raw), "\n")...) {
+		var v any
+		if json.Unmarshal([]byte(part), &v) == nil {
+			texts = jsonStrings(v, texts)
+		}
 	}
 	for _, s := range texts {
 		for _, p := range pieces {
@@ -120,15 +123,18 @@ func brokenBuild(t *testing.T, parent, version string) string {
 }
 
 // fakeSystemdRun puts a systemd-run on PATH that fails and repeats its
-// whole command line, the worst case for leaking passwords.
-func fakeSystemdRun(t *testing.T) {
+// whole command line, the worst a supervisor's tool could do. It records
+// its arguments, one per line, in dir/args, and returns dir.
+func fakeSystemdRun(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\necho \"Failed to start transient service unit: $*\" >&2\nexit 1\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + dir + "/args'\n" +
+		"echo \"Failed to start transient service unit: $*\" >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(dir, "systemd-run"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
 }
 
 // fakeOldSystemd puts a systemctl on PATH that reports systemd 252 (older
@@ -159,7 +165,7 @@ func fakeOldSystemd(t *testing.T) string {
 }
 
 // A start that fails inside the supervisor never shows the passwords: not
-// in the answer, the status, the events or the audit log.
+// in the answer, the status, the events, the audit log or the service log.
 func TestStartFailureHidesPasswords(t *testing.T) {
 	t.Parallel()
 	h := newESM(t)
@@ -168,20 +174,23 @@ func TestStartFailureHidesPasswords(t *testing.T) {
 	startFailureHidesPasswords(t, h, "alpha", "0.9-broken", leakServerPW, leakAdminPW, []string{leakServerPW, leakAdminPW, "sesame"})
 }
 
+// The same when systemd-run fails and repeats its whole command line: the
+// passwords were never on it.
 func TestStartFailureHidesPasswordsSystemd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd is Linux only")
 	}
 	h := newSystemdESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	fakeSystemdRun(t)
+	dir := fakeSystemdRun(t)
 	startFailureHidesPasswords(t, h, unitSafeName("sdpw"), "1.0", leakServerPW, leakAdminPW, []string{leakServerPW, leakAdminPW, "sesame"})
+	noPasswordsInArgs(t, dir, []string{leakServerPW, leakAdminPW, "sesame"})
 }
 
 // On systemd versions without --expand-environment ESM doubles every "$"
-// of the command line. A failing systemd-run that repeats it shows the
-// passwords in that form; they are hidden from every answer and log.
-func TestStartFailureHidesEscapedPasswordsOldSystemd(t *testing.T) {
+// of the command line. Passwords with "$" are not on it either, in any
+// form.
+func TestStartFailureHidesPasswordsOldSystemd(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd is Linux only")
 	}
@@ -194,10 +203,22 @@ func TestStartFailureHidesEscapedPasswordsOldSystemd(t *testing.T) {
 	pieces := passwordPieces(dollarServerPW, dollarAdminPW,
 		strings.ReplaceAll(dollarServerPW, "$", "$$"), strings.ReplaceAll(dollarAdminPW, "$", "$$"))
 	startFailureHidesPasswords(t, h, unitSafeName("sdold"), "1.0", dollarServerPW, dollarAdminPW, pieces)
-	args, _ := os.ReadFile(filepath.Join(dir, "args"))
-	if !strings.Contains(string(args), "-ServerPassword="+strings.ReplaceAll(dollarServerPW, "$", "$$")) {
-		t.Fatalf("systemd-run did not get the escaped command line (the fake systemd version was not used):\n%s", args)
+	noPasswordsInArgs(t, dir, pieces)
+}
+
+// noPasswordsInArgs checks the arguments a fake systemd-run recorded in
+// dir/args: the secrets file switch is among them, no password switch and
+// no piece of a password is.
+func noPasswordsInArgs(t *testing.T, dir string, pieces []string) {
+	t.Helper()
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatalf("the fake systemd-run was not used: %v", err)
 	}
+	if !strings.Contains(string(args), "\n"+gameserver.SecretsFileSwitch+"=") || strings.Contains(strings.ToLower(string(args)), "password") {
+		t.Errorf("systemd-run got a password switch, or no secrets file switch:\n%s", args)
+	}
+	noPieces(t, "arguments of systemd-run", args, pieces)
 }
 
 func startFailureHidesPasswords(t *testing.T, h *harness, name, build, serverPW, adminPW string, pieces []string) {
@@ -239,6 +260,9 @@ collect:
 	}
 	if !strings.Contains(string(auditLog), `"action":"instance.start"`) {
 		t.Fatalf("the failed start was not audited:\n%s", auditLog)
+	}
+	if _, err := os.Stat(h.runSecretsPath(name)); !os.IsNotExist(err) {
+		t.Fatalf("the secrets file is still there after the start failed: %v", err)
 	}
 }
 
@@ -292,34 +316,108 @@ func (l *eventLog) waitCommandLines(t *testing.T, n int) {
 	}, "the command line did not show %d times in the log events", n)
 }
 
-// checkHidden fetches everything ESM shows about an instance (log tails of
-// both sources, status, settings, the recorded events) and fails if any
-// piece of a password shows. Each log tail must still have the command line,
-// masked.
-func (h *harness) checkHidden(t *testing.T, name string, ev *eventLog, pieces []string) {
+// runSecretsPath is the secrets file a running server of name was started
+// with.
+func (h *harness) runSecretsPath(name string) string {
+	return filepath.Join(h.root, "instances", name, "run", gameserver.SecretsFileName)
+}
+
+// runSecrets reads the secrets file of a running server.
+func (h *harness) runSecrets(name string) (gameserver.Secrets, error) {
+	return gameserver.ReadSecretsFile(h.runSecretsPath(name))
+}
+
+// rawOutput returns what the server of an instance wrote, as it is on
+// disk: its log and its console output.
+func (h *harness) rawOutput(name string) string {
+	h.t.Helper()
+	log, _ := os.ReadFile(gameserver.ServerLogPath(h.dataDir(name)))
+	console, _ := os.ReadFile(filepath.Join(h.root, "instances", name, "console.log"))
+	return string(log) + "\n" + string(console)
+}
+
+// serverHas asks the running fake of an instance whether these are its
+// passwords.
+func (h *harness) serverHas(v instances.View, want gameserver.Secrets) bool {
+	h.t.Helper()
+	join, err := testkit.CheckPassword(v.BindIP, v.Ports.Query, testkit.JoinPassword, want.ServerPassword)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	admin, err := testkit.CheckPassword(v.BindIP, v.Ports.Query, testkit.AdminPassword, want.AdminPassword)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return join && admin
+}
+
+// token makes an API token with the given role.
+func (h *harness) token(role string) string {
+	h.t.Helper()
+	var tok api.NewToken
+	h.must(http.StatusCreated, "POST", "/api/v1/tokens", api.TokenRequest{Name: role + " for tests", Role: role}, &tok)
+	return tok.Token
+}
+
+// checkNothingToHide fetches everything ESM shows about an instance, with
+// a read token where the read role may look (log tails of both sources,
+// status, settings, the list) and fails if any piece of a password shows,
+// there or in the recorded events, the service log, the audit log or the
+// files the server wrote itself. Each log tail must have the server's
+// command line, with the secrets file switch and without anything masked:
+// nothing secret was ever in it.
+func (h *harness) checkNothingToHide(t *testing.T, name string, ev *eventLog, pieces []string) {
 	t.Helper()
+	read := h.token("read")
 	for _, source := range []string{instances.SourceServer, instances.SourceConsole} {
 		var raw json.RawMessage
-		h.must(http.StatusOK, "GET", "/api/v1/instances/"+name+"/logs?lines=2000&source="+source, nil, &raw)
+		if st := h.call("GET", "/api/v1/instances/"+name+"/logs?lines=2000&source="+source, read, nil, &raw); st != http.StatusOK {
+			t.Fatalf("%s log with a read token: %d %s", source, st, raw)
+		}
 		noPieces(t, source+" log", raw, pieces)
 		var logs api.Logs
 		json.Unmarshal(raw, &logs)
 		text := strings.Join(logs.Lines, "\n")
-		if !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+" -log") {
-			t.Errorf("the %s log has no masked command line:\n%s", source, text)
+		if !strings.Contains(text, "Command line: ") || !strings.Contains(text, " "+gameserver.SecretsFileSwitch+"=") {
+			t.Errorf("the %s log has no command line with the secrets file switch:\n%s", source, text)
+		}
+		if strings.Contains(strings.ToLower(text), "password") || strings.Contains(text, gameserver.Mask) {
+			t.Errorf("the %s log has a password switch, or something masked:\n%s", source, text)
 		}
 	}
-	for _, path := range []string{"/status", ""} {
+	for _, path := range []string{"/instances/" + name + "/status", "/instances/" + name, "/instances", "/box", "/box/doctor"} {
 		var raw json.RawMessage
-		h.must(http.StatusOK, "GET", "/api/v1/instances/"+name+path, nil, &raw)
+		if st := h.call("GET", "/api/v1"+path, read, nil, &raw); st != http.StatusOK {
+			t.Fatalf("GET %s with a read token: %d %s", path, st, raw)
+		}
 		noPieces(t, "answer of GET "+path, raw, pieces)
 	}
-	evRaw, err := json.Marshal(ev.all())
-	if err != nil {
-		t.Fatal(err)
+	if ev != nil {
+		evRaw, err := json.Marshal(ev.all())
+		if err != nil {
+			t.Fatal(err)
+		}
+		noPieces(t, "events", evRaw, pieces)
 	}
-	noPieces(t, "events", evRaw, pieces)
 	noPieces(t, "service log", []byte(h.stderr.String()), pieces)
+	auditLog, _ := os.ReadFile(filepath.Join(h.root, "audit.log"))
+	noPieces(t, "audit log", auditLog, pieces)
+	raw := h.rawOutput(name)
+	noPieces(t, "files the server wrote", []byte(raw), pieces)
+	if strings.Contains(strings.ToLower(raw), "password") {
+		t.Errorf("the files the server wrote have a password switch:\n%s", raw)
+	}
+	state, _ := os.ReadFile(filepath.Join(h.root, "instances", name, "run", "state.json"))
+	pid, _ := os.ReadFile(filepath.Join(h.root, "instances", name, "run", "pid.json"))
+	noPieces(t, "state.json and pid.json", append(state, pid...), pieces)
+	// ESM itself never writes a command line anywhere.
+	for what, text := range map[string]string{"service log": h.stderr.String(), "state.json": string(state), "pid.json": string(pid), "audit log": string(auditLog)} {
+		for _, part := range []string{"-Port=", "-QueryPort=", gameserver.SecretsFileSwitch, gameserver.DataDirSwitch + "="} {
+			if strings.Contains(text, part) {
+				t.Errorf("the %s has %q of a command line:\n%s", what, part, text)
+			}
+		}
+	}
 }
 
 func (h *harness) setPasswords(name, server, admin string) api.SecretsResult {
@@ -330,24 +428,96 @@ func (h *harness) setPasswords(name, server, admin string) api.SecretsResult {
 	return sr
 }
 
-// Passwords changed while their server runs stay hidden, old and new
-// values alike, wherever ESM shows text: the log tails of both sources, log
-// and state events, the status and the settings. The running server keeps
-// printing the old values; after a restart it prints the new ones.
-func TestChangedPasswordsStayHidden(t *testing.T) {
+// procCommandLine returns the command line of a running process as other
+// accounts on a Linux box can read it, or "" where that is not possible.
+func procCommandLine(pid int) string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	b, _ := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	return strings.ReplaceAll(string(b), "\x00", " ")
+}
+
+// A server gets its passwords in the secrets file: a private file that is
+// there while the server runs and gone when it has stopped. Its command
+// line, which every account on the box can read, has no password.
+func TestSecretsFileDelivery(t *testing.T) {
+	t.Parallel()
+	secretsFileDelivery(t, newESM(t), "alpha")
+}
+
+func TestSecretsFileDeliverySystemd(t *testing.T) {
+	secretsFileDelivery(t, newSystemdESM(t), unitSafeName("sdsf"))
+}
+
+func secretsFileDelivery(t *testing.T, h *harness, name string) {
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	v := h.create(name, "", nil)
+	want := gameserver.Secrets{ServerPassword: dollarServerPW, AdminPassword: oldAdminPW}
+	pieces := passwordPieces(want.ServerPassword, want.AdminPassword)
+	h.setPasswords(name, want.ServerPassword, want.AdminPassword)
+	if _, err := os.Stat(h.runSecretsPath(name)); !os.IsNotExist(err) {
+		t.Fatalf("a secrets file exists before the start: %v", err)
+	}
+	ev := h.recordEvents()
+	var st instances.Status
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, &st)
+	ev.waitCommandLines(t, 1)
+
+	got, err := h.runSecrets(name)
+	if err != nil || got != want {
+		t.Fatalf("the secrets file while the server runs: %+v %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(h.runSecretsPath(name))
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("the secrets file has mode %v (%v), want 600", fi.Mode().Perm(), err)
+		}
+	}
+	gs, err := gameserver.ReadStatus(h.dataDir(name))
+	if err != nil || !gs.ServerPasswordSet || !gs.AdminPasswordSet {
+		t.Fatalf("the server does not say it has both passwords: %+v %v", gs, err)
+	}
+	if !h.serverHas(v.View, want) || h.serverHas(v.View, gameserver.Secrets{}) {
+		t.Fatal("the server does not have exactly the passwords of the secrets file")
+	}
+	if line := procCommandLine(st.PID); runtime.GOOS == "linux" {
+		if !strings.Contains(line, gameserver.SecretsFileSwitch+"="+h.runSecretsPath(name)) || strings.Contains(strings.ToLower(line), "password") {
+			t.Fatalf("the command line of the running server: %s", line)
+		}
+		noPieces(t, "command line of the running server", []byte(line), pieces)
+	}
+	h.checkNothingToHide(t, name, ev, pieces)
+
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/stop", struct{}{}, &st)
+	if _, err := os.Stat(h.runSecretsPath(name)); !os.IsNotExist(err) {
+		t.Fatalf("the secrets file is still there after the stop: %v", err)
+	}
+}
+
+// Passwords changed while their server runs never show, old or new,
+// wherever ESM shows text and in what the server wrote itself. The running
+// server keeps the old ones; after a restart it has the new ones.
+func TestChangedPasswordsNeverShow(t *testing.T) {
 	t.Parallel()
 	h := newESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	h.create("alpha", "", nil)
+	v := h.create("alpha", "", nil)
+	old := gameserver.Secrets{ServerPassword: oldServerPW, AdminPassword: oldAdminPW}
+	now := gameserver.Secrets{ServerPassword: newServerPW, AdminPassword: newAdminPW}
 	ev := h.recordEvents()
-	h.setPasswords("alpha", oldServerPW, oldAdminPW)
+	h.setPasswords("alpha", old.ServerPassword, old.AdminPassword)
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
 	ev.waitCommandLines(t, 1)
 
-	if sr := h.setPasswords("alpha", newServerPW, newAdminPW); !sr.RestartRequired {
+	if sr := h.setPasswords("alpha", now.ServerPassword, now.AdminPassword); !sr.RestartRequired {
 		t.Fatalf("change while running: %+v", sr)
 	}
-	// The running server, started with the old values, prints them again.
+	// The running server, started with the old values, still has them and
+	// prints its command line again.
+	if got, err := h.runSecrets("alpha"); err != nil || got != old || !h.serverHas(v.View, old) {
+		t.Fatalf("the running server after a change: %+v %v", got, err)
+	}
 	if err := testkit.WriteControl(h.dataDir("alpha"), testkit.ControlCommandLine); err != nil {
 		t.Fatal(err)
 	}
@@ -355,26 +525,25 @@ func TestChangedPasswordsStayHidden(t *testing.T) {
 	// Restarted, it has the new values.
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/restart?wait=true", struct{}{}, nil)
 	ev.waitCommandLines(t, 3)
+	if got, err := h.runSecrets("alpha"); err != nil || got != now || !h.serverHas(v.View, now) || h.serverHas(v.View, old) {
+		t.Fatalf("the restarted server: %+v %v", got, err)
+	}
 
-	h.checkHidden(t, "alpha", ev, passwordPieces(oldServerPW, oldAdminPW, newServerPW, newAdminPW))
+	h.checkNothingToHide(t, "alpha", ev, passwordPieces(oldServerPW, oldAdminPW, newServerPW, newAdminPW))
 }
 
-// After ESM restarts, the values the passwords had before a change are
-// still hidden: they are kept with the secrets, not only in memory. The
-// server started with the old values keeps running and is adopted.
-func TestOldPasswordsStayHiddenAfterESMRestart(t *testing.T) {
+// After ESM restarts, a server it left running is adopted with the secrets
+// file it was started with still in place. Nothing ESM shows has a
+// password, and the file goes when the server is stopped.
+func TestPasswordsNeverShowAfterESMRestart(t *testing.T) {
 	t.Parallel()
 	h := newESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	h.create("alpha", "", nil)
-	h.setPasswords("alpha", oldServerPW, oldAdminPW)
+	v := h.create("alpha", "", nil)
+	old := gameserver.Secrets{ServerPassword: oldServerPW, AdminPassword: oldAdminPW}
+	h.setPasswords("alpha", old.ServerPassword, old.AdminPassword)
 	var st instances.Status
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, &st)
-	testkit.Eventually(t, 10*time.Second, func() bool {
-		var logs api.Logs
-		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha/logs?source=console", nil, &logs)
-		return strings.Contains(strings.Join(logs.Lines, "\n"), "Command line: ")
-	}, "the server did not print its command line")
 	h.setPasswords("alpha", newServerPW, newAdminPW)
 
 	h.stopService()
@@ -382,13 +551,67 @@ func TestOldPasswordsStayHiddenAfterESMRestart(t *testing.T) {
 	if got := h.waitState("alpha", instances.Running, 10*time.Second); got.PID != st.PID {
 		t.Fatalf("not adopted: %+v, want pid %d", got, st.PID)
 	}
+	if got, err := h.runSecrets("alpha"); err != nil || got != old || !h.serverHas(v.View, old) {
+		t.Fatalf("the adopted server and its secrets file: %+v %v", got, err)
+	}
 	ev := h.recordEvents()
-	// The adopted server prints its command line, with the old values,
-	// again.
+	// The adopted server prints its command line again.
 	if err := testkit.WriteControl(h.dataDir("alpha"), testkit.ControlCommandLine); err != nil {
 		t.Fatal(err)
 	}
 	ev.waitCommandLines(t, 1)
+	h.checkNothingToHide(t, "alpha", ev, passwordPieces(oldServerPW, oldAdminPW, newServerPW, newAdminPW))
 
-	h.checkHidden(t, "alpha", ev, passwordPieces(oldServerPW, oldAdminPW, newServerPW, newAdminPW))
+	// Should the server print the passwords it was started with itself,
+	// ESM still knows them after its restart and masks them.
+	f, err := os.OpenFile(gameserver.ServerLogPath(h.dataDir("alpha")), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("Admin logged in with " + oldAdminPW + "\n")
+	f.Close()
+	testkit.Eventually(t, 10*time.Second, func() bool {
+		var logs api.Logs
+		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha/logs?lines=5", nil, &logs)
+		return strings.Contains(strings.Join(logs.Lines, "\n"), "Admin logged in with "+gameserver.Mask)
+	}, "a password the adopted server printed itself is not masked")
+
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, nil)
+	if _, err := os.Stat(h.runSecretsPath("alpha")); !os.IsNotExist(err) {
+		t.Fatalf("the secrets file is still there after the stop: %v", err)
+	}
+}
+
+// A server that stopped while ESM was away leaves its secrets file behind;
+// the next ESM removes it.
+func TestStaleSecretsFileIsRemoved(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	v := h.create("alpha", "", nil)
+	h.setPasswords("alpha", leakServerPW, leakAdminPW)
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
+	h.stopService()
+	if _, err := os.Stat(h.runSecretsPath("alpha")); err != nil {
+		t.Fatalf("the secrets file of a server that keeps running: %v", err)
+	}
+	if err := testkit.WriteControl(h.dataDir("alpha"), testkit.ControlStop); err != nil {
+		t.Fatal(err)
+	}
+	testkit.Eventually(t, 10*time.Second, func() bool {
+		s, err := gameserver.ReadStatus(h.dataDir("alpha"))
+		if err != nil || s.State != gameserver.StateStopping {
+			return false
+		}
+		_, err = testkit.CheckPassword(v.BindIP, v.Ports.Query, testkit.JoinPassword, "")
+		return err != nil // nobody answers any more
+	}, "the server did not stop")
+	time.Sleep(300 * time.Millisecond) // let the process end
+	h.startService()
+	if st := h.status("alpha"); st.State != instances.Stopped {
+		t.Fatalf("after ESM came back: %+v", st)
+	}
+	if _, err := os.Stat(h.runSecretsPath("alpha")); !os.IsNotExist(err) {
+		t.Fatalf("the stale secrets file is still there: %v", err)
+	}
 }

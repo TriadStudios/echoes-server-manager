@@ -172,15 +172,12 @@ func (m *Manager) tailLines(rel string, n int) ([]string, error) {
 }
 
 // Logs returns the last lines of the server log (source "server") or the
-// console output (source "console").
-// Every value the instance's passwords have had, and anything that looks
-// like a password switch, are masked.
-func (m *Manager) Logs(name, source string, lines int) (_ []string, err error) {
+// console output (source "console"), prepared for showing (see showOutput).
+func (m *Manager) Logs(name, source string, lines int) ([]string, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = in.scrubErr(err) }()
 	if lines <= 0 {
 		lines = 200
 	}
@@ -198,11 +195,9 @@ func (m *Manager) Logs(name, source string, lines int) (_ []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	in.mu.Lock()
-	sc := in.secrets
-	in.mu.Unlock()
+	filter := in.outputFilter()
 	for i := range out {
-		out[i] = showLine(scrubWith(sc, out[i]))
+		out[i] = showOutput(filter, out[i])
 	}
 	return out, nil
 }

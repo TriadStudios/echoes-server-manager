@@ -574,7 +574,7 @@ func TestErrorsAndPage(t *testing.T) {
 	}
 }
 
-// Secrets are stored, never shown, and masked in every log; changes to a
+// Secrets are stored and never shown, and no log has them; changes to a
 // running instance wait for the next start.
 func TestSecretsAndChanges(t *testing.T) {
 	t.Parallel()
@@ -619,22 +619,25 @@ func TestSecretsAndChanges(t *testing.T) {
 		t.Fatalf("after restart: %+v", st)
 	}
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, nil)
-	// The server prints its command line, passwords included, into its own
-	// log and output; ESM shows both only masked.
+	// The server prints its command line into its own log and output. The
+	// passwords are not on it: it names the secrets file.
 	for _, source := range []string{"server", "console"} {
 		var logs api.Logs
 		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha/logs?lines=500&source="+source, nil, &logs)
 		text := strings.Join(logs.Lines, "\n")
-		if strings.Contains(text, pw) || !strings.Contains(text, "-ServerPassword="+gameserver.Mask) {
-			t.Fatalf("the %s log shows the password, or no masked command line:\n%s", source, text)
+		if strings.Contains(text, pw) || strings.Contains(strings.ToLower(text), "password") ||
+			!strings.Contains(text, "Command line: ") || !strings.Contains(text, " "+gameserver.SecretsFileSwitch+"=") {
+			t.Fatalf("the %s log shows a password or a password switch, or no command line:\n%s", source, text)
 		}
 	}
 	if b, err := os.ReadFile(filepath.Join(h.root, "audit.log")); err != nil || strings.Contains(string(b), pw) {
 		t.Fatalf("audit.log contains the password (%v)", err)
 	}
-	if strings.Contains(h.stderr.String(), pw) || !strings.Contains(h.stderr.String(), "-ServerPassword=********") {
-		t.Fatal("the service log shows the password, or no masked launch line")
+	// ESM never writes a command line into its own log.
+	if log := h.stderr.String(); strings.Contains(log, pw) || strings.Contains(log, "-Port=") || strings.Contains(log, gameserver.SecretsFileSwitch) {
+		t.Fatalf("the service log shows the password or a launch line:\n%s", log)
 	}
+
 	h.must(http.StatusOK, "DELETE", "/api/v1/instances/alpha", api.DeleteRequest{PurgeBackups: true}, nil)
 	if _, err := os.Stat(filepath.Join(h.root, "instances", "alpha")); !os.IsNotExist(err) {
 		t.Fatalf("instance folder after delete: %v", err)

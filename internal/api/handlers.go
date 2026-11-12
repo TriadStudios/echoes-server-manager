@@ -11,7 +11,6 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/doctor"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
-	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 )
 
@@ -111,21 +110,20 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request, c *call) error 
 
 // Box answers GET /box.
 type Box struct {
-	Version                string    `json:"version"`
-	Root                   string    `json:"root"`
-	OS                     string    `json:"os"`
-	Supervisor             string    `json:"supervisor"`
-	LimitsEnforced         bool      `json:"limits_enforced"`
-	GamePorts              string    `json:"game_ports"`
-	QueryPorts             string    `json:"query_ports"`
-	Listen                 string    `json:"listen"`
-	TLS                    bool      `json:"tls"`
-	Started                time.Time `json:"started"`
-	UptimeSeconds          int64     `json:"uptime_seconds"`
-	Instances              int       `json:"instances"`
-	Running                int       `json:"running"`
-	Builds                 int       `json:"builds"`
-	PasswordsOnCommandLine bool      `json:"passwords_on_command_line"`
+	Version        string    `json:"version"`
+	Root           string    `json:"root"`
+	OS             string    `json:"os"`
+	Supervisor     string    `json:"supervisor"`
+	LimitsEnforced bool      `json:"limits_enforced"`
+	GamePorts      string    `json:"game_ports"`
+	QueryPorts     string    `json:"query_ports"`
+	Listen         string    `json:"listen"`
+	TLS            bool      `json:"tls"`
+	Started        time.Time `json:"started"`
+	UptimeSeconds  int64     `json:"uptime_seconds"`
+	Instances      int       `json:"instances"`
+	Running        int       `json:"running"`
+	Builds         int       `json:"builds"`
 }
 
 func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -147,7 +145,6 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,
 		Started: s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
 		Instances: len(list), Running: running, Builds: len(bl),
-		PasswordsOnCommandLine: gameserver.PasswordsOnCommandLine,
 	})
 }
 

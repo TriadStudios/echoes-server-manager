@@ -31,14 +31,7 @@ const DefaultMap = "Default"
 // data (saved) folder. UNCONFIRMED.
 const DataDirSwitch = "-SavedDir"
 
-// PasswordsOnCommandLine says whether the server and admin passwords are
-// passed as command-line switches. While this is true they are visible to
-// other local users through the process list, so ESM warns about it.
-// UNCONFIRMED: yes.
-const PasswordsOnCommandLine = true
-
-// Mask replaces secret values in logged command lines and in any text that
-// leaves ESM.
+// Mask stands in for a secret value in text that ESM shows.
 const Mask = "********"
 
 // Launch is everything needed to build a server command line.

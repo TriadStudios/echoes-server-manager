@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
@@ -28,13 +28,31 @@ type watchState struct {
 
 // launch starts the server of in with its current settings and begins
 // watching it. in.op must be held.
+//
+// The server gets its passwords in a file (runSecretsFile) that is written
+// here, right before the start; its command line names the file and holds
+// no password. ESM never writes the command line anywhere: not to its log,
+// not into an error, not into the state.
 func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bool) (*run, error) {
 	if m.isClosed() {
 		return nil, ErrClosed
 	}
 	in.mu.Lock()
 	cfg := in.cfg.clone()
+	in.launching = true
 	in.mu.Unlock()
+	started := false
+	defer func() {
+		// A start that did not happen leaves no secrets file behind, unless
+		// a server of this instance is running after all.
+		drop := !started && !m.alive(cfg.Name)
+		in.mu.Lock()
+		in.launching = false
+		if drop {
+			m.dropRunSecretsLocked(in)
+		}
+		in.mu.Unlock()
+	}()
 	b, err := m.builds.Get(cfg.Build)
 	if err != nil {
 		if fault.Is(err, fault.NotFound) {
@@ -56,18 +74,18 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if err != nil {
 		return nil, err
 	}
-	if cur := sec.current(); !slices.Equal(sec.StartedWith, cur) {
-		// Record what this server is given, so it stays masked for as long
-		// as the server runs, however many changes follow.
-		sec.StartedWith = cur
-		if err := m.st.WriteJSON(secretsFile(cfg.Name), sec, 0o600); err != nil {
-			return nil, err
-		}
-	}
+	given := sec.forServer()
 	if err := m.st.MkdirAll(dataDir(cfg.Name), 0o700); err != nil {
 		return nil, err
 	}
 	dataAbs, err := m.st.Abs(dataDir(cfg.Name))
+	if err != nil {
+		return nil, err
+	}
+	if err := m.st.WriteFile(runSecretsFile(cfg.Name), given.File(), 0o600); err != nil {
+		return nil, err
+	}
+	secretsAbs, err := m.st.Abs(runSecretsFile(cfg.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -81,11 +99,9 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	argv := gameserver.Launch{
 		Map: cfg.Map, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query, BindIP: cfg.BindIP,
 		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Rules: cfg.Rules,
-		DataDir: dataAbs, Delivery: gameserver.DeliveryCommandLine,
-		Secrets:   gameserver.Secrets{ServerPassword: sec.ServerPassword, AdminPassword: sec.AdminPassword},
+		DataDir: dataAbs, Delivery: gameserver.DeliveryFile, SecretsFile: secretsAbs,
 		ExtraArgs: cfg.ExtraArgs,
 	}.Args()
-	masked := gameserver.MaskArgs(argv)
 	// A status file from an earlier run must not count as ready.
 	if err := m.st.Remove(dataDir(cfg.Name) + "/" + gameserver.StatusFileRel); err != nil {
 		return nil, err
@@ -101,13 +117,18 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		Limits:   supervisor.Limits{MemoryMaxBytes: memMax, CPUQuotaPercent: cfg.Limits.CPUQuotaPercent},
 		StopFile: gameserver.StopRequestPath(dataAbs),
 	}
-	m.log.Info("starting server", "instance", cfg.Name, "build", cfg.Build, "why", why, "argv", masked)
+	m.log.Info("starting server", "instance", cfg.Name, "build", cfg.Build, "why", why)
 	if err := m.sup.Start(context.WithoutCancel(ctx), spec); err != nil {
 		if errors.Is(err, supervisor.ErrAlreadyRunning) {
 			return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
 		}
-		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, in.scrub(err.Error()))
+		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, audit.Scrub(err.Error()))
 	}
+	started = true
+	in.mu.Lock()
+	in.started = given.Values()
+	in.setFilterLocked()
+	in.mu.Unlock()
 	if !m.track() {
 		// ESM is shutting down: the server keeps running and the next
 		// start of ESM adopts it.
@@ -132,6 +153,20 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	in.mu.Unlock()
 	go m.watch(in, r, w)
 	return r, nil
+}
+
+// dropRunSecretsLocked removes the secrets file of a server that has
+// stopped. It is best effort: a failure is logged, and the next start
+// writes the file afresh anyway. While a start is under way nothing is
+// removed: that start has already written the file for its own server.
+// in.mu must be held.
+func (m *Manager) dropRunSecretsLocked(in *rt) {
+	if in.launching || in.deleted {
+		return
+	}
+	if err := m.st.Remove(runSecretsFile(in.name)); err != nil {
+		m.log.Warn("cannot remove the secrets file of a stopped server", "instance", in.name, "err", err)
+	}
 }
 
 // adoptRun watches a server found running at ESM start. A live server
@@ -197,7 +232,7 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 		m.followLogs(in, w)
 		pr, err := m.sup.Status(in.name)
 		if err != nil && !errors.Is(err, supervisor.ErrNotFound) {
-			m.log.Warn("cannot read server status", "instance", in.name, "err", in.scrub(err.Error()))
+			m.log.Warn("cannot read server status", "instance", in.name, "err", err)
 			continue
 		}
 		if err != nil || !pr.Running {
@@ -232,7 +267,9 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 }
 
 // readySource checks the ready sources in order and returns the first one
-// that confirms, or "".
+// that confirms, or "": the server's status file (written by the process
+// that is running now), the ready line in the server log, an answer on the
+// query port.
 func (m *Manager) readySource(in *rt, pr supervisor.Proc, w *watchState) string {
 	if b, err := m.st.ReadFile(dataDir(in.name) + "/" + gameserver.StatusFileRel); err == nil {
 		var s gameserver.Status
@@ -286,6 +323,7 @@ func (m *Manager) notReady(in *rt, r *run) {
 		return
 	}
 	in.gen++
+	gen := in.gen
 	in.cur = nil
 	in.mu.Unlock()
 	limit := m.cfg.ReadyTimeout.D()
@@ -296,8 +334,15 @@ func (m *Manager) notReady(in *rt, r *run) {
 		reason += "; stopping it failed: " + stopErr.Error()
 	}
 	in.mu.Lock()
-	in.status.PID = 0
-	m.setLocked(in, Failed, reason)
+	// Unless something else (a restart, a stop) took the instance over
+	// while the server was being stopped.
+	if in.gen == gen {
+		in.status.PID = 0
+		if stopErr == nil {
+			m.dropRunSecretsLocked(in)
+		}
+		m.setLocked(in, Failed, reason)
+	}
 	in.mu.Unlock()
 	r.finish(fault.New(fault.Failed, "not_ready", "instance %s was %s", in.name, reason))
 }
@@ -314,6 +359,7 @@ func (m *Manager) exited(in *rt, r *run, pr supervisor.Proc) {
 	in.cur = nil
 	in.status.PID = 0
 	in.status.ExitCode = pr.ExitCode
+	m.dropRunSecretsLocked(in)
 	desc := "exited (exit code unknown)"
 	if pr.ExitCode != nil {
 		desc = "exited with code " + strconv.Itoa(*pr.ExitCode)
@@ -397,12 +443,11 @@ func (in *rt) clearCrashesLocked() {
 
 // Start starts a stopped instance. With wait it returns once the server is
 // ready (or failed); otherwise once it is launched.
-func (m *Manager) Start(ctx context.Context, name string, wait bool) (_ Status, err error) {
+func (m *Manager) Start(ctx context.Context, name string, wait bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
-	defer func() { err = in.scrubErr(err) }()
 	in.op.Lock()
 	in.mu.Lock()
 	if in.status.State.active() {
@@ -441,7 +486,7 @@ func (m *Manager) Stop(ctx context.Context, name string) (Status, error) {
 	in.op.Lock()
 	defer in.op.Unlock()
 	err = m.stopLocked(context.WithoutCancel(ctx), in, "stopped")
-	return m.mustStatus(name), in.scrubErr(err)
+	return m.mustStatus(name), err
 }
 
 // stopLocked stops the server of in, if any, and leaves the instance
@@ -476,6 +521,8 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 	}
 	in.mu.Lock()
 	in.status.PID = 0
+	// No server of this instance runs now: its secrets file goes.
+	m.dropRunSecretsLocked(in)
 	if alive || prev != Stopped {
 		m.setLocked(in, Stopped, reason)
 	}
@@ -484,12 +531,11 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 }
 
 // Restart stops and starts an instance. why is recorded as the reason.
-func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (_ Status, err error) {
+func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
-	defer func() { err = in.scrubErr(err) }()
 	if why == "" {
 		why = "restarted"
 	}
@@ -519,13 +565,14 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (_ S
 // them, before anything is masked or cut.
 func (m *Manager) followLogs(in *rt, w *watchState) {
 	name := in.name
+	filter := in.outputFilter()
 	for _, line := range m.follow(&w.server) {
 		if !w.logReady && gameserver.IsReadyLine(line) {
 			w.logReady = true
 		}
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceServer, Line: showLine(in.scrub(line))})
+		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceServer, Line: showOutput(filter, line)})
 	}
 	for _, line := range m.follow(&w.console) {
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceConsole, Line: showLine(in.scrub(line))})
+		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceConsole, Line: showOutput(filter, line)})
 	}
 }
