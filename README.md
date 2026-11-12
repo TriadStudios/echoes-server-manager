@@ -14,6 +14,11 @@ Early development. **Not ready for real hosts yet.**
   [`internal/gameserver`](internal/gameserver/gameserver.go), and is marked
   UNCONFIRMED until it has been proven on a real host. Until then ESM is
   tested against a fake server that follows those assumptions.
+- ESM hands a server its passwords in a private file and never puts them on
+  a command line. The real game server does not read that file yet (it is a
+  planned item on the game side). Until it does, a real server only gets
+  passwords in a compatibility mode that is unsafe on a shared box; see
+  [Server passwords](#server-passwords).
 - Linux is the first target. Windows hosts are planned for the first public
   release; the code already builds and its tests pass there.
 - There is no web interface yet. The service serves a placeholder page; the
@@ -90,15 +95,45 @@ esm list --json
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 on success and 1 on error. `esm help` lists every command.
 
+## Server passwords
+
+An instance has a server password (to join) and an admin password. They are
+set only through the API, `PUT /api/v1/instances/<name>/secrets`, kept in a
+private file, and never shown. Rules (`--set`) and extra arguments (`--arg`)
+are shown to everyone who may look at an instance, so ESM refuses names
+there that look like a secret (`JoinPassword`, `RconKey`, `AuthToken`, ...).
+
+**By default the passwords travel in a file.** Before each start ESM writes
+them to `instances/<name>/run/server-secrets.json` (readable by the ESM
+account only), tells the server where the file is, and removes the file
+when the server has stopped. No password is on a command line, so none is
+in the process list or in what the server logs, and there is nothing ESM
+would have to hide. This needs a game server that reads the file. A server
+build that cannot do that runs without passwords; ESM flags that on the
+running instance (`secrets_unconfirmed`).
+
+**The compatibility mode puts them on the command line.** It is for server
+builds that cannot read the file, has to be chosen per instance
+(`esm create <name> --secret-delivery command_line`, or `secret_delivery` in
+the API) and is **unsafe on a shared box**: every account on the machine can
+read the command line of a running process, and the server writes it into
+its own log. ESM says UNSAFE wherever such an instance shows (`create`,
+`list`, `status`, `doctor`, the API) and gives the read role none of its
+server output and no failure details. Operators and admins still see them.
+The mode does not make the passwords safe; it is there only until the game
+server reads the file.
+
+More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
+
 ## Safety rules
 
 - The API listens on `127.0.0.1:8740` by default. ESM refuses to listen on
   any other address unless `tls_cert` and `tls_key` are set. To reach it from
   elsewhere, put a reverse proxy with TLS in front, or set up TLS directly.
-- Passwords are stored as PBKDF2 hashes and API tokens as SHA-256 hashes.
-  Server passwords live in a private file per instance and are never shown
-  by the API or written to ESM's logs. Log lines of the game server are
-  shown with every value the passwords have had masked.
+- Passwords of ESM users are stored as PBKDF2 hashes and API tokens as
+  SHA-256 hashes. Server passwords live in a private file per instance, are
+  handed to the server in a private file, and are never shown by the API or
+  written to ESM's logs. ESM never writes a server command line anywhere.
 - Logins are rate limited. Browser sessions use an HttpOnly, SameSite=Strict
   cookie plus a CSRF token on every change. Tokens are never accepted in
   URLs.

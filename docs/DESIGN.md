@@ -71,12 +71,14 @@ client side. Unknown `/api/` paths return the JSON 404 error instead.
   instances/
     <name>/
       instance.json            settings
-      secrets.json             server and admin passwords, earlier values (0600)
+      secrets.json             server and admin passwords (0600)
       data/                    the server's data folder (saves, logs)
       console.log              the server's stdout and stderr
       run/
         pid.json               process supervisor record
         state.json             last known state
+        server-secrets.json    what the running server was started with
+                               (0600; only while a server runs)
   backups/
     <name>/<id>/               save files and meta.json
   tmp/                         install work folders
@@ -124,35 +126,147 @@ are refused, so typos are reported.
 | `backup.every`, `backup.keep` | Scheduled backups (0 is off) and how many backups to keep (default 10). |
 | `limits`           | `memory_max` (like `8G`) and `cpu_quota_percent`; enforced by systemd only. |
 | `extra_args`       | Extra server arguments, each starting with `-`. |
+| `secret_delivery`  | How the server gets its passwords: `file` (default) or `command_line` (unsafe on a shared box). See [Passwords](#passwords). |
 | `previous_builds`  | Builds this instance ran before, newest first. |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
-names, passwords, the data folder and so on). Values may not contain
-control characters. The command line is always built as an argument list,
-never as a shell string.
-
-Server and admin passwords are set separately (`PUT .../secrets`) and stored
-in `secrets.json`. The API only says whether they are set. While the server
-takes passwords on its command line, other local users can see them in the
-process list; ESM warns about that.
-
-The server may print its command line, passwords included, into its own
-log and output, and a server started before a password change keeps the
-old values. So `secrets.json` also keeps the earlier values of each
-password (the last 20) and the values the last started server was given.
-Every text ESM shows about an instance (log tails, log and state events,
-state reasons, errors, audit entries) is masked with all of them, in the
-forms ESM writes them in (systemd's doubled `$`, JSON and Go quoting).
-Values shorter than 4 characters are not masked as text; they, and any
-value ESM does not know, are still masked after a password switch: the
-value of `-ServerPassword=...` (or any switch whose name contains
-"password") is masked up to the next switch or the end of the line, so a
-value with spaces or punctuation is masked whole.
+names, passwords, the secrets file, the data folder and so on), and may not
+name a secret (see [Passwords](#passwords)). Values may not contain control
+characters. The command line is always built as an argument list, never as
+a shell string, and ESM never writes it anywhere: not into its log, an
+error, the state or an audit entry.
 
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
 Ports given explicitly are checked the same way, and all ports are checked
 again before every start.
+
+## Passwords
+
+An instance has two secrets: the server password (needed to join) and the
+admin password. They are set with `PUT /api/v1/instances/{name}/secrets`
+and nowhere else, stored in `secrets.json` (0600) and never returned: the
+API only says whether each is set. A change reaches the server with its
+next start.
+
+### In a file (the default)
+
+Before each start ESM writes the passwords to
+`instances/<name>/run/server-secrets.json` and gives the server one switch
+that names the file, `-SecretsFile=<absolute path>`. The file is one JSON
+object on one line, UTF-8:
+
+```json
+{"server_password":"...","admin_password":"..."}
+```
+
+A password that is not set is left out; with none set the file is `{}`.
+The file has mode 0600 inside folders with mode 0700, is written afresh at
+every start, and is removed once the server has stopped: after a stop, a
+crash, a failed start, or at the next ESM start that finds the server gone.
+
+So with this way no password is on a command line, and nothing the server
+repeats from its command line holds one. There is nothing to scrub: the
+process list, the server's log and output, and everything ESM says have no
+password in them to begin with.
+
+**This needs the game server to read the file, and the real server does
+not do that yet.** It is a planned item on the game side; the switch name
+and the file format above are ESM's proposal and are marked UNCONFIRMED in
+the adapter. A server build that does not read the file does not get the
+passwords and runs *without* them. ESM cannot prevent that, but it shows
+it: the server's status file says which passwords the server took
+(`server_password_set`, `admin_password_set`, never the values), and an
+instance whose running server does not confirm the passwords that are set
+carries the warning `secrets_unconfirmed`. Until the game reads the file,
+an instance that needs a password on a real server has to use the
+compatibility mode below.
+
+### On the command line (compatibility mode)
+
+`secret_delivery: "command_line"` passes the passwords as
+`-ServerPassword=` and `-AdminPassword=` switches instead. It is off unless
+an admin sets it for an instance in so many words, at create or with a
+change.
+
+**It is unsafe on a shared box.** Every account on the machine can read
+the command line of a running process, and the server writes its command
+line into its own log and output, which stay on disk. ESM says so wherever
+such an instance shows: the instance carries the warning
+`secrets_on_command_line`, `esm create`, `list` and `status` print UNSAFE,
+`doctor` and the box facts name the instances, and the service log warns
+at every start.
+
+What ESM does about it is not masking. While an instance is set to
+`command_line`:
+
+- the `read` role gets none of its server output: `GET .../logs` answers
+  403 with the code `hidden_unsafe_secrets`, for both sources, and its
+  `log` events are not sent to that role;
+- the `read` role gets a fixed notice in place of every state reason of the
+  instance (a reason can repeat what a server or a tool said): in the
+  instance, its status, the list and its `state` events;
+- `operator` and `admin` see the output and the reasons. The output filter
+  (below) masks the passwords it knows in the output and in start errors,
+  without any promise.
+
+This is decided when an event is published and stays with the event: a
+client that asks later for remembered events gets the same.
+
+Going back to `file` is refused while the server runs (409
+`instance_running`). With the server stopped, the change first sets the
+output files aside, because they hold the command line: `console.log` and
+the server log get the suffix `.unsafe`, replacing what was set aside
+before. It also replaces the state reason. ESM never shows the files set
+aside; they go when the instance is deleted. From then on the read role
+sees the instance's output again, and there is no password in it.
+
+The compatibility mode does not make the passwords safe. Whoever can list
+processes on the box can read them while the server runs, and whoever can
+read the instance's files can read them in its logs. The mode is there
+only until the game server reads the secrets file, and goes away then.
+
+### No side doors
+
+Rules and extra arguments are shown to every role and go on the server
+command line, so no secret belongs there. A rule key, or the switch name
+of an extra argument, is refused with 422 `looks_like_secret` and a pointer
+to `PUT .../secrets` when, compared without case and without `_`, `-` and
+`.`, it
+
+- contains `password`, `passwd`, `passphrase`, `pwd`, `secret`, `token`,
+  `apikey`, `privatekey` or `credential`, or
+- ends with `key`.
+
+The switch name of an extra argument is what follows its dashes, up to the
+first character that is not a letter, a digit, `_`, `.` or `-`; everything
+before the `=` is checked for the words as well. So `JoinPassword`,
+`Rcon_Pwd`, `ApiKey`, `AdminKey`, `AuthToken` and
+`-Section:Game:JoinPassword=x` are refused, while `Difficulty`, `Keyboard`,
+`KeyBindings` and `Compass` pass. The rule would rather refuse too much:
+`Hotkey` ends with `key` as well. Which switches of the real server take
+secrets is not known yet; a name that is refused wrongly gets an exception
+in the adapter. A refusal never repeats a value: an extra argument is named
+by its position, a rule by its key.
+
+### The output filter
+
+ESM still filters what a server wrote (log tails and `log` events) and
+what a supervisor's tool printed (start errors). It masks the passwords now
+set and the ones the running server was started with, in the forms they
+take on the way (as they are, with systemd's doubled `$`, JSON and Go
+quoting); the value of anything that looks like a password switch
+(`-...Password=`, up to the next switch) or pair (`password=`); and API
+tokens. A command line that a supervisor's tool repeats whole is cut out of
+its message.
+
+This is a second line of defence, for a server that prints a password
+itself. It is not the guarantee, and it has limits: a value shorter than 4
+characters is not masked as text; a value the server prints in another
+shape (in upper case, split up) is not recognised; and a mask shows where a
+value was, so a password that is an ordinary word of the output can be
+guessed from the masks. What ESM says itself (state reasons, errors) holds
+no password and is never matched against one.
 
 ## Life cycle
 
@@ -160,16 +274,28 @@ States: `stopped`, `starting`, `running`, `stopping`, `crashed`, `failed`,
 `updating`. The state, a reason and timestamps are kept in memory, written
 to `run/state.json` and published as events.
 
-**Start.** ESM checks the build and the ports, writes the launch line, and
-asks the supervisor to start the server. The instance is `starting` until it
-is ready. A start returns once the server is launched; with `wait=true` (the
-command line always waits) it returns once the server is running or has
-failed.
+**Start.** ESM checks the build and the ports, writes the secrets file,
+builds the command line, and asks the supervisor to start the server. The
+instance is `starting` until it is ready. A start returns once the server is
+launched; with `wait=true` (the command line always waits) it returns once
+the server is running or has failed.
 
 **Ready.** The first of these sources that confirms wins, checked in this
-order: (1) the server's status file says `ready`; (2) the server log has the
-ready line; (3) the query port answers. If none confirms within
-`ready_timeout`, ESM stops the server and the instance is `failed`.
+order: (1) the server's status file, written by the process that is running
+now, says `ready`; (2) the server log has the ready line; (3) the query port
+answers. If none confirms within `ready_timeout`, ESM stops the server and
+the instance is `failed`.
+
+The ready line, like the world-saved line that backups wait for, is a fixed
+marker of the adapter (`Server is ready`, `World saved`) that must stand at
+the very start of a log line, after nothing but the server's own time prefix
+(`[2026-01-02T03:04:05.678Z] `). The same words anywhere else in a line do
+not count. A server repeats text that users chose (its command line with
+the server name, rule values and extra arguments; names; chat), but none of
+it can hold a line break, so none of it can stand at the start of a line.
+ESM reads the log in whole lines, as the server wrote them and before
+anything is masked or cut; the rest of an unfinished or over-long line is
+dropped, never taken for a line of its own.
 
 **Stop.** A polite stop (SIGTERM on Linux; a stop request file on Windows),
 then a forced stop after `stop_timeout`. Restart is stop then start.
@@ -260,12 +386,18 @@ that reconnects with `Last-Event-ID` receives what it missed while the
 events are still in memory. New server log and console lines are published
 as `log` events, which is how `esm logs -f` follows a server.
 
+An event can be restricted when it is published: the `read` role then gets
+a public form of it, or does not get it at all, both live and when it asks
+for remembered events. That is how the output of an instance with passwords
+on the command line is kept from that role (see [Passwords](#passwords)).
+
 ## Backups
 
 A backup copies the server's save files (the adapter's save glob) into
 `backups/<name>/<UTC time>-<reason>/` with a `meta.json` (time, reason,
 build, files, size). If the server runs, ESM first waits up to
-`backup_save_wait` for its next world-saved log line, so the copy is a
+`backup_save_wait` for its next world-saved log line (the fixed marker at
+the start of a line, see [Life cycle](#life-cycle)), so the copy is a
 complete save; if none comes, it copies anyway and marks the backup
 `save_confirmed: false`.
 
@@ -293,6 +425,10 @@ skipped.
 - Every change writes an audit entry (who, what, target, success, error).
   Refused calls are audited too. Audit entries and logs never contain
   passwords or tokens.
+- An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
+  `secrets_unconfirmed` (both in [Passwords](#passwords)) and
+  `limits_not_enforced` (it has resource limits and the process supervisor
+  does not apply them).
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -316,11 +452,12 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   match the host. Failed logins are limited to 5 per 5 minutes per client
   address and per user name.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
-  and stored as SHA-256. Roles: `read` sees everything except tokens and the
-  audit log; `operator` also starts, stops, restarts, updates, backs up,
-  restores and installs builds; `admin` does everything else (create,
-  change, delete, secrets, tokens, pruning). Tokens are never accepted in
-  URLs.
+  and stored as SHA-256. Roles: `read` sees everything except tokens, the
+  audit log, and the server output and state reasons of instances that pass
+  their passwords on the command line; `operator` sees those too and also
+  starts, stops, restarts, updates, backs up, restores and installs builds;
+  `admin` does everything else (create, change, delete, secrets, tokens,
+  pruning). Tokens are never accepted in URLs.
 - **Page headers.** The page is served with a strict Content-Security-Policy
   (no inline scripts or styles, nothing from other origins, no framing),
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
@@ -335,7 +472,7 @@ serve | doctor | version
 list | status [name]
 create <name> [--build V] [--channel C] [--map M] [--world W] [--display-name N]
        [--cluster C] [--game-port P] [--query-port P] [--bind IP] [--max-players N]
-       [--set Key=Value ...] [--arg -X=Y ...]
+       [--set Key=Value ...] [--arg -X=Y ...] [--secret-delivery file|command_line]
 start | stop | restart <name>
 logs <name> [-n N] [-f] [--console]
 build install <folder|archive|https-url> [--sha256 HEX] | build list | build prune
@@ -347,10 +484,17 @@ token create --role read|operator|admin [--name NAME]
 
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
-object). `logs` prints the log lines themselves. `doctor` works without a
+object). `logs` prints the log lines themselves. `create`, `list` and
+`status` print the warnings of an instance in words; one that passes its
+passwords on the command line is marked UNSAFE. `doctor` works without a
 running service: it checks the root, the config, the listen rule, free
-ports, disk space, the supervisor (with systemd lingering) and the socket,
-changes nothing, and adds the service's own view when a service answers.
+ports, disk space, the supervisor (with systemd lingering), the socket and
+which instances pass passwords on the command line, changes nothing, and
+adds the service's own view when a service answers.
+
+Passwords are set through the API (`PUT /api/v1/instances/{name}/secrets`).
+The command line has no verb for them yet: a password given as an argument
+would end up in the shell history and in the process list.
 
 `serve` logs JSON to stderr. On SIGINT or SIGTERM it stops accepting
 requests, ends event streams, stops watching and scheduling, flushes the
@@ -361,7 +505,8 @@ audit log, removes the socket, and leaves game servers running.
 1. Never run as root.
 2. Never write outside the root.
 3. Never touch a process or unit ESM did not start.
-4. Never put secrets in responses, logs, audit entries or URLs.
+4. Never put secrets in responses, logs, audit entries or URLs, and never
+   on a command line unless an instance is set to that in so many words.
 5. Never listen beyond loopback without TLS.
 6. Never install a build whose files do not match its manifest.
 7. Never change the firewall.
@@ -376,10 +521,18 @@ confirmed on a real host yet:
 - the switch names on the command line, the position of the map argument,
   and the default map;
 - the switch that points the server at its data folder;
-- whether passwords must go on the command line;
-- the log file location and the "ready" and "world saved" log lines;
+- the secrets file: the real server does not read one yet, so the switch
+  that names it and the format of the file are ESM's proposal for the game
+  side, and until the game has it a real server gets passwords only in the
+  compatibility mode;
+- the switches that carry the passwords in the compatibility mode, and
+  which other switches take secrets;
+- the log file location, the "ready" and "world saved" log lines and the
+  time prefix of a log line (a real server must write those two lines so
+  that no player-chosen text can stand in front of them or imitate them);
 - whether the server writes a status file at all (ESM then relies on the
-  log line and the query port);
+  log line and the query port), and whether it says there which passwords
+  it took;
 - the query protocol used to probe the query port;
 - where save files live (the backup glob);
 - how to ask the server politely to stop on Windows;
@@ -404,6 +557,10 @@ nowhere else.
   real ready and save signals are.
 - Whether the server can save on request, so backups need not wait for the
   next periodic save.
+- When the game server reads its passwords from the secrets file. That is
+  what lets the command-line compatibility mode be removed.
+- Whether a server that does not confirm its passwords should be refused
+  instead of only flagged.
 - How public listing is switched on and off.
 - How Steam app ids and branches map to ESM channels.
 - Whether several boxes should be managed from one page, and how.

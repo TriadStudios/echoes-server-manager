@@ -20,6 +20,17 @@ info:
     `operator` may also start, stop, restart, update, back up and restore
     instances and install builds; `admin` may do everything.
 
+    Server passwords are set with `PUT /api/v1/instances/{name}/secrets`
+    and nowhere else. By default a server gets them in a private file
+    (`secret_delivery: file`). An instance set to
+    `secret_delivery: command_line` passes them on the server command line,
+    which is unsafe on a shared box: every account on the box can read the
+    command line, and the server writes it into its log. Such an instance
+    carries the warning `secrets_on_command_line`, and the `read` role gets
+    none of its server output (`/logs` answers 403 `hidden_unsafe_secrets`,
+    its `log` events are not sent) and a fixed notice in place of every
+    state reason. `operator` and `admin` get both.
+
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB. Calls that change something
     are POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
@@ -213,7 +224,11 @@ paths:
     post:
       tags: [instances]
       summary: Create an instance (admin)
-      description: Ports left out (or 0) are picked from the configured ranges. The instance is stopped until started.
+      description: |
+        Ports left out (or 0) are picked from the configured ranges. The
+        instance is stopped until started. A rule key or an extra argument
+        that looks like a secret is refused with 422 `looks_like_secret`;
+        passwords are set with `PUT .../secrets`.
       requestBody:
         required: true
         content:
@@ -248,6 +263,13 @@ paths:
         Only the fields sent change. The build is changed with an update,
         not here. Changes to a running instance take effect at its next
         start (restart_required is true).
+
+        A rule key or an extra argument that looks like a secret is refused
+        with 422 `looks_like_secret`. Changing `secret_delivery` from
+        `command_line` to `file` is refused with 409 `instance_running`
+        while the server runs; with the server stopped it sets the output
+        files of the instance aside (they hold the command line) and
+        replaces the state reason.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -286,7 +308,10 @@ paths:
     put:
       tags: [instances]
       summary: Set or clear the server and admin passwords (admin)
-      description: A field left out stays as it is; an empty string clears it. Secrets are never returned.
+      description: |
+        A field left out stays as it is; an empty string clears it. Secrets
+        are never returned. This is the only way to set a server password. A
+        change reaches the server with its next start.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -431,7 +456,11 @@ paths:
     get:
       tags: [instances]
       summary: The last lines of the server log or the console output
-      description: Follow new lines with the events stream (type log).
+      description: |
+        Follow new lines with the events stream (type log). For an instance
+        with `secret_delivery: command_line` the `read` role gets 403 with
+        the code `hidden_unsafe_secrets`, for both sources: the output of
+        its server holds the passwords.
       parameters:
         - $ref: "#/components/parameters/Name"
         - name: lines
@@ -446,6 +475,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Logs" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/backups:
@@ -472,6 +502,11 @@ paths:
         `Last-Event-ID` header to get the events missed meanwhile, as long as
         they are still held in memory. Audit events are sent to admins only.
         Without Last-Event-ID the stream starts with new events.
+
+        Of an instance with `secret_delivery: command_line` the `read` role
+        gets no `log` events, and `state` events with a fixed notice in
+        place of the reason. That is decided when an event is published, so
+        it also holds for events asked for later with Last-Event-ID.
       parameters:
         - name: instance
           in: query
@@ -625,11 +660,15 @@ components:
               description: |
                 Machine code, for example bad_request, invalid, unauthorized,
                 bad_credentials, bad_setup_code, csrf, origin, forbidden,
-                not_found, method_not_allowed, conflict, already_running,
-                instance_exists, instance_running, port_in_use, no_free_ports,
-                build_exists, build_in_use, hash_mismatch, unsafe_archive,
-                bad_manifest, too_large, no_build, update_failed, backup_damaged,
-                start_failed, not_ready, rate_limited, internal.
+                hidden_unsafe_secrets (403: the read role asked for the output
+                of an instance with passwords on the command line),
+                looks_like_secret (422: a rule key or an extra argument names
+                a secret), not_found, method_not_allowed, conflict,
+                already_running, instance_exists, instance_running, busy,
+                port_in_use, no_free_ports, build_exists, build_in_use,
+                hash_mismatch, unsafe_archive, bad_manifest, too_large,
+                no_build, update_failed, backup_damaged, start_failed,
+                not_ready, rate_limited, internal.
             message: { type: string }
     Duration:
       description: A duration such as "90s" or "1h30m", or a number of seconds.
@@ -693,9 +732,12 @@ components:
         instances: { type: integer }
         running: { type: integer }
         builds: { type: integer }
-        passwords_on_command_line:
-          type: boolean
-          description: Whether server passwords are passed on the server command line (an unconfirmed assumption about the game server).
+        default_secret_delivery:
+          $ref: "#/components/schemas/SecretDelivery"
+        secrets_on_command_line:
+          type: array
+          description: Names of the instances that pass their passwords on the server command line (unsafe on a shared box).
+          items: { type: string }
     DoctorReport:
       type: object
       properties:
@@ -769,6 +811,28 @@ components:
       properties:
         server_password_set: { type: boolean }
         admin_password_set: { type: boolean }
+    SecretDelivery:
+      type: string
+      enum: [file, command_line]
+      default: file
+      description: |
+        How the server gets its passwords. `file`: ESM writes them to a
+        private file before each start and names it on the command line;
+        no password is on the command line. `command_line`: as switches on
+        the command line, for server builds that cannot read the file. That
+        is unsafe on a shared box, and the read role then gets none of the
+        instance's server output and no state reasons.
+    Warning:
+      type: string
+      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced]
+      description: |
+        `secrets_on_command_line`: the instance passes its passwords on the
+        server command line. `secrets_unconfirmed`: the instance has
+        passwords and file delivery, and its running server has not
+        confirmed that it took them; a server build that cannot read the
+        secrets file runs without passwords. `limits_not_enforced`: the
+        instance has resource limits and the supervisor in use does not
+        apply them.
     Settings:
       type: object
       additionalProperties: false
@@ -783,7 +847,12 @@ components:
         max_players: { type: integer, minimum: 1, maximum: 200 }
         rules:
           type: object
-          description: Each rule becomes -Key=Value on the server command line.
+          description: |
+            Each rule becomes -Key=Value on the server command line and is
+            shown to every role. A key that looks like a secret is refused:
+            without case and without "_", "-" and "." it contains password,
+            passwd, passphrase, pwd, secret, token, apikey, privatekey or
+            credential, or ends with key.
           additionalProperties: { type: string, maxLength: 256 }
         listed: { type: boolean }
         autostart: { type: boolean }
@@ -793,7 +862,9 @@ components:
         limits: { $ref: "#/components/schemas/Limits" }
         extra_args:
           type: array
+          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key.
           items: { type: string }
+        secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
     CreateInstance:
       allOf:
         - $ref: "#/components/schemas/Settings"
@@ -827,6 +898,7 @@ components:
         extra_args:
           type: array
           items: { type: string }
+        secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
         previous_builds:
           type: array
           items: { type: string }
@@ -834,6 +906,10 @@ components:
         updated: { type: string, format: date-time }
         secrets: { $ref: "#/components/schemas/SecretFlags" }
         status: { $ref: "#/components/schemas/Status" }
+        warnings:
+          type: array
+          description: Things an operator should know about the instance on this box.
+          items: { $ref: "#/components/schemas/Warning" }
     InstanceList:
       type: object
       properties:
@@ -846,9 +922,6 @@ components:
         - type: object
           properties:
             restart_required: { type: boolean }
-            warnings:
-              type: array
-              items: { type: string }
     DeleteRequest:
       type: object
       properties:
@@ -869,7 +942,7 @@ components:
         restart_required: { type: boolean }
         warnings:
           type: array
-          items: { type: string }
+          items: { $ref: "#/components/schemas/Warning" }
     State:
       type: string
       enum: [stopped, starting, running, stopping, crashed, failed, updating, deleted]
@@ -879,7 +952,9 @@ components:
       properties:
         name: { type: string }
         state: { $ref: "#/components/schemas/State" }
-        reason: { type: string }
+        reason:
+          type: string
+          description: Why the instance is in this state. For an instance with passwords on the command line the read role gets a fixed notice here instead.
         since: { type: string, format: date-time }
         build: { type: string }
         pid: { type: integer }
