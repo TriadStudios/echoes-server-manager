@@ -194,8 +194,9 @@ func TestSystemdLeavesForeignUnitsAlone(t *testing.T) {
 	}
 }
 
-// A systemd-run failure must not repeat the server's passwords, even when
-// systemd-run itself echoes the whole command line.
+// A systemd-run failure must not repeat the passwords of a server that has
+// them on its command line, even when systemd-run itself echoes the whole
+// command line.
 func TestSystemdStartErrorHidesPasswords(t *testing.T) {
 	needSystemd(t)
 	dir := t.TempDir()
@@ -210,6 +211,7 @@ func TestSystemdStartErrorHidesPasswords(t *testing.T) {
 	s := newSystemd(t, r)
 	spec := r.spec(name)
 	spec.Args = append(spec.Args, "-ServerPassword=open sesame 42", "-AdminPassword=adm1n-secret")
+	spec.SecretValues = []string{"open sesame 42", "adm1n-secret"}
 	err := s.Start(context.Background(), spec)
 	if err == nil {
 		t.Fatal("start with a failing systemd-run succeeded")
@@ -267,6 +269,7 @@ func TestSystemdOldVersionHidesEscapedPasswords(t *testing.T) {
 	const pw, admin = `p$ss w$rd &"';%,=<> 42`, "adm$n-$ecret"
 	spec := r.spec(name)
 	spec.Args = append(spec.Args, "-ServerPassword="+pw, "-AdminPassword="+admin)
+	spec.SecretValues = []string{pw, admin}
 	err := s.Start(context.Background(), spec)
 	if err == nil {
 		t.Fatal("start with a failing systemd-run succeeded")

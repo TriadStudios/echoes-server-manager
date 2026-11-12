@@ -221,24 +221,6 @@ func TestPoliteStopAndRequestFile(t *testing.T) {
 	}
 }
 
-func TestSecretValuesAndHiding(t *testing.T) {
-	argv := Launch{GamePort: 1, QueryPort: 2, MaxPlayers: 3, DataDir: "d", Delivery: DeliveryCommandLine,
-		Secrets: Secrets{ServerPassword: "open sesame", AdminPassword: "abc"}}.Args()
-	argv = append(argv, "-OtherPassword=", "-Note=password")
-	got := SecretValues(argv)
-	if !slices.Equal(got, []string{"open sesame", "abc"}) {
-		t.Fatalf("secret values %q", got)
-	}
-	text := "systemd-run failed: -ServerPassword=open sesame -AdminPassword=abc"
-	hidden := HideValues(text, got)
-	if strings.Contains(hidden, "open sesame") {
-		t.Fatalf("value not hidden: %q", hidden)
-	}
-	if !strings.Contains(hidden, "=abc") {
-		t.Fatalf("a value shorter than %d bytes was replaced: %q", MinHiddenLength, hidden)
-	}
-}
-
 func TestProbe(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

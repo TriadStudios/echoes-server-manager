@@ -105,43 +105,6 @@ func (l Launch) Args() []string {
 	return append(argv, l.ExtraArgs...)
 }
 
-// MaskArgs returns a copy of argv with the value of every -Key=Value whose
-// key contains "password" (any case) replaced by Mask.
-func MaskArgs(argv []string) []string {
-	out := slices.Clone(argv)
-	for i, a := range out {
-		if k, _, ok := secretArg(a); ok {
-			out[i] = k + "=" + Mask
-		}
-	}
-	return out
-}
-
-// secretArg splits a -Key=Value argument whose key names a password.
-func secretArg(a string) (key, value string, ok bool) {
-	if !strings.HasPrefix(a, "-") {
-		return "", "", false
-	}
-	k, v, found := strings.Cut(a, "=")
-	if !found || !strings.Contains(strings.ToLower(k), "password") {
-		return "", "", false
-	}
-	return k, v, true
-}
-
-// SecretValues returns the values of the password switches in argv, so
-// they can be hidden from any text that might repeat them (an error
-// message that echoes the command line, for example).
-func SecretValues(argv []string) []string {
-	var out []string
-	for _, a := range argv {
-		if _, v, ok := secretArg(a); ok && v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 // reserved are the switches ESM sets itself; rules and extra args must not
 // repeat them.
 var reserved = []string{"port", "queryport", "multihome", "maxplayers", "servername", "worldname", "log",

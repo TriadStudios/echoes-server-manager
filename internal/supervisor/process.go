@@ -147,8 +147,7 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	err = cmd.Start()
 	out.Close()
 	if err != nil {
-		// The error names the executable; hide password values anyway in
-		// case it ever repeats the arguments.
+		// The error names the executable, not the arguments.
 		return startError(spec, err)
 	}
 	pid := cmd.Process.Pid

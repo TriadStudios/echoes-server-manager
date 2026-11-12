@@ -67,15 +67,18 @@ func TestScrubberHidesEveryForm(t *testing.T) {
 	}
 }
 
-// HideValues also covers the doubled dollars systemd needs: older systemd
-// versions get every "$" of an argument as "$$", and its messages repeat
-// them that way.
-func TestHideValuesCoversSystemdEscaping(t *testing.T) {
+// A value is also hidden with the doubled dollars systemd needs: older
+// systemd versions get every "$" of an argument as "$$", and its messages
+// repeat them that way.
+func TestScrubLineCoversSystemdEscaping(t *testing.T) {
 	const pw = "open $esame $$ 42"
 	text := "systemd-run: invalid argument: " + strings.ReplaceAll(pw, "$", "$$")
-	got := HideValues(text, []string{pw})
+	got := ScrubLine(text, []string{pw})
 	if strings.Contains(got, "esame") || !strings.Contains(got, Mask) {
 		t.Fatalf("the systemd form of a password is not hidden: %q", got)
+	}
+	if got := ScrubLine("nothing of that kind here", []string{pw}); got != "nothing of that kind here" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -108,17 +111,5 @@ func TestScrubberShortValues(t *testing.T) {
 	var none *Scrubber
 	if got := none.Scrub("-AdminPassword=abc def"); got != "-AdminPassword="+Mask {
 		t.Fatalf("nil scrubber: %q", got)
-	}
-}
-
-// With keeps the values a Scrubber had.
-func TestScrubberWith(t *testing.T) {
-	sc := NewScrubber([]string{"old-value"}).With([]string{"new-value"})
-	if got := sc.Scrub("old-value new-value"); got != Mask+" "+Mask {
-		t.Fatalf("got %q", got)
-	}
-	var none *Scrubber
-	if got := none.With([]string{"some-value"}).Scrub("a some-value"); got != "a "+Mask {
-		t.Fatalf("got %q", got)
 	}
 }

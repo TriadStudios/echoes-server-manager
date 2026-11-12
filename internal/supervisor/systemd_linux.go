@@ -100,8 +100,7 @@ func (s *Systemd) systemctl(ctx context.Context, bin string, args ...string) (st
 }
 
 // commandLabel names a command for error messages. It never includes the
-// server's own command line (everything after "--", which can hold
-// passwords) or environment values.
+// server's own command line (everything after "--") or environment values.
 func commandLabel(bin string, args []string) string {
 	keep := []string{bin}
 	for _, a := range args {
@@ -114,7 +113,7 @@ func commandLabel(bin string, args []string) string {
 		}
 		keep = append(keep, a)
 	}
-	return strings.Join(gameserver.MaskArgs(keep), " ")
+	return strings.Join(keep, " ")
 }
 
 type unitInfo struct {
@@ -257,8 +256,7 @@ func (s *Systemd) Start(ctx context.Context, spec Spec) error {
 	}
 	if _, err := s.systemctl(ctx, "systemd-run", args...); err != nil {
 		// systemd-run may repeat parts of the command line in its own
-		// messages, escaped as above; hide the password values in every
-		// form.
+		// messages, escaped as above.
 		return startError(spec, err)
 	}
 	s.mu.Lock()

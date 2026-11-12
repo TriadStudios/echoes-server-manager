@@ -65,6 +65,11 @@ type Spec struct {
 	// StopFile is written to ask for a polite stop where signals are not
 	// available (Windows). Absolute path inside the ESM root; optional.
 	StopFile string
+	// SecretValues are the secrets that are in Args, if any: the passwords
+	// of a server that takes them on its command line. A supervisor never
+	// repeats Args in an error, and masks these values in whatever the
+	// tools it calls print.
+	SecretValues []string
 }
 
 // Proc is what the supervisor knows about one server process.
@@ -210,11 +215,13 @@ func checkSpec(st *store.Store, s Spec) error {
 
 func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
 
-// startError reports a failed start of spec. The tools a supervisor calls
-// may repeat the command line in their messages, so the text is scrubbed of
-// the password values in spec.Args, in every form they take on the way
-// (systemd's doubled dollars, quoting), and of anything after a password
-// switch.
+// startError reports a failed start of spec. A supervisor never puts the
+// server's command line into an error itself. The tools it calls may still
+// repeat it in their messages, so the secrets that are on it
+// (spec.SecretValues, none unless the server takes its passwords on the
+// command line) are masked in what they printed, in every form the values
+// take on the way (systemd's doubled dollars, quoting), like anything that
+// follows a password switch.
 func startError(spec Spec, err error) error {
-	return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.ScrubLine(err.Error(), gameserver.SecretValues(spec.Args)))
+	return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.ScrubLine(err.Error(), spec.SecretValues))
 }

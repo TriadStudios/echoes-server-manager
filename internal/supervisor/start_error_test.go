@@ -7,12 +7,14 @@ import (
 	"testing"
 )
 
-// A failed start never repeats a password in any form the tools a
-// supervisor calls may print it: as given, with the doubled dollars older
-// systemd versions need, or quoted, with or without its switch in front.
+// A failed start of a server that has passwords on its command line never
+// repeats one, in any form the tools a supervisor calls may print it: as
+// given, with the doubled dollars older systemd versions need, or quoted,
+// with or without its switch in front.
 func TestStartErrorHidesPasswordsInEveryForm(t *testing.T) {
 	const pw, admin = `p$ss w$rd &"';%,=<> 42`, "adm$n-$ecret"
-	spec := Spec{Name: "alpha", Args: []string{"Default", "-Port=1", "-ServerPassword=" + pw, "-AdminPassword=" + admin, "-log"}}
+	spec := Spec{Name: "alpha", Args: []string{"Default", "-Port=1", "-ServerPassword=" + pw, "-AdminPassword=" + admin, "-log"},
+		SecretValues: []string{pw, admin}}
 	var escaped []string
 	for _, a := range spec.Args {
 		escaped = append(escaped, dollars(a))

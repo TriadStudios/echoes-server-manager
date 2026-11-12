@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// This file is the output filter: a second line of defence, never the
+// guarantee. By design a server gets its passwords in a file and its output
+// holds none; with command-line delivery its output does hold them and is
+// kept from the read role altogether. The filter masks what it knows in
+// what a server or a supervisor's tool wrote, for the case that a password
+// turns up there anyway.
+
 // MinHiddenLength is the shortest secret that is hidden wherever its value
 // appears; shorter values would garble ordinary text. Short values are
 // still masked where they follow a password switch (see MaskSwitches).
@@ -80,14 +87,6 @@ func NewScrubber(values []string) *Scrubber {
 	return sc
 }
 
-// With returns a Scrubber that hides the values of sc and values.
-func (sc *Scrubber) With(values []string) *Scrubber {
-	if sc == nil {
-		return NewScrubber(values)
-	}
-	return NewScrubber(append(slices.Clone(sc.values), values...))
-}
-
 // Scrub returns text with every occurrence of a secret value, in any of its
 // forms, replaced by Mask, and then the value of every password switch
 // masked (see MaskSwitches). Occurrences that overlap or touch become one
@@ -134,12 +133,6 @@ func (sc *Scrubber) hide(s string) string {
 		}
 	}
 	return b.String()
-}
-
-// HideValues replaces every occurrence of each value (of at least
-// MinHiddenLength bytes), in any of its forms, with Mask.
-func HideValues(s string, values []string) string {
-	return NewScrubber(values).hide(s)
 }
 
 // ScrubLine hides values (as a Scrubber does) and then masks the value of
