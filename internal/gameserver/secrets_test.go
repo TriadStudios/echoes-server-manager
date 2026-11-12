@@ -101,17 +101,33 @@ func TestSecretLike(t *testing.T) {
 		"rconkey":            "key",
 		"LICENSE_KEY":        "key",
 		"Key":                "key",
+		"rconpw":             "pw",
+		"Pass":               "pass",
+		"Passw0rd":           "pass",
+		"ServerPass":         "pass",
+		"SERVER_PASS":        "pass",
+		"server-pass":        "pass",
+		"RCONPassCode":       "pass",
+		"Passive":            "pass", // ambiguous, refused on purpose
+		"RconPw":             "pw",
+		"AdminPW":            "pw",
+		"PWReset":            "pw",
+		"rcon_pw":            "pw",
+		"RconPw2":            "pw",
+		"PW":                 "pw",
+		"AdminPаssword":      "ASCII", // a Cyrillic letter in it
+		"Ünlock":             "ASCII",
 	}
 	for name, word := range secret {
 		why, ok := SecretLike(name)
-		if !ok || !strings.Contains(why, `"`+word+`"`) {
+		if !ok || !(strings.Contains(why, `"`+word+`"`) || word == "ASCII" && strings.Contains(why, word)) {
 			t.Errorf("SecretLike(%q) = %q, %v; want a refusal that names %q", name, why, ok, word)
 		}
 	}
 	for _, name := range []string{
 		"Difficulty", "PvP", "DayLength", "BuildingDecay", "MaxStructures", "Motd", "KeepInventory",
-		"Keyboard", "KeyboardLayout", "KeyBindings", "Keys", "MonkeysAllowed", "Passive", "Compass",
-		"BypassLimit", "AuthorName", "Tokyo", "SecureMode", "Pwned", "ShowHud",
+		"Keyboard", "KeyboardLayout", "KeyBindings", "Keys", "MonkeysAllowed", "Compass", "ShowCompass",
+		"BypassLimit", "AuthorName", "Tokyo", "SecureMode", "Pwned", "ShowHud", "PwnedCount", "Overpass2",
 		"FakeReadyDelay", "FakeSaveInterval", "FakeCrashAfter", "FakeIgnoreStop", "FakeNoReady",
 		"FakeNoStatusFile", "FakeNoQuery", "FakeFailStart", "FakeExitCode",
 	} {

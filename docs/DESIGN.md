@@ -237,20 +237,30 @@ secrets file, and is removed then.
 Rules and extra arguments are shown to every role and go on the server
 command line, so no secret belongs there. A rule key, or the switch name
 of an extra argument, is refused with 422 `looks_like_secret` and a pointer
-to `PUT .../secrets` when, compared without case and without `_`, `-` and
-`.`, it
+to `PUT .../secrets` when it
 
+- has any character that is not plain ASCII (a letter from another script
+  can stand in for one of the words below), or, compared without case and
+  without `_`, `-` and `.`,
 - contains `password`, `passwd`, `passphrase`, `pwd`, `secret`, `token`,
-  `apikey`, `privatekey` or `credential`, or
-- ends with `key`.
+  `apikey`, `privatekey` or `credential`,
+- ends with `key` or `pw`, or
+- has a word that starts with `pass` or is `pw`. Words are split at
+  anything but letters and digits, at a change from small to capital
+  letters, between letters and digits, and before the last capital of a
+  run of capitals followed by a small letter.
 
-The switch name of an extra argument is what follows its dashes, up to the
-first character that is not a letter, a digit, `_`, `.` or `-`; everything
+The switch name of an extra argument is what follows its dashes, up to
+`=`, `:` or white space; every run of letters, digits, `_`, `.` and `-`
 before the `=` is checked for the words as well. So `JoinPassword`,
-`Rcon_Pwd`, `ApiKey`, `AdminKey`, `AuthToken` and
-`-Section:Game:JoinPassword=x` are refused, while `Difficulty`, `Keyboard`,
-`KeyBindings` and `Compass` pass. The rule would rather refuse too much:
-`Hotkey` ends with `key` as well. Which switches of the real server take
+`Rcon_Pwd`, `ApiKey`, `AdminKey`, `AuthToken`, `ServerPass`, `SERVER_PASS`,
+`Passw0rd`, `RconPw`, `AdminPW` and `-Section:Game:JoinPassword=x` are
+refused, while `Difficulty`, `Keyboard`, `KeyBindings`, `Compass`,
+`BypassLimit` and `Pwned` pass. The rule would rather refuse too much:
+`Hotkey` ends with `key`, and `Passive` (a word starting with `pass`) is
+refused on purpose, since it cannot be told apart from a password switch by
+its name. A name in one case without separators has no words, so
+`serverpass` passes (`serverpassword` and `rconpw` do not). Which switches of the real server take
 secrets is not known yet; a name that is refused wrongly gets an exception
 in the adapter. A refusal never repeats a value: an extra argument is named
 by its position, a rule by its key.

@@ -895,7 +895,8 @@ components:
             shown to every role. A key that looks like a secret is refused:
             without case and without "_", "-" and "." it contains password,
             passwd, passphrase, pwd, secret, token, apikey, privatekey or
-            credential, or ends with key.
+            credential, or ends with key or pw, or one of its words starts
+            with pass or is pw (ServerPass, RconPw; also Passive).
           additionalProperties: { type: string, maxLength: 256 }
         listed: { type: boolean }
         autostart: { type: boolean }

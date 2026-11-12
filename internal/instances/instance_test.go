@@ -106,7 +106,8 @@ func TestSecretLikeSettingsAreRefused(t *testing.T) {
 		}
 	}
 	for _, key := range []string{"JoinPassword", "joinpassword", "ServerPassword", "admin_password", "RconPasswd", "Rcon_Pwd",
-		"ApiKey", "API_KEY", "PrivateKey", "RconKey", "AdminKey", "AuthToken", "ClientSecret", "Credentials", "SecretsFile"} {
+		"ApiKey", "API_KEY", "PrivateKey", "RconKey", "AdminKey", "AuthToken", "ClientSecret", "Credentials", "SecretsFile",
+		"ServerPass", "Passw0rd", "RconPw", "AdminPW"} {
 		in := validInstance()
 		in.Rules = map[string]string{"Difficulty": "hard", key: value}
 		check("rule "+key, in.Validate(), `key "`+key+`"`)
@@ -126,6 +127,10 @@ func TestSecretLikeSettingsAreRefused(t *testing.T) {
 		"-Auth.Token=" + value,
 		"-Section:Game:JoinPassword=" + value,
 		"-SecretsFile=/somewhere/" + value,
+		"-ServerPass=" + value,
+		"-RconPw=" + value,
+		"-AdminPаssword=" + value, // a Cyrillic letter in the name
+		"-Ádmin:" + value,
 	} {
 		in := validInstance()
 		in.ExtraArgs = []string{"-NoSteam", arg}
@@ -152,8 +157,8 @@ func TestSecretLikeSettingsAreRefused(t *testing.T) {
 	}
 	// Ordinary names are fine, also ones that only resemble the words.
 	ok := validInstance()
-	ok.Rules = map[string]string{"Difficulty": "hard", "Keyboard": "qwerty", "KeepInventory": "true", "Compass": "on", "Passive": "yes"}
-	ok.ExtraArgs = []string{"-NoSteam", "-KeyBindings=default", "-Mode=Fast", "-Motd=the password is not here"}
+	ok.Rules = map[string]string{"Difficulty": "hard", "Keyboard": "qwerty", "KeepInventory": "true", "Compass": "on", "BypassLimit": "yes"}
+	ok.ExtraArgs = []string{"-NoSteam", "-KeyBindings=default", "-Mode=Fast", "-Motd=the password is not here", "-Motd=Café ouvert", "-Motd Café"}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("ordinary settings refused: %v", err)
 	}

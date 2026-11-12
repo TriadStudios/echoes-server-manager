@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
@@ -364,15 +365,18 @@ func checkExtraArg(instance string, pos int, a string) error {
 		return invalid("extra_args", "argument %d must be at most 256 printable characters", pos)
 	}
 	key, _, _ := strings.Cut(a, "=")
-	// The switch name is what follows the dashes, as far as it is a plain
-	// name; "-Name:value" and "-Name value" forms end it too.
+	// The switch name is what follows the dashes up to "=", ":" or white
+	// space ("-Name=value", "-Name:value" and "-Name value" forms); it must
+	// be plain ASCII. Every plain run of characters before "=" is checked
+	// for secret words too.
 	name := strings.TrimLeft(key, "-")
-	if i := strings.IndexFunc(name, func(r rune) bool {
-		return !(r == '_' || r == '.' || r == '-' || '0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
-	}); i >= 0 {
+	if i := strings.IndexFunc(name, func(r rune) bool { return r == ':' || unicode.IsSpace(r) }); i >= 0 {
 		name = name[:i]
 	}
-	for _, n := range []string{name, key} {
+	plain := strings.FieldsFunc(key, func(r rune) bool {
+		return !(r == '_' || r == '.' || r == '-' || '0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
+	})
+	for _, n := range append([]string{name}, plain...) {
 		if why, ok := gameserver.SecretLike(n); ok {
 			return secretLike("extra_args", fmt.Sprintf("argument %d", pos), why, instance, "extra arguments")
 		}
