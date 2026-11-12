@@ -19,7 +19,11 @@
 //
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
 // the crash code now), "hang" (ignore stop requests from now on),
-// "unready" (keep running but stop reporting ready).
+// "unready" (keep running but stop reporting ready), "cmdline" (print the
+// command line again).
+//
+// Like a real server it prints its whole command line, passwords included,
+// to its log and its output when it starts; ESM has to mask them.
 //
 // The query port answers PING with PONG only once the server is ready.
 package main
@@ -52,6 +56,8 @@ const (
 	// controlUnready makes the server stop reporting ready (status file
 	// back to starting, no query answers) while it keeps running.
 	controlUnready = "unready"
+	// controlCommandLine prints the command line again.
+	controlCommandLine = "cmdline"
 )
 
 type options struct {
@@ -243,7 +249,8 @@ func run(args []string) int {
 	}
 	defer s.logFile.Close()
 
-	s.logf("Fake server starting: pid %d, argv %q", os.Getpid(), gameserver.MaskArgs(args))
+	s.logf("Fake server starting: pid %d", os.Getpid())
+	s.logCommandLine(args)
 	if o.failStart {
 		s.logf("Failing start on purpose")
 		return 3
@@ -329,6 +336,9 @@ func run(args []string) int {
 				s.writeStatus()
 				s.logf("Unready requested: no longer reporting ready")
 			}
+			if s.takeControl(controlCommandLine) {
+				s.logCommandLine(args)
+			}
 			if s.takeControl(controlHang) {
 				ignoreStop = true
 				s.logf("Hang requested: stop requests are ignored from now on")
@@ -342,6 +352,12 @@ func run(args []string) int {
 			}
 		}
 	}
+}
+
+// logCommandLine prints the arguments as they came, the way real servers
+// print their command line.
+func (s *server) logCommandLine(args []string) {
+	s.logf("Command line: %s", strings.Join(args, " "))
 }
 
 func (s *server) takeControl(name string) bool {

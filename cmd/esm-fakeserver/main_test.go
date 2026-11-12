@@ -116,6 +116,13 @@ func TestFakeLifecycle(t *testing.T) {
 	}
 	save := filepath.Join(r.data, filepath.FromSlash(gameserver.SaveFileRel("w")))
 	testkit.Eventually(t, 5*time.Second, func() bool { _, err := os.Stat(save); return err == nil }, "no save file")
+	if err := testkit.WriteControl(r.data, testkit.ControlCommandLine); err != nil {
+		t.Fatal(err)
+	}
+	testkit.Eventually(t, 5*time.Second, func() bool {
+		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
+		return strings.Count(string(b), "Command line: ") == 2
+	}, "the command line was not printed again")
 	if err := testkit.WriteControl(r.data, testkit.ControlStop); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +141,10 @@ func TestFakeLifecycle(t *testing.T) {
 	if !gameserver.ReadyLine.MatchString(text) || !gameserver.WorldSavedLine.MatchString(text) {
 		t.Fatalf("log misses ready or saved lines:\n%s", text)
 	}
-	if strings.Contains(text, "s3cret-admin") || !strings.Contains(text, "-AdminPassword="+gameserver.Mask) {
-		t.Fatalf("password not masked in log:\n%s", text)
+	// Like a real server, the fake prints its whole command line; masking
+	// it is ESM's job.
+	if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-AdminPassword=s3cret-admin -log") {
+		t.Fatalf("log misses the command line:\n%s", text)
 	}
 	files, _ := gameserver.SaveFiles(r.data)
 	if len(files) != 1 {

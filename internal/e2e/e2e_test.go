@@ -619,18 +619,18 @@ func TestSecretsAndChanges(t *testing.T) {
 		t.Fatalf("after restart: %+v", st)
 	}
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, nil)
-	for _, f := range []string{
-		filepath.Join(h.root, "instances", "alpha", "console.log"),
-		gameserver.ServerLogPath(h.dataDir("alpha")),
-		filepath.Join(h.root, "audit.log"),
-	} {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+	// The server prints its command line, passwords included, into its own
+	// log and output; ESM shows both only masked.
+	for _, source := range []string{"server", "console"} {
+		var logs api.Logs
+		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha/logs?lines=500&source="+source, nil, &logs)
+		text := strings.Join(logs.Lines, "\n")
+		if strings.Contains(text, pw) || !strings.Contains(text, "-ServerPassword="+gameserver.Mask) {
+			t.Fatalf("the %s log shows the password, or no masked command line:\n%s", source, text)
 		}
-		if strings.Contains(string(b), pw) {
-			t.Fatalf("%s contains the password", f)
-		}
+	}
+	if b, err := os.ReadFile(filepath.Join(h.root, "audit.log")); err != nil || strings.Contains(string(b), pw) {
+		t.Fatalf("audit.log contains the password (%v)", err)
 	}
 	if strings.Contains(h.stderr.String(), pw) || !strings.Contains(h.stderr.String(), "-ServerPassword=********") {
 		t.Fatal("the service log shows the password, or no masked launch line")

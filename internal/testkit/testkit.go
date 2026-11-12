@@ -42,6 +42,8 @@ const (
 	ControlHang  = "hang"
 	// ControlUnready keeps the fake running but stops it reporting ready.
 	ControlUnready = "unready"
+	// ControlCommandLine makes the fake print its command line again.
+	ControlCommandLine = "cmdline"
 )
 
 var (
@@ -222,8 +224,8 @@ func copyFile(t testing.TB, src, dst string, mode fs.FileMode) {
 	writeFile(t, dst, b, mode)
 }
 
-// WriteControl drops a request file (ControlStop, ControlCrash or
-// ControlHang, ControlUnready) into <dataDir>/control/.
+// WriteControl drops a request file (ControlStop, ControlCrash,
+// ControlHang, ControlUnready or ControlCommandLine) into <dataDir>/control/.
 func WriteControl(dataDir, name string) error {
 	dir := filepath.Join(dataDir, "control")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
