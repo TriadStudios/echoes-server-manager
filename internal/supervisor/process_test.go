@@ -84,6 +84,8 @@ func waitReady(t *testing.T, data string) gameserver.Status {
 		st = s
 		return err == nil && s.State == gameserver.StateReady
 	}, "server never reported ready")
+	// The server listens on loopback only, and so does this test.
+	testkit.CheckLoopback(t, st.PID, os.Getpid())
 	return st
 }
 

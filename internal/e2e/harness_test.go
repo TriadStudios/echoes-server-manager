@@ -144,9 +144,13 @@ func (h *harness) stopService() {
 
 func (h *harness) cleanup() {
 	if h.svc != nil {
+		// This test process and every server still running listen on
+		// loopback only.
+		testkit.CheckLoopback(h.t, os.Getpid())
 		var list api.InstanceList
 		if h.call("GET", "/api/v1/instances", h.admin, nil, &list) == http.StatusOK {
 			for _, v := range list.Instances {
+				testkit.CheckLoopback(h.t, v.Status.PID)
 				h.call("POST", "/api/v1/instances/"+v.Name+"/stop", h.admin, struct{}{}, nil)
 				if h.supervisor == "systemd" {
 					exec.Command("systemctl", "--user", "stop", "esm-"+v.Name+".service").Run()
@@ -271,6 +275,9 @@ func (h *harness) waitState(name string, want instances.State, timeout time.Dura
 		st = h.status(name)
 		return st.State == want
 	}, "instance %s never reached %s (last: %+v)", name, want, &st)
+	if want == instances.Running {
+		testkit.CheckLoopback(h.t, st.PID)
+	}
 	return st
 }
 

@@ -3,6 +3,7 @@ package instances
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
@@ -87,11 +88,29 @@ func newRig(t *testing.T, tune func(*config.Config)) *rig {
 	bus := events.NewBus(4096)
 	b := builds.New(st, builds.Options{Bus: bus})
 	r := &rig{t: t, st: st, cfg: cfg, b: b, bus: bus, src: t.TempDir(), log: &syncBuffer{}}
+	// Every server that reaches running listens on loopback only.
+	running := bus.Subscribe(events.Filter{Types: []string{events.TypeState}}, 4096)
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		for ev := range running.C {
+			var st Status
+			if json.Unmarshal(ev.Data, &st) == nil && st.State == Running {
+				testkit.CheckLoopback(t, st.PID)
+			}
+		}
+	}()
 	r.m = r.newManager(sup)
 	t.Cleanup(func() {
+		running.Close()
+		<-watched
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		// Whatever still runs listens on loopback only, and so does this
+		// test.
+		testkit.CheckLoopback(t, os.Getpid())
 		for _, v := range r.m.List() {
+			testkit.CheckLoopback(t, v.Status.PID)
 			r.m.Stop(ctx, v.Name)
 		}
 		r.m.Close()
@@ -151,6 +170,9 @@ func (r *rig) waitState(name string, want State, timeout time.Duration) Status {
 		st, _ = r.m.Status(name)
 		return st.State == want
 	}, "instance %s never reached state %s", name, want)
+	if want == Running {
+		testkit.CheckLoopback(r.t, st.PID)
+	}
 	return st
 }
 
