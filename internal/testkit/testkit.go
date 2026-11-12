@@ -2,7 +2,8 @@
 // game server once per test process, makes build folders and archives with
 // correct manifests, and waits for conditions.
 //
-// Packages that use FakeServer should clean up with:
+// Packages that use FakeServer, or that make ESM bind ports, should end
+// with:
 //
 //	func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
 package testkit
@@ -22,11 +23,13 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
+	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 )
 
 // FakeServerEnv names a prebuilt fake server binary to use instead of
@@ -101,11 +104,19 @@ func buildFake() {
 	fakePath = out
 }
 
-// Run runs the tests and removes the fake server built for them.
+// Run runs the tests and removes the fake server built for them. The run
+// fails when ESM was asked to bind an address that is not loopback: in a
+// test binary netbind refuses those (see netbind.Refused), and Run names
+// them.
 func Run(m *testing.M) int {
 	code := m.Run()
 	if fakeTemp != "" {
 		os.RemoveAll(fakeTemp)
+	}
+	if r := netbind.Refused(); len(r) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: tests asked ESM to bind addresses that are not loopback (refused, tests must use 127.0.0.1): %s\n",
+			strings.Join(r, ", "))
+		code = 1
 	}
 	return code
 }

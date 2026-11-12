@@ -26,6 +26,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
@@ -153,7 +154,7 @@ func Start(o Options) (_ *Service, err error) {
 		return nil, err
 	}
 	cleanups = append(cleanups, func() { s.sock.Close() })
-	if s.tcp, err = net.Listen("tcp", cfg.Listen); err != nil {
+	if s.tcp, err = netbind.Listen("tcp", cfg.Listen); err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", cfg.Listen, err)
 	}
 	cleanups = append(cleanups, func() { s.tcp.Close() })

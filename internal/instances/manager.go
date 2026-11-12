@@ -6,9 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"net"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
@@ -761,7 +760,7 @@ func (m *Manager) allocPortsLocked(bindIP string, want Ports, except string, own
 		if own[p] {
 			return nil
 		}
-		if err := PortFree(bindIP, p); err != nil {
+		if err := netbind.PortFree(bindIP, p); err != nil {
 			return fault.New(fault.Conflict, "port_in_use", "port %d is busy on this box: %v", p, err)
 		}
 		return nil
@@ -812,31 +811,10 @@ func (m *Manager) allocPortsLocked(bindIP string, want Ports, except string, own
 		"no free game/query port pair in %s and %s", m.games, m.query)
 }
 
-// PortFree reports whether port can be bound now for UDP and TCP on ip
-// (all interfaces when ip is empty).
-func PortFree(ip string, port int) error {
-	host := ip
-	if host == "" {
-		host = "0.0.0.0"
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	pc, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		return err
-	}
-	pc.Close()
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	l.Close()
-	return nil
-}
-
 // checkPortsBindable re-checks an instance's ports right before a start.
 func checkPortsBindable(in Instance) error {
 	for _, p := range []int{in.Ports.Game, in.Ports.Query} {
-		if err := PortFree(in.BindIP, p); err != nil {
+		if err := netbind.PortFree(in.BindIP, p); err != nil {
 			return fault.New(fault.Conflict, "port_in_use", "port %d is busy on this box: %v", p, err)
 		}
 	}

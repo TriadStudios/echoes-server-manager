@@ -21,6 +21,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
 
@@ -51,8 +52,8 @@ type Report struct {
 // Options configure a run.
 type Options struct {
 	Root string
-	// PortHost is the address free ports are test-bound on (default
-	// 0.0.0.0, all interfaces).
+	// PortHost is the address free ports are test-bound on (default: all
+	// interfaces).
 	PortHost string
 	// UsedPorts are ports that instances own: counted as taken, not probed.
 	UsedPorts map[int]bool
@@ -184,7 +185,7 @@ func checkPorts(r *Report, name, spec string, o Options) {
 			used++
 			continue
 		}
-		if portFree(o.PortHost, p) {
+		if netbind.PortFree(o.PortHost, p) == nil {
 			free++
 		}
 	}
@@ -194,24 +195,6 @@ func checkPorts(r *Report, name, spec string, o Options) {
 		status = Warn
 	}
 	r.add(name, status, "%s: %d free, %d used by instances, %d busy with other programs", pr, free, used, busy)
-}
-
-func portFree(host string, port int) bool {
-	if host == "" {
-		host = "0.0.0.0"
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	pc, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		return false
-	}
-	pc.Close()
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		return false
-	}
-	l.Close()
-	return true
 }
 
 func checkDisk(r *Report, root string) {
