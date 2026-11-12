@@ -47,6 +47,7 @@ var wildcardAllowed = []struct{ file, line, why string }{
 	{"internal/testkit/sockets_test.go", `net.ParseIP("0.0.0.0")`, "socket table parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `net.ParseIP("::")`, "socket table parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `"tcp 0.0.0.0:8081"`, "socket table parsing; nothing is bound"},
+	{"internal/api/host_test.go", `const allInterfaces = "0.0.0.0:8740"`, "Host header check; nothing is bound"},
 }
 
 // moduleRoot finds the folder holding go.mod above the working folder.

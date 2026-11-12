@@ -33,6 +33,11 @@ info:
     its `log` events are not sent) and a fixed notice in place of every
     state reason. `operator` and `admin` get both.
 
+    On TCP, a request must name one of ESM's own hosts in `Host`
+    (`localhost`, `127.0.0.1` or `[::1]` with the listen port, the listen
+    address, or a `public_hosts` entry); any other gets 421
+    `misdirected_request`. The unix socket is not checked.
+
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
     arrive within 30 seconds (408 `request_timeout`); request headers are at

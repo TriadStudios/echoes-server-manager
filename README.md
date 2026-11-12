@@ -143,7 +143,11 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
 - Logins are rate limited, and login and setup take only JSON from the same
   origin. Browser sessions use an HttpOnly, SameSite=Strict cookie that
   lasts 12 hours, plus a separate CSRF token on every change. Behind a TLS
-  reverse proxy, set `behind_tls_proxy` so the cookie is also Secure.
+  reverse proxy, set `behind_tls_proxy` so the cookie is also Secure, and
+  list the name clients use in `public_hosts`: ESM answers only requests
+  for `localhost` (and the loopback addresses) with its port, its listen
+  address, and those names, so a page of another site cannot reach it by
+  pointing its own name at your box.
   Tokens are never accepted in URLs.
 - Requests and replies are bounded: headers 64 KiB, bodies 1 MiB, slow
   clients are cut off, a client that stops reading an event stream is

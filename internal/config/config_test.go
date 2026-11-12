@@ -72,18 +72,22 @@ func TestLoadKeepsDefaultsForMissingFields(t *testing.T) {
 
 func TestLoadRefusesBadFiles(t *testing.T) {
 	cases := map[string]string{
-		"unknown field":   `{"lisen":"127.0.0.1:1"}`,
-		"bad listen":      `{"listen":"nonsense"}`,
-		"half tls":        `{"tls_cert":"/x.pem"}`,
-		"bad range":       `{"game_ports":"10-5"}`,
-		"overlap":         `{"game_ports":"7000-7010","query_ports":"7005-7020"}`,
-		"bad supervisor":  `{"supervisor":"docker"}`,
-		"bad backoff":     `{"backoff":{"base":"10m","max":"1m"}}`,
-		"zero crashes":    `{"backoff":{"max_crashes":0}}`,
-		"bad duration":    `{"stop_timeout":"soon"}`,
-		"zero ready":      `{"ready_timeout":"0s"}`,
-		"negative builds": `{"keep_previous_builds":-1}`,
-		"bad level":       `{"log_level":"loud"}`,
+		"unknown field":    `{"lisen":"127.0.0.1:1"}`,
+		"bad listen":       `{"listen":"nonsense"}`,
+		"half tls":         `{"tls_cert":"/x.pem"}`,
+		"bad range":        `{"game_ports":"10-5"}`,
+		"overlap":          `{"game_ports":"7000-7010","query_ports":"7005-7020"}`,
+		"bad supervisor":   `{"supervisor":"docker"}`,
+		"bad backoff":      `{"backoff":{"base":"10m","max":"1m"}}`,
+		"zero crashes":     `{"backoff":{"max_crashes":0}}`,
+		"bad duration":     `{"stop_timeout":"soon"}`,
+		"zero ready":       `{"ready_timeout":"0s"}`,
+		"negative builds":  `{"keep_previous_builds":-1}`,
+		"bad level":        `{"log_level":"loud"}`,
+		"host with path":   `{"public_hosts":["esm.example.com/x"]}`,
+		"host with scheme": `{"public_hosts":["https://esm.example.com"]}`,
+		"empty host":       `{"public_hosts":[""]}`,
+		"bad host port":    `{"public_hosts":["esm.example.com:99999"]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -209,6 +213,15 @@ func TestPeekWritesNothing(t *testing.T) {
 	}
 	if _, _, err := Peek(root); err == nil {
 		t.Fatal("unknown field accepted")
+	}
+}
+
+// public_hosts takes host names and addresses, with or without a port.
+func TestPublicHostsAccepted(t *testing.T) {
+	c := Defaults(t.TempDir())
+	c.PublicHosts = []string{"esm.example.com", "esm.example.com:8443", "192.0.2.4", "[2001:db8::1]:443", "[2001:db8::1]"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"net"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -34,5 +35,35 @@ func TestOnlyAdminsInstallBuilds(t *testing.T) {
 	outside := testkit.MakeBuild(t, filepath.Join(t.TempDir(), "x"), testkit.BuildOptions{Version: "2.0"})
 	if code := h.call("POST", "/api/v1/builds", h.admin, api.InstallRequest{Source: outside}, &eb); code != http.StatusUnprocessableEntity || eb.Error.Code != "source_not_allowed" {
 		t.Fatalf("a source outside the import folder: %d %+v", code, eb)
+	}
+}
+
+// The service answers on TCP only for its own host names: a page of
+// another site whose name now points at 127.0.0.1 gets 421, page and API
+// alike. A name in public_hosts is ESM's own; the socket is not checked.
+func TestOnlyOwnHostNames(t *testing.T) {
+	t.Parallel()
+	h := newESM(t, func(cfg map[string]any) { cfg["public_hosts"] = []string{"esm.example.test"} })
+	_, port, _ := net.SplitHostPort(h.svc.Addr())
+	for host, want := range map[string]int{
+		"rebind.example:" + port: http.StatusMisdirectedRequest,
+		"esm.example.test":       http.StatusOK,
+		"localhost:" + port:      http.StatusOK,
+	} {
+		for _, path := range []string{"/api/v1/setup", "/"} {
+			req, _ := http.NewRequest(http.MethodGet, h.base+path, nil)
+			req.Host = host
+			resp, err := h.http.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != want {
+				t.Errorf("%s with Host %q: %d, want %d", path, host, resp.StatusCode, want)
+			}
+		}
+	}
+	if st := h.callSock("GET", "/api/v1/setup", nil, nil); st != http.StatusOK {
+		t.Fatalf("socket: %d", st)
 	}
 }

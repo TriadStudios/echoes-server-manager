@@ -183,6 +183,7 @@ func Start(o Options) (_ *Service, err error) {
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
+		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts,
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
 	s.web = newHTTPServer(srv.Handler(), errLog)

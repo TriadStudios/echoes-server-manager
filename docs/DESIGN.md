@@ -97,6 +97,7 @@ are refused, so typos are reported.
 | `socket`               | `<root>/esm.sock` | Unix socket path. |
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
 | `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
+| `public_hosts`         | (none)            | Further host names (`host` for any port, or `host:port`) the API and the page answer to; see [Logins and exposure](#logins-and-exposure). |
 | `build_import_dir`     | `<root>/imports`  | The only folder local build sources are read from (created 0700 at start; a relative path is taken from the root). |
 | `game_ports`           | `7777-7786`       | Range for game ports. |
 | `query_ports`          | `27015-27024`     | Range for query ports. |
@@ -487,7 +488,7 @@ skipped.
 - Reads are GET. Every change is POST, PUT, PATCH or DELETE with a JSON body
   (an empty body counts as `{}`), at most 1 MiB.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
-  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 422, 429 or 500. (The
+  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 421, 422, 429 or 500. (The
   HTTP server itself answers malformed requests and request headers over
   the cap with a plain 400 or 431, without that shape or ESM's headers.)
 - **Limits.** Request headers: at most 64 KiB, within 10 seconds. A request
@@ -517,6 +518,13 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   to start on any other address unless `tls_cert` and `tls_key` are set. A
   reverse proxy with TLS in front of a loopback ESM is the expected way to
   reach it from elsewhere.
+- **Host names.** On TCP, ESM answers only requests that name one of its
+  own hosts in the `Host` header: `localhost`, `127.0.0.1` and `[::1]`
+  with the listen port, the listen address itself when it is a specific
+  address, and the names in `public_hosts`. Anything else, the page
+  included, gets 421 `misdirected_request`. A page of another site that
+  points its own name at 127.0.0.1 (DNS rebinding) sends its own name, so
+  it reaches nothing. The unix socket is not checked.
 - **Unix socket.** `<root>/esm.sock` (mode 0600) acts as admin; it is how
   the command line on the box works. A stale socket file is removed at start;
   a socket that still answers means another ESM already serves the root.
@@ -551,7 +559,8 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   written down.
 - **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
   on loopback. It must pass the `Host` header through unchanged (the
-  `Origin` checks compare against it), and `behind_tls_proxy` should be set
+  `Origin` checks compare against it), that name must be listed in
+  `public_hosts`, and `behind_tls_proxy` should be set
   so the session cookie is Secure and an `Origin` must say `https` (with it
   set, browser logins work only through the proxy). Do not set it without such a proxy: a
   Secure cookie is never sent over plain http, so browser logins would
