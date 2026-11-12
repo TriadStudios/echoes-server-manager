@@ -87,6 +87,16 @@ func NewScrubber(values []string) *Scrubber {
 	return sc
 }
 
+// Longest is the length of the longest form of a hidden value (0 for
+// none): a piece of text cut anywhere ends in at most that many bytes of
+// a split value.
+func (sc *Scrubber) Longest() int {
+	if sc == nil || len(sc.forms) == 0 {
+		return 0
+	}
+	return len(sc.forms[0])
+}
+
 // Scrub returns text with every occurrence of a secret value, in any of its
 // forms, replaced by Mask, and then the value of every password switch
 // masked (see MaskSwitches). Occurrences that overlap or touch become one
