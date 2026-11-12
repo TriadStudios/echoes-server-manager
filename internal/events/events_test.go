@@ -174,3 +174,64 @@ func ids(evs []Event) []uint64 {
 	}
 	return out
 }
+
+// A restricted event reaches a public subscriber in its public form, or
+// not at all when it has none: as it is published and when remembered
+// events are asked for later. Other subscribers get it whole.
+func TestRestrictedEvents(t *testing.T) {
+	b := NewBus(16)
+	full := b.Subscribe(Filter{}, 8)
+	public := b.Subscribe(Filter{Public: true}, 8)
+
+	open, _ := b.Publish(TypeState, "alpha", map[string]string{"reason": "plain"})
+	swapped, err := b.PublishRestricted(TypeState, "alpha", map[string]string{"reason": "private words"}, map[string]string{"reason": "notice"})
+	if err != nil || !swapped.Restricted() || open.Restricted() || string(swapped.Data) != `{"reason":"private words"}` {
+		t.Fatalf("published %+v %v", swapped, err)
+	}
+	withheld, _ := b.PublishRestricted(TypeLog, "alpha", "private line", nil)
+	last, _ := b.Publish(TypeLog, "alpha", "plain line")
+	if _, err := b.PublishRestricted(TypeLog, "alpha", "x", func() {}); err == nil {
+		t.Fatal("unencodable public data accepted")
+	}
+
+	for _, want := range []string{`{"reason":"plain"}`, `{"reason":"private words"}`, `"private line"`, `"plain line"`} {
+		if got := recv(t, full); string(got.Data) != want {
+			t.Fatalf("a full subscriber got %s, want %s", got.Data, want)
+		}
+	}
+	for _, want := range []struct {
+		id   uint64
+		data string
+	}{{open.ID, `{"reason":"plain"}`}, {swapped.ID, `{"reason":"notice"}`}, {last.ID, `"plain line"`}} {
+		if got := recv(t, public); got.ID != want.id || string(got.Data) != want.data {
+			t.Fatalf("a public subscriber got %d %s, want %d %s", got.ID, got.Data, want.id, want.data)
+		}
+	}
+	select {
+	case e := <-public.C:
+		t.Fatalf("a public subscriber got one more event: %+v", e)
+	default:
+	}
+
+	// The same holds for remembered events, with other filters on top.
+	evs, complete := b.Since(0, Filter{Public: true})
+	if !complete || len(evs) != 3 || evs[1].ID != swapped.ID || string(evs[1].Data) != `{"reason":"notice"}` {
+		t.Fatalf("remembered events for a public subscriber: %+v", evs)
+	}
+	for _, e := range evs {
+		if e.ID == withheld.ID {
+			t.Fatal("a withheld event was handed out later")
+		}
+	}
+	if evs, _ := b.Since(0, Filter{Public: true, Types: []string{TypeLog}}); len(evs) != 1 || evs[0].ID != last.ID {
+		t.Fatalf("remembered log events for a public subscriber: %+v", evs)
+	}
+	if evs, _ := b.Since(0, Filter{}); len(evs) != 4 || string(evs[1].Data) != `{"reason":"private words"}` {
+		t.Fatalf("remembered events for a full subscriber: %+v", evs)
+	}
+	backlog, sub, _ := b.SubscribeFrom(swapped.ID-1, Filter{Public: true}, 4)
+	defer sub.Close()
+	if len(backlog) != 2 || string(backlog[0].Data) != `{"reason":"notice"}` || backlog[1].ID != last.ID {
+		t.Fatalf("backlog for a public subscriber: %+v", backlog)
+	}
+}

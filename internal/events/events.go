@@ -31,15 +31,29 @@ type Event struct {
 	Type     string          `json:"type"`
 	Instance string          `json:"instance,omitempty"`
 	Data     json.RawMessage `json:"data,omitempty"`
+
+	// restricted marks an event whose Data not every subscriber may see
+	// (see PublishRestricted). public is what the others get in its place;
+	// nil means they do not get the event at all. Both are decided when
+	// the event is published and stay with it for as long as it is
+	// remembered.
+	restricted bool
+	public     json.RawMessage
 }
+
+// Restricted reports whether e was published with PublishRestricted.
+func (e Event) Restricted() bool { return e.restricted }
 
 // Filter selects events. Empty fields match everything.
 type Filter struct {
 	Instance string
 	Types    []string
+	// Public marks a subscriber that may not see restricted data: it gets
+	// the public form of a restricted event, or nothing when there is none.
+	Public bool
 }
 
-// Match reports whether e passes the filter.
+// Match reports whether e passes the filter's instance and types.
 func (f Filter) Match(e Event) bool {
 	if f.Instance != "" && e.Instance != f.Instance {
 		return false
@@ -48,6 +62,21 @@ func (f Filter) Match(e Event) bool {
 		return false
 	}
 	return true
+}
+
+// view returns e as a subscriber with this filter gets it, and false when
+// it does not get it.
+func (f Filter) view(e Event) (Event, bool) {
+	if !f.Match(e) {
+		return Event{}, false
+	}
+	if f.Public && e.restricted {
+		if e.public == nil {
+			return Event{}, false
+		}
+		e.Data = e.public
+	}
+	return e, true
 }
 
 // Bus is the event bus. The zero value is not usable; call NewBus.
@@ -102,16 +131,44 @@ func (s *Subscription) Lagged() bool {
 // Publish encodes data as JSON (nil means no data), records and delivers
 // the event, and returns it with its id and time.
 func (b *Bus) Publish(typ, instance string, data any) (Event, error) {
-	var raw json.RawMessage
-	if data != nil {
-		var err error
-		if raw, err = json.Marshal(data); err != nil {
-			return Event{}, fmt.Errorf("events: encode %s data: %w", typ, err)
-		}
+	raw, err := encode(typ, data)
+	if err != nil {
+		return Event{}, err
 	}
+	return b.publish(Event{Type: typ, Instance: instance, Data: raw}), nil
+}
+
+// PublishRestricted is Publish for an event whose data not every
+// subscriber may see. Subscribers whose filter has Public set get public in
+// its place, or, when public is nil, do not get the event at all: not now
+// and not when they ask for remembered events later.
+func (b *Bus) PublishRestricted(typ, instance string, data, public any) (Event, error) {
+	raw, err := encode(typ, data)
+	if err != nil {
+		return Event{}, err
+	}
+	pub, err := encode(typ, public)
+	if err != nil {
+		return Event{}, err
+	}
+	return b.publish(Event{Type: typ, Instance: instance, Data: raw, restricted: true, public: pub}), nil
+}
+
+func encode(typ string, data any) (json.RawMessage, error) {
+	if data == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("events: encode %s data: %w", typ, err)
+	}
+	return raw, nil
+}
+
+func (b *Bus) publish(e Event) Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	e := Event{ID: b.nextID, Time: b.now().UTC(), Type: typ, Instance: instance, Data: raw}
+	e.ID, e.Time = b.nextID, b.now().UTC()
 	b.nextID++
 	if len(b.ring) < b.size {
 		b.ring = append(b.ring, e)
@@ -120,21 +177,22 @@ func (b *Bus) Publish(typ, instance string, data any) (Event, error) {
 		b.start = (b.start + 1) % b.size
 	}
 	if b.closed {
-		return e, nil
+		return e
 	}
 	for s := range b.subs {
-		if !s.filter.Match(e) {
+		seen, ok := s.filter.view(e)
+		if !ok {
 			continue
 		}
 		select {
-		case s.c <- e:
+		case s.c <- seen:
 		default:
 			s.lagged = true
 			delete(b.subs, s)
 			s.closeChan()
 		}
 	}
-	return e, nil
+	return e
 }
 
 // LastID returns the id of the newest event (0 when none).
@@ -161,8 +219,11 @@ func (b *Bus) since(after uint64, f Filter) ([]Event, bool) {
 	}
 	for i := range b.ring {
 		e := b.ring[(b.start+i)%len(b.ring)]
-		if e.ID > after && f.Match(e) {
-			out = append(out, e)
+		if e.ID <= after {
+			continue
+		}
+		if seen, ok := f.view(e); ok {
+			out = append(out, seen)
 		}
 	}
 	return out, complete
