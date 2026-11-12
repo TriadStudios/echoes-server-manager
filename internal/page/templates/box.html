@@ -1,0 +1,139 @@
+{{define "content"}}{{$v := .}}{{$b := .Box}}{{$d := .Data}}
+<div class="headrow">
+<h1 class="title">Box</h1>
+<p class="dim mono">{{if $b.Hostname}}{{$b.Hostname}}, {{end}}{{$b.OS}}, ESM {{$b.Version}}, up {{since $b.Started}}</p>
+</div>
+
+{{if $b.SecretsOnCommandLine}}<p class="alert danger">UNSAFE on a shared box: {{join $b.SecretsOnCommandLine ", "}} pass their passwords on the server command line, where every account on this box can read them from the process list, and the server writes them into its log.</p>{{end}}
+
+<div class="grid cards">
+<section class="panel stack" aria-labelledby="access-h">
+<h2 class="label" id="access-h">Access</h2>
+<dl class="facts one">
+<div><dt>Listening on</dt><dd class="mono">{{$b.Listen}}{{if $b.TLS}} with TLS{{end}}</dd></div>
+<div><dt>Open to other machines directly</dt><dd>{{if loopback $b.Listen}}<span class="good">No</span>: this box only{{else}}<span class="warnword">Yes</span>{{if $b.TLS}}, over TLS{{end}}{{end}}</dd></div>
+<div><dt>Behind a TLS proxy</dt><dd>{{if $b.BehindTLSProxy}}yes: the login cookie is sent over TLS only{{else}}not set (behind_tls_proxy){{end}}</dd></div>
+</dl>
+<p class="note">Whether a proxy in front of ESM asks for its own login, ESM cannot see. The listening address is set in esm.json; changing it needs a restart of ESM and, for anything but this box, a TLS certificate. Game servers keep running across that restart.</p>
+</section>
+
+<section class="panel stack" aria-labelledby="ports-h">
+<h2 class="label" id="ports-h">Ports for game servers</h2>
+<dl class="facts">
+<div><dt>Game ports</dt><dd class="mono">{{$b.GamePorts}}</dd></div>
+<div><dt>Query ports</dt><dd class="mono">{{$b.QueryPorts}}</dd></div>
+<div><dt>Game ports in use</dt><dd class="mono">{{if $d.GameUsed}}{{ints $d.GameUsed}}{{else}}none{{end}}</dd></div>
+<div><dt>Query ports in use</dt><dd class="mono">{{if $d.QueryUsed}}{{ints $d.QueryUsed}}{{else}}none{{end}}</dd></div>
+</dl>
+<p class="note">The ranges are set in esm.json. ESM never changes the firewall; it lists what has to be open.</p>
+<details class="reveal">
+<summary class="btn">Show firewall commands</summary>
+<p class="note">For ufw:</p>
+<pre class="logbox">{{range $d.Firewall.UFW}}{{.}}
+{{end}}</pre>
+<p class="note">For firewalld:</p>
+<pre class="logbox">{{range $d.Firewall.Firewalld}}{{.}}
+{{end}}</pre>
+<p class="note">{{$d.Firewall.Note}}</p>
+</details>
+</section>
+
+<section class="panel stack" aria-labelledby="budget-h">
+<h2 class="label" id="budget-h">Memory and CPU</h2>
+<dl class="facts">
+<div><dt>Memory on the box</dt><dd class="mono">{{sizep $b.Usage.MemoryTotalBytes}}</dd></div>
+<div><dt>Available now</dt><dd class="mono">{{sizep $b.Usage.MemoryAvailableBytes}}</dd></div>
+<div><dt>CPUs</dt><dd class="mono">{{$b.Usage.CPUCount}}</dd></div>
+<div><dt>Load (1 min)</dt><dd class="mono">{{with $b.Usage.Load1}}{{.}}{{else}}unknown{{end}}</dd></div>
+<div><dt>Server memory ceilings</dt><dd class="mono">{{if $d.Ceilinged}}{{size $d.Ceilings}} on {{$d.Ceilinged}} servers{{else}}none set{{end}}</dd></div>
+<div><dt>CPU quotas</dt><dd class="mono">{{if $d.Quotas}}{{$d.Quotas}} servers{{else}}none set{{end}}</dd></div>
+</dl>
+<p class="note">Ceilings and quotas are set per server and {{if $b.LimitsEnforced}}enforced by systemd{{else}}<span class="warnword">not enforced</span> in {{$b.Supervisor}} mode{{end}}. ESM has no budget for all game servers together yet: it does not refuse a start that would take the box over a total.</p>
+</section>
+</div>
+
+<section class="stack" aria-labelledby="tokens-h">
+<h2 class="label" id="tokens-h">Logins and tokens</h2>
+{{if $v.Admin}}<div class="panel flush scroll">
+<table class="list">
+<caption class="sr">Logins and API tokens</caption>
+<thead><tr>
+<th scope="col">Name</th>
+<th scope="col">Kind</th>
+<th scope="col">Role</th>
+<th scope="col">Last used</th>
+<th scope="col">Action</th>
+</tr></thead>
+<tbody>
+{{if eq $v.Session.Kind "user"}}<tr>
+<th scope="row">{{$v.Session.ID}}</th>
+<td>Login (you)</td>
+<td class="mono">{{$v.Session.Role}}</td>
+<td class="dim">now</td>
+<td class="dim">none: ESM cannot change a password yet</td>
+</tr>{{end}}
+{{range $d.Tokens}}<tr>
+<th scope="row">{{if .Name}}{{.Name}}{{else}}<span class="mono">{{.ID}}</span>{{end}}</th>
+<td>Token</td>
+<td class="mono">{{.Role}}</td>
+<td class="dim">{{if .LastUsed.IsZero}}never{{else}}<time datetime="{{iso .LastUsed}}">{{when .LastUsed}}</time>{{end}}</td>
+<td><button type="button" class="btn" data-act="revoke" data-id="{{.ID}}" data-confirm="Revoke this token? Scripts that use it stop working at once.">Revoke</button></td>
+</tr>{{end}}
+</tbody>
+</table>
+</div>
+<form class="panel stack" data-form="token" aria-labelledby="newtoken-h">
+<h3 class="sub" id="newtoken-h">Create a token</h3>
+<div class="tools">
+<label class="field grow"><span>Name (what uses it)</span><input type="text" name="name" maxlength="64" required></label>
+<label class="field"><span>Role</span>
+<select name="role">
+<option value="read">read: look only</option>
+<option value="operator">operator: also start, stop, update, back up</option>
+<option value="admin">admin: everything</option>
+</select></label>
+<button type="submit" class="btn primary">Create token</button>
+</div>
+<div class="newtoken" id="new-token" hidden>
+<p class="strong">The new token, shown only this once:</p>
+<pre class="logbox" id="new-token-value"></pre>
+<p class="note">Copy it now. ESM keeps only a hash of it.</p>
+</div>
+</form>
+<p class="note">admin: everything. operator: start, stop, restart, update, back up, restore, install builds. read: look only. ESM has one login, made at setup; more people use tokens for now.</p>
+{{else}}<p class="panel empty">Logins and tokens need the admin role.</p>{{end}}
+</section>
+
+<section class="panel stack" aria-labelledby="health-h">
+<div class="spread">
+<h2 class="label" id="health-h">Health check</h2>
+<a class="btn" href="/box#health-h">Run again</a>
+</div>
+{{if $d.DoctorWhy}}<p class="alert">{{$d.DoctorWhy}}</p>{{end}}
+<div class="rows">
+{{range $d.Doctor.Checks}}<div class="row check">
+<span class="result {{.Status}}">{{check .Status}}</span>
+<span class="strong name">{{.Name}}</span>
+<span class="dim what">{{.Message}}</span>
+</div>{{end}}
+<div class="row check">
+<span class="result warn">Check</span>
+<span class="strong name">reachable from outside</span>
+<span class="dim what">ESM cannot test from this box whether players can reach the game ports from the internet. Try joining from outside.</span>
+</div>
+<div class="row check">
+<span class="result {{if $b.LimitsEnforced}}ok{{else}}warn{{end}}">{{if $b.LimitsEnforced}}OK{{else}}Check{{end}}</span>
+<span class="strong name">limits</span>
+<span class="dim what">{{if $b.LimitsEnforced}}Memory ceilings and CPU quotas are enforced by systemd.{{else}}Memory ceilings and CPU quotas are not enforced in {{$b.Supervisor}} mode.{{end}}</span>
+</div>
+</div>
+</section>
+
+<section class="panel spread" aria-labelledby="root-h">
+<div>
+<h2 class="sub" id="root-h">Everything ESM keeps is in one folder</h2>
+<p class="mono dim">{{$b.Root}} (builds, instances, backups, audit.log)</p>
+</div>
+{{if $v.Admin}}<a class="btn link" href="/audit">Open the audit log</a>{{end}}
+</section>
+{{end}}

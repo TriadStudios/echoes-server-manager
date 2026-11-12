@@ -1,0 +1,30 @@
+{{define "content"}}{{$v := .}}
+<div class="headrow">
+<h1 class="title">Audit log</h1>
+{{if $v.Admin}}<p class="dim">The newest {{len .Data}} entries, newest first</p>{{end}}
+</div>
+{{if not $v.Admin}}<p class="panel empty">The audit log needs the admin role.</p>{{else if not .Data}}<p class="panel empty">The audit log is empty.</p>{{else}}
+<div class="panel flush scroll">
+<table class="list">
+<caption class="sr">Audit log entries</caption>
+<thead><tr>
+<th scope="col">When</th>
+<th scope="col">Who</th>
+<th scope="col">What</th>
+<th scope="col">On</th>
+<th scope="col">Result</th>
+</tr></thead>
+<tbody>
+{{range .Data}}<tr>
+<th scope="row" class="mono"><time datetime="{{iso .Time}}">{{when .Time}}</time></th>
+<td>{{.Actor.ID}} <span class="dim">({{.Actor.Kind}}{{if .Actor.Role}}, {{.Actor.Role}}{{end}})</span></td>
+<td class="mono">{{.Action}}</td>
+<td class="mono">{{.Target}}</td>
+<td>{{if .OK}}<span class="good">done</span>{{else}}<span class="badge bad">refused</span> <span class="dim">{{.Error}}</span>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+</div>
+<p class="note">The whole log is <span class="mono">audit.log</span> in the ESM root folder, one JSON object per line. It never holds a password or token.</p>
+{{end}}
+{{end}}

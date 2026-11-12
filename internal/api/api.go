@@ -1,5 +1,6 @@
-// Package api is ESM's HTTP API under /api/v1, plus the embedded web page
-// at "/".
+// Package api is ESM's HTTP API under /api/v1. It also serves the web page
+// at "/" when one is given (Options.Page); the page gets its data through
+// this API.
 //
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
@@ -79,6 +80,11 @@ type Options struct {
 	// PortHost is where doctor test-binds free ports (default all
 	// interfaces).
 	PortHost string
+	// Page, when set, makes the web page that is served at "/" (GET and
+	// HEAD). It is handed a handler of the API alone (paths under /api/),
+	// through which the page gets all its data: the same calls, rules and
+	// roles as any other client. Without a page "/" answers 404.
+	Page func(api http.Handler) http.Handler
 }
 
 // Server serves the API and the page.
@@ -206,7 +212,12 @@ func New(o Options) *Server {
 		s.allow[rt.path] = append(s.allow[rt.path], rt.method)
 	}
 	s.mux.Handle("/api/", s.wrap(route{access: public, action: "api.unknown", h: (*Server).unknownAPI}))
-	page := web.Handler()
+	var page http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "this server has no web page")
+	})
+	if o.Page != nil {
+		page = o.Page(s.apiOnly())
+	}
 	s.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			page.ServeHTTP(w, r)
@@ -218,6 +229,17 @@ func New(o Options) *Server {
 	}))
 	s.root = s.guard(s.mux)
 	return s
+}
+
+// apiOnly serves the API alone: the page's calls never reach the page.
+func (s *Server) apiOnly() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			writeError(w, http.StatusNotFound, "not_found", "no API endpoint "+r.URL.Path)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 // guard is the first handler of every request, to the API and to the page.

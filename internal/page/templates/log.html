@@ -1,0 +1,24 @@
+{{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$l := .Data.More}}
+{{template "tabs" .}}
+<nav class="tabs small" aria-label="Log source">
+<a href="/servers/{{$s.Name}}/log"{{if eq $l.Source "server"}} aria-current="page"{{end}}>Server log</a>
+<a href="/servers/{{$s.Name}}/log?source=console"{{if eq $l.Source "console"}} aria-current="page"{{end}}>Console output</a>
+</nav>
+{{if $l.Why}}<p class="alert">{{$l.Why}}</p>{{else}}
+<form class="tools" id="log-tools" role="search">
+<label class="field grow"><span>Search the log</span><input type="search" id="log-search" placeholder="joined, save, error"></label>
+<label class="field"><span>Show</span>
+<select id="log-level">
+<option value="all">Everything</option>
+<option value="warning">Warnings and errors</option>
+<option value="error">Errors only</option>
+</select></label>
+<label class="check"><input type="checkbox" id="log-follow" checked><span>Follow new lines</span></label>
+<a class="btn" href="/api/v1/instances/{{$s.Name}}/logs/download?source={{$l.Source}}" download>Download</a>
+</form>
+<div class="logbox tall" id="log-lines" data-log-of="{{$s.Name}}" data-source="{{$l.Source}}" data-keep="2000" tabindex="0" aria-label="Log lines">
+{{range $l.Lines}}<div class="line{{if .Level}} {{.Level}}{{end}}">{{if .Level}}<span class="lvl">{{.Level}}</span>{{end}}{{.Text}}</div>{{else}}<div class="line dim" data-empty>No lines yet.</div>{{end}}
+</div>
+<p class="note">Live. This started with the last {{$l.Shown}} lines{{if eq $l.Source "server"}} of the server log{{else}} of the console output{{end}}; new lines are added as they come, up to 2000 on this page. Download has up to the newest 16 MiB. Lines that name an error or a warning are marked by their words.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,69 @@
+{{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$r := .Data.More}}
+{{template "tabs" .}}
+{{if not $v.Admin}}<p class="alert">Changing settings needs the admin role. You can look at them here.</p>{{end}}
+<div class="split">
+<form class="stack grow" id="settings" data-form="settings" data-name="{{$s.Name}}" novalidate>
+<fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
+<legend class="label">Basics</legend>
+<div class="grid fields">
+<label class="field"><span>Server name (shown to players)</span>
+<input type="text" name="display_name" maxlength="64" value="{{$s.DisplayName}}" data-orig="{{$s.DisplayName}}" data-label="Server name"></label>
+<label class="field"><span>World name</span>
+<input type="text" name="world" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" class="mono" value="{{$s.World}}" data-orig="{{$s.World}}" data-label="World name"></label>
+<label class="field"><span>Max players</span>
+<input type="number" name="max_players" min="1" max="200" value="{{$s.MaxPlayers}}" data-orig="{{$s.MaxPlayers}}" data-label="Max players"></label>
+<label class="field"><span>Cluster (empty for none)</span>
+<input type="text" name="cluster" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*" class="mono" value="{{$s.Cluster}}" data-orig="{{$s.Cluster}}" data-label="Cluster"></label>
+</div>
+<label class="check"><input type="checkbox" name="listed"{{if $s.Listed}} checked{{end}} data-orig="{{$s.Listed}}" data-label="Listed in the server browser"><span>Show this server in the public server browser</span></label>
+</fieldset>
+
+<fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
+<legend class="label">Passwords</legend>
+<p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.</p>
+<div class="grid fields">
+<label class="field"><span>Join password ({{if $s.Secrets.ServerPasswordSet}}set{{else}}none{{end}})</span>
+<input type="password" name="server_password" maxlength="128" autocomplete="new-password" value="" data-orig="" data-label="Join password" data-secret></label>
+<label class="field"><span>Admin password ({{if $s.Secrets.AdminPasswordSet}}set{{else}}none{{end}})</span>
+<input type="password" name="admin_password" maxlength="128" autocomplete="new-password" value="" data-orig="" data-label="Admin password" data-secret></label>
+</div>
+<div class="grid fields">
+{{if $s.Secrets.ServerPasswordSet}}<label class="check"><input type="checkbox" name="clear_server_password" data-orig="false" data-label="Remove the join password"><span>Remove the join password</span></label>{{end}}
+{{if $s.Secrets.AdminPasswordSet}}<label class="check"><input type="checkbox" name="clear_admin_password" data-orig="false" data-label="Remove the admin password"><span>Remove the admin password</span></label>{{end}}
+</div>
+</fieldset>
+
+<fieldset class="panel" id="rules"{{if not $v.Admin}} disabled{{end}}>
+<legend class="label">World rules</legend>
+<p class="note">ESM passes each rule to the server as <span class="mono">-Key=Value</span>. Their defaults and allowed values are unknown until the game's server builds describe their rules, so this is a plain list of what is set. Presets arrive with that description.</p>
+<div class="tools">
+<label class="field grow"><span>Search rules</span><input type="search" id="rule-search" placeholder="name or value"></label>
+<label class="check"><input type="checkbox" id="rule-changed"><span>Show changed only</span></label>
+</div>
+<div class="rules" id="rule-list">
+{{range $i, $x := $r.Rules}}<div class="rule" data-rule>
+<label class="field grow"><span class="mono">{{$x.Key}}</span>
+<input type="text" class="mono" name="rule:{{$x.Key}}" maxlength="256" value="{{$x.Value}}" data-orig="{{$x.Value}}" data-label="Rule {{$x.Key}}"></label>
+<label class="check"><input type="checkbox" name="drop:{{$x.Key}}" data-orig="false" data-label="Remove rule {{$x.Key}}"><span>Remove</span></label>
+<span class="badge changed" hidden>Changed</span>
+</div>{{else}}<p class="empty" data-empty>No rules are set.</p>{{end}}
+</div>
+<div class="tools">
+<label class="field"><span>New rule name</span><input type="text" id="new-rule-key" class="mono" maxlength="64" pattern="[A-Za-z][A-Za-z0-9_]*"></label>
+<label class="field grow"><span>New rule value</span><input type="text" id="new-rule-value" class="mono" maxlength="256"></label>
+<button type="button" class="btn" id="add-rule">Add rule</button>
+</div>
+<p class="note">Rule names that look like passwords or keys are refused: passwords go only in the fields above.</p>
+</fieldset>
+</form>
+
+<aside class="panel pending" aria-labelledby="pending-h">
+<h2 class="label gold" id="pending-h"><span id="pending-count">No</span> unsaved changes</h2>
+<ul class="changes" id="pending-list"></ul>
+<p class="note">Settings and rules take effect when the server starts. {{if $s.Live.Players}}{{$s.Live.Players}} players are online now.{{else}}Players online now: not known.{{end}}</p>
+{{if $v.Admin}}<button type="button" class="btn primary" data-save="restart" disabled>Save and restart</button>
+<button type="button" class="btn" data-save="later" disabled>Save for next restart</button>
+<button type="button" class="btn text" data-save="discard" disabled>Discard</button>{{end}}
+</aside>
+</div>
+{{end}}

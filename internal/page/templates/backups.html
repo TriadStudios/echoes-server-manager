@@ -1,0 +1,51 @@
+{{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$b := .Data.More}}
+{{template "tabs" .}}
+<form class="panel stack" data-form="policy" data-name="{{$s.Name}}" aria-labelledby="policy-h">
+<h2 class="label" id="policy-h">Policy</h2>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
+<legend class="sr">Scheduled backups</legend>
+<div class="tools">
+<label class="field"><span>Back up every</span>
+<select name="every">
+{{range choices $s.Backup.Every}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+</select></label>
+<label class="field"><span>Keep the newest</span><input type="number" name="keep" min="1" max="1000" value="{{$s.Backup.Keep}}"></label>
+{{if $v.Admin}}<button type="submit" class="btn quiet">Save policy</button>{{end}}
+</div>
+</fieldset>
+<p class="note">Scheduled backups run only while the server runs ({{every $s.Backup.Every}} now). ESM also always backs up before every update and before a restore; that cannot be turned off. {{len $b.List}} of {{$s.Backup.Keep}} kept, {{size $b.Total}}. A backup of a running server waits for its next world save, up to a set time; the list says when it did not see one. To keep copies off this box, copy the backups folder of the ESM root (see <a href="/box">Box</a>).</p>
+{{if not $v.Admin}}<p class="note">Changing the policy needs the admin role.</p>{{end}}
+</form>
+
+<section class="stack" aria-labelledby="backups-h">
+<h2 class="label" id="backups-h">Backups</h2>
+{{if $b.Why}}<p class="alert">{{$b.Why}}</p>{{end}}
+{{if $b.List}}<div class="panel flush scroll">
+<table class="list">
+<caption class="sr">Backups of {{$s.Name}}, newest first</caption>
+<thead><tr>
+<th scope="col">Taken</th>
+<th scope="col">Why</th>
+<th scope="col">Build</th>
+<th scope="col">Size</th>
+<th scope="col">World save</th>
+{{if $v.Operator}}<th scope="col">Actions</th>{{end}}
+</tr></thead>
+<tbody>
+{{range $b.List}}<tr>
+<th scope="row" class="mono"><time datetime="{{iso .Created}}">{{when .Created}}</time></th>
+<td>{{why .Reason}}</td>
+<td class="mono dim">{{.Build}}</td>
+<td class="mono">{{size .SizeBytes}}</td>
+<td>{{if .SaveConfirmed}}confirmed{{else}}<span class="warnword">not seen</span>{{end}}</td>
+{{if $v.Operator}}<td><div class="actions">
+<button type="button" class="btn" data-act="restore" data-name="{{$s.Name}}" data-id="{{.ID}}" data-confirm="Restore the backup taken {{when .Created}}? The server stops, the current world is kept as a new backup, this one is put in place and the server starts again. Players lose everything since this backup.">Restore</button>
+<a class="btn" href="/api/v1/instances/{{$s.Name}}/backups/{{.ID}}/download" download>Download</a>
+</div></td>{{end}}
+</tr>{{end}}
+</tbody>
+</table>
+</div>{{else if not $b.Why}}<p class="panel empty">No backups yet.</p>{{end}}
+<p class="warnword">Restore stops the server, keeps the current world as a new backup, puts the chosen one in place and starts the server again if it was running. Players lose everything since that backup.</p>
+</section>
+{{end}}

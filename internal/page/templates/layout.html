@@ -1,0 +1,75 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{.CSRF}}">
+<title>{{.Title}} - ESM</title>
+<link rel="stylesheet" href="/static/esm.css">
+<script src="/static/esm.js" defer></script>
+</head>
+<body data-screen="{{.Screen}}"{{if .Events}} data-events="{{.Events}}"{{end}}>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="top">
+<a class="brand" href="/"><span class="mark">ESM</span><span class="sub">Echoes Server Manager</span></a>
+{{if not .Bare}}<div class="who">
+{{if .Box.Hostname}}<span class="mono dim">box: {{.Box.Hostname}}</span>{{end}}
+<span class="dim">{{.Session.ID}} <span class="role">{{.Session.Role}}</span></span>
+<button type="button" class="btn ghost" data-act="logout">Log out</button>
+</div>{{end}}
+</header>
+<div class="frame{{if .Bare}} bare{{end}}">
+{{if not .Bare}}<nav class="menu" aria-label="Sections">
+<a href="/"{{if eq .Nav "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+<a href="/servers"{{if eq .Nav "servers"}} aria-current="page"{{end}}>Servers</a>
+<a href="/builds"{{if eq .Nav "builds"}} aria-current="page"{{end}}>Builds</a>
+<a href="/clusters"{{if eq .Nav "clusters"}} aria-current="page"{{end}}>Clusters</a>
+<a href="/box"{{if eq .Nav "box"}} aria-current="page"{{end}}>Box</a>
+</nav>{{end}}
+<main id="main" class="content">
+<p id="flash" class="flash" role="status" aria-live="polite"{{if not .Notice}} hidden{{end}}>{{.Notice}}</p>
+<noscript><p class="alert">This page reads without JavaScript, but every change (start, stop, saving settings, logging in) needs it.</p></noscript>
+{{template "content" .}}
+</main>
+</div>
+</body>
+</html>
+{{end}}
+
+{{define "tabs"}}{{$s := .Data.S}}
+<div class="head">
+<p class="crumbs"><a href="/servers">Servers</a> / <span class="mono">{{$s.Name}}</span></p>
+<div class="headrow">
+<div class="titlerow">
+<h1 class="title plain">{{if $s.DisplayName}}{{$s.DisplayName}}{{else}}{{$s.Name}}{{end}}</h1>
+{{template "pill" $s}}
+</div>
+{{if and .Operator (eq .Data.Tab "overview")}}<div class="actions">
+{{template "lifecycle" $s}}
+<button type="button" class="btn" data-act="backup" data-name="{{$s.Name}}">Back up now</button>
+</div>{{end}}
+{{if and .Operator (eq .Data.Tab "backups")}}<div class="actions"><button type="button" class="btn primary" data-act="backup" data-name="{{$s.Name}}">Back up now</button></div>{{end}}
+</div>
+</div>
+<nav class="tabs" aria-label="Server pages">
+<a href="/servers/{{$s.Name}}"{{if eq .Data.Tab "overview"}} aria-current="page"{{end}}>Overview</a>
+<a href="/servers/{{$s.Name}}/settings"{{if eq .Data.Tab "settings"}} aria-current="page"{{end}}>Settings</a>
+<a href="/servers/{{$s.Name}}/log"{{if eq .Data.Tab "log"}} aria-current="page"{{end}}>Log</a>
+<a href="/servers/{{$s.Name}}/players"{{if eq .Data.Tab "players"}} aria-current="page"{{end}}>Players</a>
+<a href="/servers/{{$s.Name}}/backups"{{if eq .Data.Tab "backups"}} aria-current="page"{{end}}>Backups</a>
+<a href="/servers/{{$s.Name}}/schedule"{{if eq .Data.Tab "schedule"}} aria-current="page"{{end}}>Schedule</a>
+</nav>
+{{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning .}}</p>{{end}}
+{{end}}
+
+{{define "pill"}}<span class="pill" data-state="{{.Status.State}}" data-state-of="{{.Name}}"><span class="dot" aria-hidden="true"></span><span class="word">{{state .Status.State}}</span></span>{{end}}
+
+{{define "lifecycle"}}<button type="button" class="btn primary" data-act="start" data-name="{{.Name}}" data-when="idle"{{if not (idle .Status.State)}} hidden{{end}}>Start</button>
+<button type="button" class="btn primary" data-act="restart" data-name="{{.Name}}" data-when="active" data-confirm="Restart {{.Name}}? Players are disconnected while it restarts."{{if not (active .Status.State)}} hidden{{end}}>Restart</button>
+<button type="button" class="btn quiet" data-act="stop" data-name="{{.Name}}" data-when="active" data-confirm="Stop {{.Name}}? Players are disconnected."{{if not (active .Status.State)}} hidden{{end}}>Stop</button>{{end}}
+
+{{define "activity"}}<div class="row">
+<span class="mono small dim when"><time datetime="{{iso .Time}}">{{when .Time}}</time></span>
+<span class="dim who">{{.Actor.ID}}</span>
+<span class="what">{{.Action}}{{if .Target}} <span class="mono">{{.Target}}</span>{{end}}{{if not .OK}} <span class="badge bad">refused</span>{{end}}{{if .Error}} <span class="dim">{{.Error}}</span>{{end}}</span>
+</div>{{end}}

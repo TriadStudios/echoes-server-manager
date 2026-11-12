@@ -26,7 +26,7 @@ const redirect = 3
 // the security headers, frame-ancestors 'none' among them. That includes
 // the redirects of the router, which cleans paths such as "/a/../b".
 func TestEveryReplyHasSecurityHeaders(t *testing.T) {
-	h := New(Options{}).Handler()
+	h := New(Options{Page: stubPage}).Handler()
 	big := `{"username":"` + strings.Repeat("a", MaxBody) + `"}`
 	cases := []struct {
 		method, target, ctype, body string

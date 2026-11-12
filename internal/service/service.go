@@ -1,6 +1,6 @@
 // Package service wires ESM together and runs it: it opens the root, loads
-// the config, starts the supervisor, the build and instance managers and
-// the API, and listens on TCP and on the unix socket. Shutdown stops all of
+// the config, starts the supervisor, the build and instance managers, the
+// API and the web page, and listens on TCP and on the unix socket. Shutdown stops all of
 // that and leaves game servers running.
 package service
 
@@ -27,6 +27,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
+	"github.com/TriadStudios/echoes-server-manager/internal/page"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
@@ -175,6 +176,7 @@ func Start(o Options) (_ *Service, err error) {
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout,
+		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
 	s.web = newHTTPServer(srv.Handler(), errLog)

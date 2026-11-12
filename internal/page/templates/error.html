@@ -1,0 +1,9 @@
+{{define "content"}}
+<div class="setup">
+<section class="panel stack card-form" aria-labelledby="error-h">
+<h1 class="title" id="error-h">{{.Data.Status}} {{.Title}}</h1>
+<p>{{.Data.Message}}</p>
+<p><a href="/">Go to the dashboard</a></p>
+</section>
+</div>
+{{end}}
