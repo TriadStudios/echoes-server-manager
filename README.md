@@ -15,9 +15,11 @@ Early development. **Not ready for real hosts yet.**
   UNCONFIRMED until it has been proven on a real host. Until then ESM is
   tested against a fake server that follows those assumptions.
 - ESM hands a server its passwords in a private file and never puts them on
-  a command line. The real game server does not read that file yet (it is a
-  planned item on the game side). Until it does, a real server only gets
-  passwords in a compatibility mode that is unsafe on a shared box; see
+  a command line. The real game server does not read that file yet: a
+  per-instance config file that the server reads its passwords from is a
+  planned item on the game side. Until it ships, a real server only gets
+  passwords in a compatibility mode that is unsafe on a shared box; that
+  game-side file is what removes the mode. See
   [Server passwords](#server-passwords).
 - Linux is the first target. Windows hosts are planned for the first public
   release; the code already builds and its tests pass there.
@@ -120,8 +122,10 @@ read the command line of a running process, and the server writes it into
 its own log. ESM says UNSAFE wherever such an instance shows (`create`,
 `list`, `status`, `doctor`, the API) and gives the read role none of its
 server output and no failure details. Operators and admins still see them.
-The mode does not make the passwords safe; it is there only until the game
-server reads the file.
+(The secrets file is written in this mode too, as ESM's record of what the
+running server was started with; the server is not told about it.) The
+mode does not make the passwords safe. It is there only until the game
+server reads its passwords from the per-instance file, and is removed then.
 
 More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
 

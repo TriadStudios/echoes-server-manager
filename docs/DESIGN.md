@@ -171,7 +171,9 @@ process list, the server's log and output, and everything ESM says have no
 password in them to begin with.
 
 **This needs the game server to read the file, and the real server does
-not do that yet.** It is a planned item on the game side; the switch name
+not do that yet.** A per-instance config file that the server reads its
+passwords from is a planned item on the game side, and it is the one
+dependency that removes the compatibility mode below. The switch name
 and the file format above are ESM's proposal and are marked UNCONFIRMED in
 the adapter. A server build that does not read the file does not get the
 passwords and runs *without* them. ESM cannot prevent that, but it shows
@@ -226,7 +228,8 @@ sees the instance's output again, and there is no password in it.
 The compatibility mode does not make the passwords safe. Whoever can list
 processes on the box can read them while the server runs, and whoever can
 read the instance's files can read them in its logs. The mode is there
-only until the game server reads the secrets file, and goes away then.
+only until the game server reads its passwords from the per-instance
+secrets file, and is removed then.
 
 ### No side doors
 
