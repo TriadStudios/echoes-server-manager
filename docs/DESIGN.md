@@ -37,8 +37,8 @@ ESM is not:
   thin client of the service's HTTP API.
 - **One API.** Everything the service can do is an endpoint under
   `/api/v1`. There are no private paths for the command line.
-- **Three front ends.** The command line (now), the web page (later), and
-  your own scripts with API tokens. The command line reaches the service
+- **Three front ends.** The command line, the web page, and your own
+  scripts with API tokens. The command line reaches the service
   over the unix socket `<root>/esm.sock` by default, or any ESM with `--url`
   and a token.
 - **Standard library only.** No third-party Go modules.
@@ -46,13 +46,10 @@ ESM is not:
   (temporary file, sync, rename). Every file access goes through an
   `os.Root` handle on the root, so a path can never resolve outside it.
 
-The web page comes in the next phase as plain server-rendered HTML (Go's
-`html/template`, one stylesheet, one small script, no build step), embedded
-in the binary and written as a thin client of `/api/v1`, so it can move to
-[Den](https://github.com/TriadStudios/Den) later. The service already
-serves an embedded static folder at `/`, on the same origin as the API, with a placeholder page; any
-path that is not a file returns `index.html` so the page can route on the
-client side. Unknown `/api/` paths return the JSON 404 error instead.
+The web page is plain HTML made by the service on the same origin as the
+API (see [The web page](#the-web-page)); it may be rebuilt with
+[Den](https://github.com/TriadStudios/Den) later. Unknown `/api/` paths
+return the JSON 404 error.
 
 ## Folder layout
 
@@ -403,7 +400,10 @@ Later, builds will also come from Steam, with the app ids as configuration.
 
 ESM never changes firewall rules. It shows the ports of every instance
 (create, list, status, the API) and the configured ranges (doctor, box
-status). Opening them, and only them, is up to the box owner.
+status), and `GET /api/v1/box/firewall` (the Box screen's "Show firewall
+commands") gives the ufw and firewalld commands that open the ranges for
+the protocols the adapter names (UDP, UNCONFIRMED). Opening them, and only
+them, is up to the box owner.
 
 To find out whether a port is free, ESM binds it for UDP and TCP for a
 moment on the instance's `bind_ip`, or on all interfaces when that is
@@ -482,6 +482,20 @@ skipped.
   `secrets_unconfirmed` (both in [Passwords](#passwords)) and
   `limits_not_enforced` (it has resource limits and the process supervisor
   does not apply them).
+- An instance also carries `live`, read when it is asked for and never
+  stored: the server's memory (its systemd unit's cgroup under systemd,
+  the resident memory of the process otherwise; not measured on Windows
+  yet), and the player count and last save from its status file. A value
+  that cannot be known is null, and `unknown` says why. `scheduled` names
+  the next timed restart and scheduled backup.
+- `GET /api/v1/box` also reports the box's memory, CPUs, load average and
+  the disk that holds the root, as the system reports them, with the same
+  null-and-reason rule, and the time zone that restart times use.
+- Downloads: `GET .../logs/download` gives a log as text with the rules of
+  the log tail (at most the newest 16 MiB); `GET .../backups/{id}/download`
+  gives a backup as a tar.gz (operator role). Both write in pieces, each
+  with its own write deadline, so only a client that stops reading is cut
+  off.
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -529,9 +543,10 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   still applies).
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
-  audit log, and the server output and state reasons of instances that pass
-  their passwords on the command line; `operator` sees those too and also
-  starts, stops, restarts, updates, backs up, restores and installs builds;
+  audit log, backup downloads, and the server output and state reasons of
+  instances that pass their passwords on the command line; `operator` sees
+  those too and also starts, stops, restarts, updates, backs up, restores,
+  downloads backups and installs builds;
   `admin` does everything else (create, change, delete, secrets, tokens,
   pruning). Tokens are never accepted in URLs.
 - **Page headers.** Every reply ESM writes, of the page and of the API,
@@ -539,13 +554,67 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   Content-Security-Policy (no inline scripts or styles, nothing from other
   origins, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
-- **Page files.** The page is served from files compiled into the binary,
-  never from the disk. A folder is never listed. The router redirects a
-  path with plain `.` or `..` segments or doubled slashes to its clean
+- **Page files.** The page's templates, stylesheet and script are compiled
+  into the binary, never read from the disk. Only the stylesheet and the
+  script are served as files, under `/static/`; every other path is a
+  screen or the page's 404. A folder is never listed. The router redirects
+  a path with plain `.` or `..` segments or doubled slashes to its clean
   form; after that, a request path that has a `.` or `..` segment (written
   `%2e%2e`, say), a backslash (also `%5c`), a colon (a drive letter such as
   `/C:/Windows/win.ini`, or a Windows stream name), a segment that starts
   with a dot, or a control character gets 404, whatever files there are.
+
+## The web page
+
+- **Plain HTML from the service.** Each screen is an `html/template` file
+  (one per screen, plus a shared layout) in `internal/page`, made on the
+  server. One stylesheet (`/static/esm.css`) and one small script
+  (`/static/esm.js`), no framework, no build step, nothing loaded from
+  another origin. No inline script or style, no `style` or event handler
+  attributes: the Content-Security-Policy above holds for every page.
+- **A client of the API, nothing more.** A screen gets its data by calling
+  the API inside the process, as the browser's user (the same cookie or
+  token, so the same roles and the same refusals), and decodes the same
+  answers any client gets. It never reads ESM's state another way. What a
+  screen needs and the API did not give was added to the API first.
+- **Changes.** The script makes every change with `fetch` to the API,
+  sending JSON and the `X-CSRF-Token` header. The CSRF token is in a
+  `<meta name="csrf-token">` tag of each page; it is the session's own
+  random value, never the session id, which stays in the HttpOnly cookie
+  and is never part of a page. After a change the page reloads with a
+  notice from a fixed list.
+- **Live.** Screens follow the API's event stream (state, and log lines
+  where a log is shown; audit entries on an admin's dashboard). A browser's
+  EventSource gives up after an HTTP error (a 401 when the login ended, a
+  502 from a proxy while ESM restarts), so the script closes the stream on
+  every error and opens it again itself, waiting longer each time (1 s
+  doubling to 30 s, with jitter); when the API says the login is gone
+  (401) it goes to the login. After a gap it reads the state and the log
+  again, since events missed meanwhile are not sent again. A log on the
+  page keeps at most 2000 lines.
+- **Logging in.** Without a login every screen sends the browser to
+  `/setup`, which is the first-run form while no admin exists (setup code,
+  name, password twice) and the login after that. Where the browser goes
+  after logging in is checked to be one of the page's own paths.
+- **Roles.** Every screen shows what the caller's role may see and offers
+  only what it may do. The read role sees the API's notice in place of the
+  server output of an instance that passes its passwords on the command
+  line; every role sees that instance's UNSAFE warning.
+- **Honest gaps.** The page shows only what the API returns and says where
+  ESM cannot know something yet: CPU use per server, memory on Windows, the
+  player list (only the count from the status file), rule defaults and
+  allowed values (rules are shown as name and value; there is no rules
+  description from the game yet, so no presets), the Steam runtime files,
+  whether players can reach the box from outside, and a budget for all
+  game servers together.
+- **Fonts.** The system's own fonts: a narrow sans-serif for headings, a
+  plain one for text, a monospace for numbers and logs. No font files are
+  shipped. Fonts under an open licence can be added later as `.woff2`
+  files next to the stylesheet, with their licence texts, and an
+  `@font-face` rule; the policy already allows fonts from the same origin.
+- **Phones.** Every control is at least 44 pixels tall; the side menu moves
+  above the content, card grids reflow, and wide tables scroll inside their
+  box.
 
 ## Command line
 

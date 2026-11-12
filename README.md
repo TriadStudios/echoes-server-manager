@@ -2,8 +2,9 @@
 
 ESM installs, runs, updates and watches Echoes of Durinn dedicated servers on
 one machine. It is a single Go program: `esm serve` runs the service, and the
-same binary is the command line that talks to it. Everything ESM does is
-also available through a small HTTP API, which a web page will use later.
+same binary is the command line that talks to it, and it serves a web page
+for the same work. Everything ESM does is also available through a small
+HTTP API, which the command line and the web page use too.
 
 ## Status
 
@@ -23,11 +24,10 @@ Early development. **Not ready for real hosts yet.**
   [Server passwords](#server-passwords).
 - Linux is the first target. Windows hosts are planned for the first public
   release; the code already builds and its tests pass there.
-- There is no web interface yet. The service serves a placeholder page. The
-  next phase adds a plain server-rendered page (Go's `html/template`, one
-  stylesheet, one small script, no build step), written as a thin client of
-  `/api/v1` so it can move to [Den](https://github.com/TriadStudios/Den)
-  later.
+- The web page is plain HTML made by the service, with one stylesheet and
+  one small script and nothing loaded from anywhere else. It may be rebuilt
+  with [Den](https://github.com/TriadStudios/Den) later. See
+  [Web page](#web-page).
 
 ## Build
 
@@ -78,6 +78,25 @@ sudo loginctl enable-linger <esm-account>
 Without systemd, ESM starts servers as detached processes (limits are not
 enforced in that mode). Either way, stopping ESM leaves the game servers
 running; the next `esm serve` finds them again.
+
+## Web page
+
+The page is served on the same address as the API: by default
+`http://127.0.0.1:8740`, on the box itself. From another machine, use an
+SSH tunnel (`ssh -L 8740:127.0.0.1:8740 <esm-account>@<box>`, then open
+`http://127.0.0.1:8740`) or a reverse proxy with TLS (set
+`behind_tls_proxy`). The first visit asks for the setup code and creates
+the admin login; after that the page is the login.
+
+It shows the box (memory, CPUs, disk, ports, firewall commands, health
+checks, tokens), every server (state, players, memory against its ceiling,
+settings, live log, backups, timed restarts), builds, clusters and the audit
+log, and it starts, stops, restarts, updates, backs up, restores, installs
+builds and changes settings. Each screen shows only what the API returns;
+where ESM cannot know something yet (CPU use per server, the player list,
+rule defaults, whether players can reach the box from outside), the page
+says so. Reading works without JavaScript; changes need it. What each role
+may do is the same as in the API.
 
 ## Command line tour
 
