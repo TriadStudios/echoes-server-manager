@@ -885,7 +885,10 @@ components:
         pid: { type: integer }
         started_at: { type: string, format: date-time }
         ready_at: { type: string, format: date-time }
-        ready_source: { type: string, enum: ["", status_file, log_line, query_port] }
+        ready_source:
+          type: string
+          enum: ["", status_file, log_line, query_port, adopted]
+          description: What showed the server ready. "adopted" means it was already running when ESM started.
         exit_code: { type: [integer, "null"], description: Last exit code when known. }
         crashes: { type: integer, description: Crashes inside the back-off window. }
         gave_up: { type: boolean }

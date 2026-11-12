@@ -36,6 +36,10 @@ const (
 	ReadyStatusFile = "status_file"
 	ReadyLogLine    = "log_line"
 	ReadyQueryPort  = "query_port"
+	// ReadyAdopted marks a server that was already running when ESM
+	// started. It counts as running at once; the other sources are checked
+	// again only to show which one confirms.
+	ReadyAdopted = "adopted"
 )
 
 // Status is the live state of an instance. It is mirrored to

@@ -182,9 +182,12 @@ count).
 - *auto* picks systemd when `systemctl --user` works, otherwise process.
 
 **ESM restarts.** Stopping the service leaves game servers running. When it
-starts again it finds them (pid records or units), watches them again and
-checks they are ready. Then it starts every `autostart` instance that is
-not running.
+starts again it finds them (pid records or units) and watches them again.
+A live server ESM started earlier is `running` at once, with ready source
+`adopted`. ESM looks for its ready signals again only to show which one
+confirms; if none does within `ready_timeout`, the reason says so and the
+server keeps running. An adopted server is never stopped for that. Then ESM
+starts every `autostart` instance that is not running.
 
 On a box shared with other services, ESM runs as its own non-root account.
 

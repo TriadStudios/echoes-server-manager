@@ -660,3 +660,39 @@ func TestListenRuleRefused(t *testing.T) {
 		t.Fatal("a socket was left behind")
 	}
 }
+
+// An adopted server whose ready signal cannot be seen again keeps running
+// past the ready timeout.
+func TestAdoptedServerIsNeverStopped(t *testing.T) {
+	t.Parallel()
+	h := newESM(t, func(cfg map[string]any) { cfg["ready_timeout"] = "1s" })
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	h.create("alpha", "", nil)
+	var st instances.Status
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, &st)
+	pid := st.PID
+	h.stopService()
+	if err := testkit.WriteControl(h.dataDir("alpha"), testkit.ControlUnready); err != nil {
+		t.Fatal(err)
+	}
+	testkit.Eventually(t, 5*time.Second, func() bool {
+		s, err := gameserver.ReadStatus(h.dataDir("alpha"))
+		return err == nil && s.State == gameserver.StateStarting
+	}, "the fake did not drop its ready state")
+	h.startService()
+	st = h.status("alpha")
+	if st.State != instances.Running || st.ReadySource != instances.ReadyAdopted || st.PID != pid {
+		t.Fatalf("right after adoption: %+v", st)
+	}
+	time.Sleep(2 * time.Second) // twice the ready timeout
+	st = h.status("alpha")
+	if st.State != instances.Running || st.PID != pid || !strings.Contains(st.Reason, "no ready signal seen") {
+		t.Fatalf("after the ready timeout: %+v", st)
+	}
+	before := h.liveCounter("alpha", "alpha")
+	testkit.Eventually(t, 5*time.Second, func() bool { return h.liveCounter("alpha", "alpha") > before }, "the adopted server stopped saving")
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, &st)
+	if st.State != instances.Stopped {
+		t.Fatalf("stop of the adopted server: %+v", st)
+	}
+}

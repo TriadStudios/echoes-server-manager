@@ -22,6 +22,7 @@ type watchState struct {
 	logReady bool      // the ready line was seen in the server log
 	bindIP   string    // where this run's query port is probed
 	query    int
+	adopted  bool // found running at ESM start: never stopped for readiness
 }
 
 // launch starts the server of in with its current settings and begins
@@ -122,16 +123,21 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	return r, nil
 }
 
-// adoptRun watches a server found running at ESM start as a new run that
-// must show it is ready again.
+// adoptRun watches a server found running at ESM start. A live server
+// that ESM started earlier counts as running at once (ready source
+// "adopted"). Its ready signals are checked again only to show which one
+// confirms; if none does, it keeps running with a note in its reason. It
+// is never stopped for that.
 func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 	if !m.track() {
 		return
 	}
+	now := m.now()
 	w := &watchState{
 		server:   tail{rel: serverLog(in.name), off: m.fileSize(serverLog(in.name))},
 		console:  tail{rel: consoleFile(in.name), off: m.fileSize(consoleFile(in.name))},
-		deadline: m.now().Add(m.cfg.ReadyTimeout.D()),
+		deadline: now.Add(m.cfg.ReadyTimeout.D()),
+		adopted:  true,
 	}
 	in.mu.Lock()
 	w.bindIP, w.query = in.cfg.BindIP, in.cfg.Ports.Query
@@ -141,11 +147,14 @@ func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 	in.status.Build = in.cfg.Build
 	in.status.PID = p.PID
 	in.status.StartedAt = p.StartedAt
-	in.status.ReadyAt, in.status.ReadySource, in.status.ExitCode = time.Time{}, "", nil
-	m.setLocked(in, Starting, "adopted after ESM restart")
+	in.status.ReadyAt, in.status.ReadySource, in.status.ExitCode = now, ReadyAdopted, nil
+	m.setLocked(in, Running, adoptedReason)
 	in.mu.Unlock()
+	r.finish(nil)
 	go m.watch(in, r, w)
 }
+
+const adoptedReason = "adopted after ESM restart"
 
 func (m *Manager) currentGen(in *rt) uint64 {
 	in.mu.Lock()
@@ -189,10 +198,22 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 			continue
 		}
 		if src := m.readySource(in, pr, w); src != "" {
-			ready = m.markReady(in, r, src)
+			if w.adopted {
+				m.noteAdopted(in, r, "ready signal "+src+" confirmed")
+				ready = true
+			} else {
+				ready = m.markReady(in, r, src)
+			}
 			continue
 		}
 		if m.now().After(w.deadline) {
+			if w.adopted {
+				// Never stop a server only because its ready signal could
+				// not be seen again.
+				m.noteAdopted(in, r, fmt.Sprintf("no ready signal seen within %s; left running", m.cfg.ReadyTimeout.D()))
+				ready = true
+				continue
+			}
 			m.notReady(in, r)
 			return
 		}
@@ -232,6 +253,18 @@ func (m *Manager) markReady(in *rt, r *run, src string) bool {
 	in.mu.Unlock()
 	r.finish(nil)
 	return true
+}
+
+// noteAdopted adds what the background ready check found to an adopted
+// server's reason. The state stays running.
+func (m *Manager) noteAdopted(in *rt, r *run, note string) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.gen != r.gen || in.status.State != Running {
+		return
+	}
+	in.status.Reason = scrub(adoptedReason+"; "+note, in.hidden)
+	m.emitLocked(in) // the state and its since time stay as they are
 }
 
 // notReady stops a server that did not become ready in time.
