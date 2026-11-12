@@ -187,7 +187,9 @@ compatibility mode below.
 `secret_delivery: "command_line"` passes the passwords as
 `-ServerPassword=` and `-AdminPassword=` switches instead. It is off unless
 an admin sets it for an instance in so many words, at create or with a
-change.
+change. (The secrets file is written in this mode too. The server is not
+told about it; it is ESM's record of what the running server was started
+with, and goes when the server has stopped.)
 
 **It is unsafe on a shared box.** Every account on the machine can read
 the command line of a running process, and the server writes its command
