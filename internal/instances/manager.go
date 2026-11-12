@@ -225,8 +225,9 @@ func (m *Manager) Resume() error {
 			}(in.name)
 		}
 	}
-	m.wg.Add(1)
-	go m.schedLoop()
+	if m.track() {
+		go m.schedLoop()
+	}
 	return nil
 }
 
@@ -264,6 +265,19 @@ func (m *Manager) isClosed() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.closed
+}
+
+// track registers a goroutine that Close waits for. It returns false once
+// the manager is closed; checking and adding under one lock keeps Add from
+// racing with Close's Wait.
+func (m *Manager) track() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.wg.Add(1)
+	return true
 }
 
 func (m *Manager) lookup(name string) *rt {

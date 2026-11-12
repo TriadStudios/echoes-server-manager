@@ -20,6 +20,8 @@ type watchState struct {
 	console  tail
 	deadline time.Time // ready timeout
 	logReady bool      // the ready line was seen in the server log
+	bindIP   string    // where this run's query port is probed
+	query    int
 }
 
 // launch starts the server of in with its current settings and begins
@@ -79,6 +81,8 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	w := &watchState{
 		server:  tail{rel: serverLog(cfg.Name), off: m.fileSize(serverLog(cfg.Name))},
 		console: tail{rel: consoleFile(cfg.Name), off: m.fileSize(consoleFile(cfg.Name))},
+		bindIP:  cfg.BindIP,
+		query:   cfg.Ports.Query,
 	}
 	spec := supervisor.Spec{
 		Name: cfg.Name, Executable: exe, Args: argv, Dir: dirAbs, OutputFile: outAbs,
@@ -91,6 +95,11 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 			return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
 		}
 		return nil, fault.Wrap(fault.Failed, "start_failed", err, "cannot start instance %s", cfg.Name)
+	}
+	if !m.track() {
+		// ESM is shutting down: the server keeps running and the next
+		// start of ESM adopts it.
+		return nil, ErrClosed
 	}
 	pr, _ := m.sup.Status(cfg.Name)
 	now := m.now()
@@ -109,7 +118,6 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	in.status.RestartRequired = false
 	m.setLocked(in, Starting, why)
 	in.mu.Unlock()
-	m.wg.Add(1)
 	go m.watch(in, r, w)
 	return r, nil
 }
@@ -117,12 +125,16 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 // adoptRun watches a server found running at ESM start as a new run that
 // must show it is ready again.
 func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
+	if !m.track() {
+		return
+	}
 	w := &watchState{
 		server:   tail{rel: serverLog(in.name), off: m.fileSize(serverLog(in.name))},
 		console:  tail{rel: consoleFile(in.name), off: m.fileSize(consoleFile(in.name))},
 		deadline: m.now().Add(m.cfg.ReadyTimeout.D()),
 	}
 	in.mu.Lock()
+	w.bindIP, w.query = in.cfg.BindIP, in.cfg.Ports.Query
 	in.gen++
 	r := &run{gen: in.gen, autoRestart: true, done: make(chan struct{})}
 	in.cur = r
@@ -132,7 +144,6 @@ func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 	in.status.ReadyAt, in.status.ReadySource, in.status.ExitCode = time.Time{}, "", nil
 	m.setLocked(in, Starting, "adopted after ESM restart")
 	in.mu.Unlock()
-	m.wg.Add(1)
 	go m.watch(in, r, w)
 }
 
@@ -197,12 +208,9 @@ func (m *Manager) readySource(in *rt, pr supervisor.Proc, w *watchState) string 
 	if w.logReady {
 		return ReadyLogLine
 	}
-	in.mu.Lock()
-	bind, port := in.cfg.BindIP, in.cfg.Ports.Query
-	in.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), m.opts.ProbeTimeout)
 	defer cancel()
-	if gameserver.Probe(ctx, bind, port) == nil {
+	if gameserver.Probe(ctx, w.bindIP, w.query) == nil {
 		return ReadyQueryPort
 	}
 	return ""
