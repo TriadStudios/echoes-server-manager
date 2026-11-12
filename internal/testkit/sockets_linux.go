@@ -14,8 +14,10 @@ import (
 func processSockets(pid int) ([]Socket, error) {
 	dir := fmt.Sprintf("/proc/%d/fd", pid)
 	fds, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil // gone
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+		// Gone; or exiting (its open files can no longer be read) or not
+		// ours (its pid was reused): no server of the tests.
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
