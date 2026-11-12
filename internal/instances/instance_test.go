@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
+	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 )
 
 func validInstance() Instance {
@@ -73,6 +74,81 @@ func TestValidate(t *testing.T) {
 	good.Cluster = "eu-1"
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Rule keys and extra arguments that look like secrets are refused, with a
+// pointer to the place for passwords, and without repeating any value.
+func TestSecretLikeSettingsAreRefused(t *testing.T) {
+	const value = "Zq7-hunter-value"
+	check := func(what string, err error, mayName string) {
+		t.Helper()
+		if fault.CodeOf(err) != "looks_like_secret" || !fault.Is(err, fault.Invalid) {
+			t.Errorf("%s: got %v, want a looks_like_secret refusal", what, err)
+			return
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "PUT /api/v1/instances/alpha/secrets") {
+			t.Errorf("%s: the refusal does not point to the secrets call: %s", what, msg)
+		}
+		if strings.Contains(msg, value) || strings.Contains(msg, "hunter") {
+			t.Errorf("%s: the refusal repeats the value: %s", what, msg)
+		}
+		if mayName != "" && !strings.Contains(msg, mayName) {
+			t.Errorf("%s: the refusal does not say %q: %s", what, mayName, msg)
+		}
+	}
+	for _, key := range []string{"JoinPassword", "joinpassword", "ServerPassword", "admin_password", "RconPasswd", "Rcon_Pwd",
+		"ApiKey", "API_KEY", "PrivateKey", "RconKey", "AdminKey", "AuthToken", "ClientSecret", "Credentials", "SecretsFile"} {
+		in := validInstance()
+		in.Rules = map[string]string{"Difficulty": "hard", key: value}
+		check("rule "+key, in.Validate(), `key "`+key+`"`)
+	}
+	for _, arg := range []string{
+		"-RconPassword=" + value,
+		"--rcon-password=" + value,
+		"-rconpassword=" + value,
+		"-RCON_PASSWORD=" + value,
+		"-RconPassword:" + value,
+		"-RconPassword " + value,
+		"-RconPassword",
+		"-ServerPassword=" + value,
+		"-AdminKey=" + value,
+		"-AdminKey:" + value,
+		"-api-key=" + value,
+		"-Auth.Token=" + value,
+		"-Section:Game:JoinPassword=" + value,
+		"-SecretsFile=/somewhere/" + value,
+	} {
+		in := validInstance()
+		in.ExtraArgs = []string{"-NoSteam", arg}
+		err := in.Validate()
+		check("argument "+strings.ReplaceAll(arg, value, "…"), err, "argument 2")
+		if err != nil && strings.Contains(err.Error(), strings.SplitN(arg, value, 2)[0]) && strings.Contains(arg, value) {
+			t.Errorf("the refusal repeats the argument %q: %v", strings.ReplaceAll(arg, value, "…"), err)
+		}
+	}
+	// Other refusals of an argument do not repeat it either.
+	for _, arg := range []string{"RconPassword=" + value, "-X=" + value + strings.Repeat("x", 300), "-Port=" + value} {
+		in := validInstance()
+		in.ExtraArgs = []string{arg}
+		err := in.Validate()
+		if err == nil || strings.Contains(err.Error(), value) || !strings.Contains(err.Error(), "argument 1") {
+			t.Errorf("refusal of a bad argument: %v", err)
+		}
+	}
+	// Neither does the refusal of a key that is not a plain name.
+	in := validInstance()
+	in.Rules = map[string]string{"Join Password=" + value: "x"}
+	if err := in.Validate(); err == nil || strings.Contains(err.Error(), value) {
+		t.Errorf("refusal of a bad rule key: %v", err)
+	}
+	// Ordinary names are fine, also ones that only resemble the words.
+	ok := validInstance()
+	ok.Rules = map[string]string{"Difficulty": "hard", "Keyboard": "qwerty", "KeepInventory": "true", "Compass": "on", "Passive": "yes"}
+	ok.ExtraArgs = []string{"-NoSteam", "-KeyBindings=default", "-Mode=Fast", "-Motd=the password is not here"}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("ordinary settings refused: %v", err)
 	}
 }
 

@@ -273,14 +273,19 @@ func (in *Instance) Validate() error {
 	if len(in.Rules) > maxRules {
 		return invalid("rules", "at most %d rules", maxRules)
 	}
-	for k, v := range in.Rules {
+	for _, k := range slices.Sorted(maps.Keys(in.Rules)) {
+		// A key that is not a plain name is not repeated: it may hold
+		// anything.
 		if !ruleKeyRe.MatchString(k) {
-			return invalid("rules", "key %q must match %s", k, ruleKeyRe)
+			return invalid("rules", "every key must match %s", ruleKeyRe)
+		}
+		if why, ok := gameserver.SecretLike(k); ok {
+			return secretLike("rules", fmt.Sprintf("key %q", k), why, in.Name, "rules")
 		}
 		if gameserver.IsReservedSwitch(k) {
 			return invalid("rules", "%q is set by ESM itself", k)
 		}
-		if len(v) > 256 || hasControl(v) {
+		if v := in.Rules[k]; len(v) > 256 || hasControl(v) {
 			return invalid("rules", "value of %s must be at most 256 printable characters", k)
 		}
 	}
@@ -312,9 +317,9 @@ func (in *Instance) Validate() error {
 	if len(in.ExtraArgs) > maxExtraArgs {
 		return invalid("extra_args", "at most %d arguments", maxExtraArgs)
 	}
-	for _, a := range in.ExtraArgs {
-		if err := checkExtraArg(a); err != nil {
-			return invalid("extra_args", "%v", err)
+	for i, a := range in.ExtraArgs {
+		if err := checkExtraArg(in.Name, i+1, a); err != nil {
+			return err
 		}
 	}
 	for _, b := range in.PreviousBuilds {
@@ -325,16 +330,40 @@ func (in *Instance) Validate() error {
 	return nil
 }
 
-func checkExtraArg(a string) error {
+// secretLike is the refusal of a rule key or an extra argument that looks
+// like a secret. what names the offender without repeating any value.
+func secretLike(field, what, why, instance, things string) error {
+	return fault.New(fault.Invalid, "looks_like_secret",
+		"%s: %s looks like a secret (its name %s). Passwords are set only with PUT /api/v1/instances/%s/secrets and are never shown; %s are shown to every role and go on the server command line",
+		field, what, why, instance, things)
+}
+
+// checkExtraArg checks the extra argument at position pos (counted from 1).
+// Its errors name the argument by position and never repeat it: an
+// argument may hold a value that must not be shown.
+func checkExtraArg(instance string, pos int, a string) error {
 	if !strings.HasPrefix(a, "-") || len(a) < 2 {
-		return fmt.Errorf("%q must start with '-'", a)
+		return invalid("extra_args", "argument %d must start with '-'", pos)
 	}
 	if len(a) > 256 || hasControl(a) {
-		return fmt.Errorf("%q must be at most 256 printable characters", a)
+		return invalid("extra_args", "argument %d must be at most 256 printable characters", pos)
 	}
 	key, _, _ := strings.Cut(a, "=")
+	// The switch name is what follows the dashes, as far as it is a plain
+	// name; "-Name:value" and "-Name value" forms end it too.
+	name := strings.TrimLeft(key, "-")
+	if i := strings.IndexFunc(name, func(r rune) bool {
+		return !(r == '_' || r == '.' || r == '-' || '0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
+	}); i >= 0 {
+		name = name[:i]
+	}
+	for _, n := range []string{name, key} {
+		if why, ok := gameserver.SecretLike(n); ok {
+			return secretLike("extra_args", fmt.Sprintf("argument %d", pos), why, instance, "extra arguments")
+		}
+	}
 	if gameserver.IsReservedSwitch(key) {
-		return fmt.Errorf("%s is set by ESM itself", key)
+		return invalid("extra_args", "argument %d: %s is set by ESM itself", pos, "-"+strings.TrimLeft(key, "-"))
 	}
 	return nil
 }
