@@ -17,9 +17,10 @@ info:
       session id is only ever in the cookie (HttpOnly), never in a body.
     - The unix socket `<root>/esm.sock`, which acts as admin.
 
-    Roles: `read` may make every GET call except `/tokens` and `/audit`;
-    `operator` may also start, stop, restart, update, back up and restore
-    instances and install builds; `admin` may do everything.
+    Roles: `read` may make every GET call except `/tokens`, `/audit` and
+    backup downloads; `operator` may also start, stop, restart, update,
+    back up, restore and download backups of instances and install builds;
+    `admin` may do everything.
 
     Server passwords are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
@@ -40,6 +41,10 @@ info:
     event stream a minute for each event. Calls that change something are
     POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
     `{}`); each writes an audit entry, as does every refused call.
+
+    The web page at `/` is a client of this API like any other: each of
+    its screens gets its data through these calls, as the user who looks
+    at it, and every change it makes is one of these calls.
 
     Every reply, of the API and of the page, carries
     `Content-Security-Policy` (with `frame-ancestors 'none'`),
@@ -178,6 +183,21 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DoctorReport" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/box/firewall:
+    get:
+      tags: [box]
+      summary: Commands that open the configured port ranges in ufw and firewalld
+      description: |
+        ESM never runs these and never changes the firewall; they are for
+        the box owner. The protocols come from the real-server adapter and
+        are not yet confirmed for the real server.
+      responses:
+        "200":
+          description: Firewall commands.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Firewall" }
         "401": { $ref: "#/components/responses/Error" }
   /api/v1/builds:
     get:
@@ -517,6 +537,30 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/logs/download:
+    get:
+      tags: [instances]
+      summary: Download the server log or the console output as text
+      description: |
+        The same lines as /logs, prepared the same way (each cut to 4096
+        bytes, passwords ESM knows masked), and refused the same way: for an
+        instance with `secret_delivery: command_line` the `read` role gets
+        403 `hidden_unsafe_secrets`. At most the newest 16 MiB of the file;
+        when the file is longer, a first line says so.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+        - name: source
+          in: query
+          schema: { type: string, enum: [server, console], default: server }
+      responses:
+        "200":
+          description: The log as a download named `<name>-<source>.log`.
+          content:
+            text/plain:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/backups:
     get:
       tags: [instances]
@@ -530,6 +574,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BackupList" }
         "404": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/backups/{id}/download:
+    get:
+      tags: [instances]
+      summary: Download one backup as a tar.gz
+      description: |
+        Needs the operator role. The archive holds one folder,
+        `<name>-<id>/`, with the backup's meta.json and save files. Every
+        file the backup names is checked first; a damaged backup is 422
+        `backup_damaged`. Backups of a deleted instance can still be
+        downloaded.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+        - name: id
+          in: path
+          required: true
+          description: Backup id.
+          schema: { type: string, examples: ["20260101T120000Z-manual"] }
+      responses:
+        "200":
+          description: The backup as a download named `<name>-<id>.tar.gz`.
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /api/v1/events:
     get:
       tags: [events]
@@ -788,6 +858,51 @@ components:
           type: array
           description: Names of the instances that pass their passwords on the server command line (unsafe on a shared box).
           items: { type: string }
+        hostname: { type: string, description: The box's host name ("" when it cannot be read). }
+        time_zone:
+          type: string
+          description: The box's local time zone, which restart times use.
+          examples: ["CET (UTC+01:00)"]
+        usage: { $ref: "#/components/schemas/BoxUsage" }
+    Unknown:
+      type: object
+      description: A value that could not be read, and why.
+      properties:
+        field: { type: string }
+        reason: { type: string }
+    BoxUsage:
+      type: object
+      description: |
+        What the box has and uses now, as the system reports it. A value
+        this system cannot give is null and named in unknown with a reason
+        (for example the load average on Windows).
+      properties:
+        memory_total_bytes: { type: [integer, "null"] }
+        memory_available_bytes:
+          type: [integer, "null"]
+          description: Memory new programs can still get (Linux MemAvailable).
+        cpu_count: { type: integer }
+        load_1m: { type: [number, "null"], description: Load average over the last minute. }
+        disk_total_bytes: { type: [integer, "null"], description: Size of the file system that holds the ESM root. }
+        disk_free_bytes: { type: [integer, "null"], description: What this user may still write there. }
+        unknown:
+          type: array
+          items: { $ref: "#/components/schemas/Unknown" }
+    Firewall:
+      type: object
+      properties:
+        game_ports: { type: string }
+        query_ports: { type: string }
+        protocols:
+          type: array
+          items: { type: string, examples: [udp] }
+        ufw:
+          type: array
+          items: { type: string, examples: ["sudo ufw allow 7777:7786/udp"] }
+        firewalld:
+          type: array
+          items: { type: string, examples: ["sudo firewall-cmd --permanent --add-port=7777-7786/udp"] }
+        note: { type: string }
     DoctorReport:
       type: object
       properties:
@@ -957,10 +1072,35 @@ components:
         updated: { type: string, format: date-time }
         secrets: { $ref: "#/components/schemas/SecretFlags" }
         status: { $ref: "#/components/schemas/Status" }
+        live: { $ref: "#/components/schemas/Live" }
+        scheduled: { $ref: "#/components/schemas/Scheduled" }
         warnings:
           type: array
           description: Things an operator should know about the instance on this box.
           items: { $ref: "#/components/schemas/Warning" }
+    Live:
+      type: object
+      description: |
+        What ESM reads about the instance's server at the moment it is
+        asked; not stored and not sent in events. A value that cannot be
+        known is null and named in unknown with a reason.
+      properties:
+        memory_bytes: { type: [integer, "null"], description: Memory the server uses now. }
+        memory_source:
+          type: string
+          enum: ["", cgroup, process]
+          description: cgroup is the server's systemd unit (the server and everything it started); process is the resident memory of the server process alone.
+        players: { type: [integer, "null"], description: Player count from the running server's status file. }
+        last_save: { type: [string, "null"], format: date-time, description: Last world save named in the status file. }
+        unknown:
+          type: array
+          items: { $ref: "#/components/schemas/Unknown" }
+    Scheduled:
+      type: object
+      description: The next scheduled restart and backup; each happens only if the server is running then. Absent when none is planned.
+      properties:
+        restart: { type: string, format: date-time }
+        backup: { type: string, format: date-time }
     InstanceList:
       type: object
       properties:

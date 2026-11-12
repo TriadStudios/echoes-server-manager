@@ -80,6 +80,11 @@ func TestRolesOfRoutes(t *testing.T) {
 			if r.Role != "admin" {
 				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
 			}
+		case r.Path == "/api/v1/instances/{name}/backups/{id}/download":
+			// A backup is a copy of the whole world: operators and admins.
+			if r.Role != "operator" {
+				t.Errorf("%s %s needs operator, has %q", r.Method, r.Path, r.Role)
+			}
 		case r.Method == "GET" && r.Path != "/api/v1/setup":
 			if r.Role != "read" {
 				t.Errorf("%s %s should be readable with the read role, has %q", r.Method, r.Path, r.Role)

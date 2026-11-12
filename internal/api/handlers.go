@@ -1,18 +1,25 @@
 package api
 
 import (
+	"fmt"
+	"mime"
 	"net/http"
+	"os"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
+	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/doctor"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
 
 // --- logins ---
@@ -142,6 +149,24 @@ type Box struct {
 	// SecretsOnCommandLine names the instances that pass their passwords on
 	// the server command line: unsafe on a shared box.
 	SecretsOnCommandLine []string `json:"secrets_on_command_line"`
+	// Hostname is the box's host name ("" when it cannot be read).
+	Hostname string `json:"hostname"`
+	// TimeZone is the box's local time zone, which schedules use, like
+	// "CET (UTC+01:00)".
+	TimeZone string `json:"time_zone"`
+	// Usage is the box's memory, CPUs, load and the disk that holds the
+	// root, as the system reports them now.
+	Usage sysinfo.Box `json:"usage"`
+}
+
+// timeZone names the local time zone and its offset from UTC at now.
+func timeZone(now time.Time) string {
+	name, off := now.Zone()
+	sign := "+"
+	if off < 0 {
+		sign, off = "-", -off
+	}
+	return fmt.Sprintf("%s (UTC%s%02d:%02d)", name, sign, off/3600, off%3600/60)
 }
 
 func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -161,6 +186,7 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	cfg := s.o.Config
+	hostname, _ := os.Hostname()
 	return writeJSON(w, http.StatusOK, Box{
 		Version: s.o.Version, Root: cfg.Root, OS: runtime.GOOS,
 		Supervisor: s.o.Supervisor.Kind(), LimitsEnforced: s.o.Supervisor.LimitsEnforced(),
@@ -169,7 +195,46 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		Started:        s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
 		Instances: len(list), Running: running, Builds: len(bl),
 		DefaultSecretDelivery: gameserver.SecretDelivery, SecretsOnCommandLine: unsafe,
+		Hostname: hostname, TimeZone: timeZone(time.Now()), Usage: sysinfo.ReadBox(cfg.Root),
 	})
+}
+
+// Firewall answers GET /box/firewall: commands that open the configured
+// port ranges in two common Linux firewalls. ESM never runs them.
+type Firewall struct {
+	GamePorts  string   `json:"game_ports"`
+	QueryPorts string   `json:"query_ports"`
+	Protocols  []string `json:"protocols"`
+	UFW        []string `json:"ufw"`
+	Firewalld  []string `json:"firewalld"`
+	Note       string   `json:"note"`
+}
+
+func (s *Server) firewall(w http.ResponseWriter, r *http.Request, c *call) error {
+	cfg := s.o.Config
+	out := Firewall{GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Protocols: slices.Clone(gameserver.PortProtocols),
+		UFW: []string{}, Firewalld: []string{},
+		Note: "ESM never runs these and never changes the firewall; run them as an account that may. " +
+			"Each server uses one game port and one query port from these ranges. " +
+			"The protocols are not yet confirmed for the real server."}
+	for _, spec := range []string{cfg.GamePorts, cfg.QueryPorts} {
+		pr, err := config.ParsePortRange(spec)
+		if err != nil {
+			return err
+		}
+		// A port range is "lo:hi" for ufw and "lo-hi" for firewalld.
+		ufw, fwd := strconv.Itoa(pr.Lo), strconv.Itoa(pr.Lo)
+		if pr.Hi != pr.Lo {
+			ufw = fmt.Sprintf("%d:%d", pr.Lo, pr.Hi)
+			fwd = fmt.Sprintf("%d-%d", pr.Lo, pr.Hi)
+		}
+		for _, proto := range gameserver.PortProtocols {
+			out.UFW = append(out.UFW, "sudo ufw allow "+ufw+"/"+proto)
+			out.Firewalld = append(out.Firewalld, "sudo firewall-cmd --permanent --add-port="+fwd+"/"+proto)
+		}
+	}
+	out.Firewalld = append(out.Firewalld, "sudo firewall-cmd --reload")
+	return writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) doctor(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -535,6 +600,76 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, Logs{Instance: name, Source: source, Lines: lines})
+}
+
+// streamWriter writes a download in pieces of at most streamChunk bytes
+// and moves the write deadline on before each, so a long download is cut
+// off when its client stops reading, not when it takes longer than
+// WriteTimeout in all.
+type streamWriter struct {
+	w       http.ResponseWriter
+	rc      *http.ResponseController
+	timeout time.Duration
+}
+
+const streamChunk = 256 << 10
+
+func (s *Server) stream(w http.ResponseWriter) *streamWriter {
+	return &streamWriter{w: w, rc: http.NewResponseController(w), timeout: s.o.WriteTimeout}
+}
+
+func (sw *streamWriter) Write(b []byte) (int, error) {
+	n := 0
+	for len(b) > 0 {
+		piece := b[:min(len(b), streamChunk)]
+		_ = sw.rc.SetWriteDeadline(time.Now().Add(sw.timeout))
+		m, err := sw.w.Write(piece)
+		n += m
+		if err != nil {
+			return n, err
+		}
+		b = b[len(piece):]
+	}
+	return n, nil
+}
+
+// attachment sets the headers of a download named filename.
+func attachment(h http.Header, contentType, filename string) {
+	h.Set("Content-Type", contentType)
+	h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+}
+
+func (s *Server) logsDownload(w http.ResponseWriter, r *http.Request, c *call) error {
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		source = instances.SourceServer
+	}
+	name := r.PathValue("name")
+	b, err := s.o.Instances.LogDownload(name, source, c.full())
+	if err != nil {
+		return err
+	}
+	attachment(w.Header(), "text/plain; charset=utf-8", name+"-"+source+".log")
+	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	w.WriteHeader(http.StatusOK)
+	if _, err := s.stream(w).Write(b); err != nil {
+		s.log.Debug("log download ended early", "instance", name, "err", err)
+	}
+	return nil
+}
+
+func (s *Server) backupDownload(w http.ResponseWriter, r *http.Request, c *call) error {
+	name, id := r.PathValue("name"), r.PathValue("id")
+	b, write, err := s.o.Instances.BackupArchive(name, id)
+	if err != nil {
+		return err
+	}
+	attachment(w.Header(), "application/gzip", name+"-"+b.ID+".tar.gz")
+	w.WriteHeader(http.StatusOK)
+	if err := write(s.stream(w)); err != nil {
+		s.log.Warn("backup download ended early", "instance", name, "backup", b.ID, "err", err)
+	}
+	return nil
 }
 
 func (s *Server) listBackups(w http.ResponseWriter, r *http.Request, c *call) error {
