@@ -94,7 +94,7 @@ are refused, so typos are reported.
 | Field                  | Default           | Meaning |
 |------------------------|-------------------|---------|
 | `listen`               | `127.0.0.1:8740`  | API address. Anything but loopback needs TLS. |
-| `socket`               | `<root>/esm.sock` | Unix socket path. |
+| `socket`               | `<root>/esm.sock` | Unix socket path, at most 107 bytes on Linux (103 on macOS), in a folder only the ESM account can write to. |
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
 | `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
 | `public_hosts`         | (none)            | Further host names (`host` for any port, or `host:port`) the API and the page answer to; see [Logins and exposure](#logins-and-exposure). |
@@ -526,8 +526,14 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   points its own name at 127.0.0.1 (DNS rebinding) sends its own name, so
   it reaches nothing. The unix socket is not checked.
 - **Unix socket.** `<root>/esm.sock` (mode 0600) acts as admin; it is how
-  the command line on the box works. A stale socket file is removed at start;
-  a socket that still answers means another ESM already serves the root.
+  the command line on the box works. It is made under a umask that leaves
+  it to its owner, so it is never open to other accounts, not even before
+  its mode is set, and ESM refuses to start when other accounts may write
+  to its folder (they could remove or replace it). A socket path longer
+  than the system takes (107 bytes on Linux, 103 on macOS) is refused at
+  start with a message that says so; set `socket` to a shorter path. A
+  stale socket file is removed at start; a socket that still answers means
+  another ESM already serves the root.
 - **Setup code.** While no admin exists, ESM makes a one-time setup code
   (24 characters, valid for 24 hours), prints it once and keeps only its
   hash. `POST /api/v1/setup` with the code creates the first admin.

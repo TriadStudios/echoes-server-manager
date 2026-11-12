@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -129,7 +130,10 @@ func Start(o Options) (_ *Service, err error) {
 	}
 	if code != "" {
 		fmt.Fprintf(o.Stderr, "ESM setup code: %s (works once, for 24 hours; use it to create the first admin)\n", code)
-		log.Info("setup code created", "code", code)
+		// The code goes to stderr as a plain line, once, for whoever starts
+		// ESM. The JSON log may be collected and kept elsewhere, so it only
+		// says that a code was made.
+		log.Info("setup code created; it was printed once to stderr")
 	} else if !s.auth.HasAdmin() {
 		log.Info("waiting for setup; the setup code was shown when it was made (delete secrets/setup.json and restart for a new one)")
 	}
@@ -226,6 +230,12 @@ func newHTTPServer(h http.Handler, errLog *log.Logger) *http.Server {
 // listenSocket listens on the unix socket, removing a stale socket file
 // first. A socket that still answers means another ESM serves this root.
 func listenSocket(path string) (net.Listener, error) {
+	if err := checkSocketPath(path); err != nil {
+		return nil, err
+	}
+	if err := checkSocketDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	if _, err := os.Lstat(path); err == nil {
 		if c, err := net.DialTimeout("unix", path, 2*time.Second); err == nil {
 			c.Close()
@@ -237,10 +247,11 @@ func listenSocket(path string) (net.Listener, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	l, err := net.Listen("unix", path)
+	l, err := listenUnix(path)
 	if err != nil {
-		return nil, fmt.Errorf("listen on the socket %s (set \"socket\" in esm.json to a shorter path if it is too long): %w", path, err)
+		return nil, fmt.Errorf("listen on the socket %s: %w", path, err)
 	}
+	socketListened(path)
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		l.Close()
 		return nil, err
