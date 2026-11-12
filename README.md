@@ -23,9 +23,11 @@ Early development. **Not ready for real hosts yet.**
   [Server passwords](#server-passwords).
 - Linux is the first target. Windows hosts are planned for the first public
   release; the code already builds and its tests pass there.
-- There is no web interface yet. The service serves a placeholder page; the
-  real page will be built with [Den](https://github.com/TriadStudios/Den) in
-  a later phase.
+- There is no web interface yet. The service serves a placeholder page. The
+  next phase adds a plain server-rendered page (Go's `html/template`, one
+  stylesheet, one small script, no build step), written as a thin client of
+  `/api/v1` so it can move to [Den](https://github.com/TriadStudios/Den)
+  later.
 
 ## Build
 

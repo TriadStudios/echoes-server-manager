@@ -46,9 +46,11 @@ ESM is not:
   (temporary file, sync, rename). Every file access goes through an
   `os.Root` handle on the root, so a path can never resolve outside it.
 
-The web page will be built with [Den](https://github.com/TriadStudios/Den)
-and compiled into the binary. The service already serves an embedded static
-folder at `/`, on the same origin as the API, with a placeholder page; any
+The web page comes in the next phase as plain server-rendered HTML (Go's
+`html/template`, one stylesheet, one small script, no build step), embedded
+in the binary and written as a thin client of `/api/v1`, so it can move to
+[Den](https://github.com/TriadStudios/Den) later. The service already
+serves an embedded static folder at `/`, on the same origin as the API, with a placeholder page; any
 path that is not a file returns `index.html` so the page can route on the
 client side. Unknown `/api/` paths return the JSON 404 error instead.
 
@@ -633,8 +635,8 @@ else.
 
 - **Phase 0 (this):** the service, the command line, the API, builds,
   instances, backups, and tests against the fake server.
-- **Phase 1:** the web page (built with Den) and the real server facts
-  confirmed on a real host.
+- **Phase 1:** the web page (server-rendered HTML over the API) and the
+  real server facts confirmed on a real host.
 - **Later:** player controls, Steam installs, Windows hosts (planned for
   the first public release).
 
