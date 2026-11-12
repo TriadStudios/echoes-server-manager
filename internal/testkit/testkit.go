@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 )
 
@@ -267,9 +268,13 @@ func CheckPassword(host string, queryPort int, kind, password string) (bool, err
 	if host == "" {
 		host = "127.0.0.1"
 	}
+	var d net.Dialer
+	if la := gameserver.LoopbackLocalAddr(host); la != nil {
+		d.LocalAddr = la
+	}
 	var lastErr error
 	for range 3 {
-		c, err := net.Dial("udp", net.JoinHostPort(host, strconv.Itoa(queryPort)))
+		c, err := d.Dial("udp", net.JoinHostPort(host, strconv.Itoa(queryPort)))
 		if err != nil {
 			return false, err
 		}

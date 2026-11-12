@@ -221,6 +221,21 @@ func TestPoliteStopAndRequestFile(t *testing.T) {
 	}
 }
 
+// Probes of a loopback address send from that loopback address, never from
+// all interfaces.
+func TestLoopbackLocalAddr(t *testing.T) {
+	for host, want := range map[string]string{"127.0.0.1": "127.0.0.1:0", "::1": "[::1]:0", "127.0.0.9": "127.0.0.9:0"} {
+		if got := LoopbackLocalAddr(host); got == nil || got.String() != want {
+			t.Errorf("LoopbackLocalAddr(%q) = %v, want %s", host, got, want)
+		}
+	}
+	for _, host := range []string{"", "192.0.2.10", "localhost", "2001:db8::1"} {
+		if got := LoopbackLocalAddr(host); got != nil {
+			t.Errorf("LoopbackLocalAddr(%q) = %v, want nil", host, got)
+		}
+	}
+}
+
 func TestProbe(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

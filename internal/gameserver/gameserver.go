@@ -273,13 +273,27 @@ func PoliteStop(goos string) StopMethod {
 	return StopSignal
 }
 
+// LoopbackLocalAddr returns the local UDP address to send from when talking
+// to host: the same loopback address when host is a loopback address, so
+// the sending socket is bound to loopback only and never to all
+// interfaces; nil (the system's choice) otherwise.
+func LoopbackLocalAddr(host string) *net.UDPAddr {
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return nil
+	}
+	return &net.UDPAddr{IP: ip}
+}
+
 // StopRequestPath returns the stop request file of a data folder.
 func StopRequestPath(dataDir string) string {
 	return filepath.Join(dataDir, ControlDirRel, ControlStop)
 }
 
 // Probe asks the query port whether the server answers: it sends "PING" over
-// UDP and expects "PONG". UNCONFIRMED: the real query protocol is unknown.
+// UDP and expects "PONG". A server on all interfaces (host empty, 0.0.0.0
+// or ::) is asked on 127.0.0.1. UNCONFIRMED: the real query protocol is
+// unknown.
 func Probe(ctx context.Context, host string, port int) error {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -289,6 +303,9 @@ func Probe(ctx context.Context, host string, port int) error {
 		deadline = time.Now().Add(time.Second)
 	}
 	var d net.Dialer
+	if la := LoopbackLocalAddr(host); la != nil {
+		d.LocalAddr = la
+	}
 	c, err := d.DialContext(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
