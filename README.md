@@ -14,12 +14,12 @@ Early development. **Not ready for real hosts yet.**
   [`internal/gameserver`](internal/gameserver/gameserver.go), and is marked
   UNCONFIRMED until it has been proven on a real host. Until then ESM is
   tested against a fake server that follows those assumptions.
-- ESM hands a server its passwords in a private file and never puts them on
-  a command line. The real game server does not read that file yet: a
-  per-instance config file that the server reads its passwords from is a
-  planned item on the game side. Until it ships, a real server only gets
-  passwords in a compatibility mode that is unsafe on a shared box; that
-  game-side file is what removes the mode. See
+- By default ESM hands a server its passwords in a private file and never
+  puts them on a command line. The real game server does not read that
+  file yet: a per-instance config file that the server reads its passwords
+  from is a planned item on the game side. Until it ships, a real server
+  only gets passwords in a compatibility mode that is unsafe on a shared
+  box; that game-side file is what removes the mode. See
   [Server passwords](#server-passwords).
 - Linux is the first target. Windows hosts are planned for the first public
   release; the code already builds and its tests pass there.
