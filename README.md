@@ -97,7 +97,8 @@ exits 0 on success and 1 on error. `esm help` lists every command.
   elsewhere, put a reverse proxy with TLS in front, or set up TLS directly.
 - Passwords are stored as PBKDF2 hashes and API tokens as SHA-256 hashes.
   Server passwords live in a private file per instance and are never shown
-  by the API or written to logs.
+  by the API or written to ESM's logs. Log lines of the game server are
+  shown with every value the passwords have had masked.
 - Logins are rate limited. Browser sessions use an HttpOnly, SameSite=Strict
   cookie plus a CSRF token on every change. Tokens are never accepted in
   URLs.

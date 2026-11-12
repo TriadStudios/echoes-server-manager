@@ -71,7 +71,7 @@ client side. Unknown `/api/` paths return the JSON 404 error instead.
   instances/
     <name>/
       instance.json            settings
-      secrets.json             server and admin passwords (0600)
+      secrets.json             server and admin passwords, earlier values (0600)
       data/                    the server's data folder (saves, logs)
       console.log              the server's stdout and stderr
       run/
@@ -135,6 +135,19 @@ Server and admin passwords are set separately (`PUT .../secrets`) and stored
 in `secrets.json`. The API only says whether they are set. While the server
 takes passwords on its command line, other local users can see them in the
 process list; ESM warns about that.
+
+The server may print its command line, passwords included, into its own
+log and output, and a server started before a password change keeps the
+old values. So `secrets.json` also keeps the earlier values of each
+password (the last 20) and the values the last started server was given.
+Every text ESM shows about an instance (log tails, log and state events,
+state reasons, errors, audit entries) is masked with all of them, in the
+forms ESM writes them in (systemd's doubled `$`, JSON and Go quoting).
+Values shorter than 4 characters are not masked as text; they, and any
+value ESM does not know, are still masked after a password switch: the
+value of `-ServerPassword=...` (or any switch whose name contains
+"password") is masked up to the next switch or the end of the line, so a
+value with spaces or punctuation is masked whole.
 
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
