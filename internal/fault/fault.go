@@ -27,6 +27,8 @@ const (
 	// Failed means the request was carried out but the result is a failure
 	// (a server that never became ready, an update that was rolled back).
 	Failed
+	// Forbidden means the caller may not see or do what was asked for.
+	Forbidden
 )
 
 // Error is an error with a kind and a machine code.
@@ -111,6 +113,8 @@ func (k Kind) DefaultCode() string {
 		return "conflict"
 	case Failed:
 		return "failed"
+	case Forbidden:
+		return "forbidden"
 	}
 	return "internal"
 }

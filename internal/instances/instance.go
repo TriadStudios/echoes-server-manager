@@ -87,9 +87,15 @@ type Instance struct {
 	Backup         BackupPolicy      `json:"backup"`
 	Limits         Limits            `json:"limits"`
 	ExtraArgs      []string          `json:"extra_args"`
-	PreviousBuilds []string          `json:"previous_builds"`
-	Created        time.Time         `json:"created"`
-	Updated        time.Time         `json:"updated"`
+	// SecretDelivery is how the server gets its passwords: "file" (the
+	// default: in a private file, nothing on the command line) or
+	// "command_line" (as command-line switches, for server builds that
+	// cannot read the file; unsafe on a shared box, see
+	// gameserver.DeliveryCommandLine).
+	SecretDelivery string    `json:"secret_delivery"`
+	PreviousBuilds []string  `json:"previous_builds"`
+	Created        time.Time `json:"created"`
+	Updated        time.Time `json:"updated"`
 }
 
 // normalize replaces nil maps and slices with empty ones so the JSON form
@@ -138,6 +144,7 @@ type Settings struct {
 	Backup         *BackupPolicy      `json:"backup,omitempty"`
 	Limits         *Limits            `json:"limits,omitempty"`
 	ExtraArgs      *[]string          `json:"extra_args,omitempty"`
+	SecretDelivery *string            `json:"secret_delivery,omitempty"`
 }
 
 // CreateRequest is the body of a create call. Ports left at 0 are picked
@@ -210,6 +217,9 @@ func (s Settings) apply(in *Instance) (portsGiven bool) {
 	}
 	if s.ExtraArgs != nil {
 		in.ExtraArgs = slices.Clone(*s.ExtraArgs)
+	}
+	if s.SecretDelivery != nil {
+		in.SecretDelivery = *s.SecretDelivery
 	}
 	in.normalize()
 	return portsGiven
@@ -323,6 +333,9 @@ func (in *Instance) Validate() error {
 		if err := checkExtraArg(in.Name, i+1, a); err != nil {
 			return err
 		}
+	}
+	if !gameserver.ValidDelivery(in.SecretDelivery) {
+		return invalid("secret_delivery", "must be %q or %q", gameserver.DeliveryFile, gameserver.DeliveryCommandLine)
 	}
 	for _, b := range in.PreviousBuilds {
 		if !builds.ValidVersion(b) {

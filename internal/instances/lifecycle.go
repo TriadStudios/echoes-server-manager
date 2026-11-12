@@ -24,6 +24,10 @@ type watchState struct {
 	bindIP   string    // where this run's query port is probed
 	query    int
 	adopted  bool // found running at ESM start: never stopped for readiness
+	// unsafe marks a server that got its passwords on the command line: its
+	// output holds them and stays hidden from the read role, whatever the
+	// instance is set to later.
+	unsafe bool
 }
 
 // launch starts the server of in with its current settings and begins
@@ -31,8 +35,10 @@ type watchState struct {
 //
 // The server gets its passwords in a file (runSecretsFile) that is written
 // here, right before the start; its command line names the file and holds
-// no password. ESM never writes the command line anywhere: not to its log,
-// not into an error, not into the state.
+// no password. Only an instance set to command-line delivery gets them as
+// switches instead; the file is written all the same and then only records
+// what the running server was given. ESM never writes the command line
+// anywhere: not to its log, not into an error, not into the state.
 func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bool) (*run, error) {
 	if m.isClosed() {
 		return nil, ErrClosed
@@ -96,12 +102,21 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if name == "" {
 		name = cfg.Name
 	}
-	argv := gameserver.Launch{
+	l := gameserver.Launch{
 		Map: cfg.Map, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query, BindIP: cfg.BindIP,
 		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Rules: cfg.Rules,
-		DataDir: dataAbs, Delivery: gameserver.DeliveryFile, SecretsFile: secretsAbs,
+		DataDir: dataAbs, Delivery: cfg.SecretDelivery, SecretsFile: secretsAbs,
 		ExtraArgs: cfg.ExtraArgs,
-	}.Args()
+	}
+	// onCommandLine are the passwords that go on the command line: none,
+	// unless the instance is set to that.
+	var onCommandLine []string
+	if cfg.SecretDelivery == gameserver.DeliveryCommandLine {
+		l.Secrets = given
+		onCommandLine = given.Values()
+		m.warnUnsafe(cfg.Name)
+	}
+	argv := l.Args()
 	// A status file from an earlier run must not count as ready.
 	if err := m.st.Remove(dataDir(cfg.Name) + "/" + gameserver.StatusFileRel); err != nil {
 		return nil, err
@@ -111,18 +126,24 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		console: m.tailAt(consoleFile(cfg.Name)),
 		bindIP:  cfg.BindIP,
 		query:   cfg.Ports.Query,
+		unsafe:  cfg.OutputHidden(),
 	}
 	spec := supervisor.Spec{
 		Name: cfg.Name, Executable: exe, Args: argv, Dir: dirAbs, OutputFile: outAbs,
-		Limits:   supervisor.Limits{MemoryMaxBytes: memMax, CPUQuotaPercent: cfg.Limits.CPUQuotaPercent},
-		StopFile: gameserver.StopRequestPath(dataAbs),
+		Limits:       supervisor.Limits{MemoryMaxBytes: memMax, CPUQuotaPercent: cfg.Limits.CPUQuotaPercent},
+		StopFile:     gameserver.StopRequestPath(dataAbs),
+		SecretValues: onCommandLine,
 	}
 	m.log.Info("starting server", "instance", cfg.Name, "build", cfg.Build, "why", why)
 	if err := m.sup.Start(context.WithoutCancel(ctx), spec); err != nil {
 		if errors.Is(err, supervisor.ErrAlreadyRunning) {
 			return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
 		}
-		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, audit.Scrub(err.Error()))
+		// The supervisor does not repeat the command line, but what its
+		// tools printed is in this error: mask the passwords that were on
+		// the command line, if any, here as well.
+		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name,
+			audit.Scrub(gameserver.ScrubLine(err.Error(), onCommandLine)))
 	}
 	started = true
 	in.mu.Lock()
@@ -187,6 +208,7 @@ func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 	}
 	in.mu.Lock()
 	w.bindIP, w.query = in.cfg.BindIP, in.cfg.Ports.Query
+	w.unsafe = in.cfg.OutputHidden()
 	in.gen++
 	r := &run{gen: in.gen, autoRestart: true, done: make(chan struct{})}
 	in.cur = r
@@ -563,16 +585,29 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Sta
 // followLogs publishes new lines of the server log and console output.
 // The ready line is looked for in the server log lines as the server wrote
 // them, before anything is masked or cut.
+//
+// The lines of a server that got its passwords on the command line, and
+// all lines while the instance is set that way, are published restricted:
+// the read role never gets them.
 func (m *Manager) followLogs(in *rt, w *watchState) {
-	name := in.name
-	filter := in.outputFilter()
+	in.mu.Lock()
+	filter, hidden := in.filter, w.unsafe || in.cfg.OutputHidden()
+	in.mu.Unlock()
+	publish := func(source, line string) {
+		ll := LogLine{Source: source, Line: showOutput(filter, line)}
+		if hidden {
+			m.bus.PublishRestricted(events.TypeLog, in.name, ll, nil)
+			return
+		}
+		m.bus.Publish(events.TypeLog, in.name, ll)
+	}
 	for _, line := range m.follow(&w.server) {
 		if !w.logReady && gameserver.IsReadyLine(line) {
 			w.logReady = true
 		}
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceServer, Line: showOutput(filter, line)})
+		publish(SourceServer, line)
 	}
 	for _, line := range m.follow(&w.console) {
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceConsole, Line: showOutput(filter, line)})
+		publish(SourceConsole, line)
 	}
 }

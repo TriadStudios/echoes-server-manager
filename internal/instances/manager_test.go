@@ -232,7 +232,7 @@ func TestLifecycleCrashAndGiveUp(t *testing.T) {
 	if st.Crashes != 1 || st.GaveUp {
 		t.Fatalf("after one crash: %+v", st)
 	}
-	lines, err := r.m.Logs("alpha", SourceServer, 50)
+	lines, err := r.m.Logs("alpha", SourceServer, 50, true)
 	if err != nil || len(lines) == 0 {
 		t.Fatalf("logs: %v %v", lines, err)
 	}

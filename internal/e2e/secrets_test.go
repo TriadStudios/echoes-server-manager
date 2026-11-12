@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -274,7 +275,14 @@ type eventLog struct {
 
 func (h *harness) recordEvents() *eventLog {
 	h.t.Helper()
-	s := h.openEvents("", h.admin, "")
+	return h.recordEventsAs(h.admin, "")
+}
+
+// recordEventsAs records the event stream a token gets, from now on, or
+// with lastID from the event after that id.
+func (h *harness) recordEventsAs(token, lastID string) *eventLog {
+	h.t.Helper()
+	s := h.openEvents("", token, lastID)
 	l := &eventLog{}
 	go func() {
 		for e := range s.events {
@@ -603,8 +611,9 @@ func TestStaleSecretsFileIsRemoved(t *testing.T) {
 		if err != nil || s.State != gameserver.StateStopping {
 			return false
 		}
-		_, err = testkit.CheckPassword(v.BindIP, v.Ports.Query, testkit.JoinPassword, "")
-		return err != nil // nobody answers any more
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		return gameserver.Probe(ctx, v.BindIP, v.Ports.Query) != nil // nobody answers any more
 	}, "the server did not stop")
 	time.Sleep(300 * time.Millisecond) // let the process end
 	h.startService()

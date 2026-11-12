@@ -173,10 +173,21 @@ func (m *Manager) tailLines(rel string, n int) ([]string, error) {
 
 // Logs returns the last lines of the server log (source "server") or the
 // console output (source "console"), prepared for showing (see showOutput).
-func (m *Manager) Logs(name, source string, lines int) ([]string, error) {
+//
+// full says that the caller may see the output of an instance that passes
+// its passwords on the command line (operators and admins). Without it such
+// an instance answers ErrOutputHidden: the read role gets none of that
+// output, masked or not.
+func (m *Manager) Logs(name, source string, lines int, full bool) ([]string, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return nil, err
+	}
+	in.mu.Lock()
+	hidden, gen := in.cfg.OutputHidden(), in.hiddenGen
+	in.mu.Unlock()
+	if hidden && !full {
+		return nil, ErrOutputHidden
 	}
 	if lines <= 0 {
 		lines = 200
@@ -194,6 +205,16 @@ func (m *Manager) Logs(name, source string, lines int) ([]string, error) {
 	out, err := m.tailLines(rel, lines)
 	if err != nil {
 		return nil, err
+	}
+	if !full {
+		// The instance may have been set to command-line delivery, and
+		// started that way, while the file was read.
+		in.mu.Lock()
+		changed := in.cfg.OutputHidden() || in.hiddenGen != gen
+		in.mu.Unlock()
+		if changed {
+			return nil, ErrOutputHidden
+		}
 	}
 	filter := in.outputFilter()
 	for i := range out {

@@ -11,7 +11,7 @@ import (
 
 func validInstance() Instance {
 	in := Instance{Name: "alpha", DisplayName: "Alpha", Channel: "live", Build: "1.0", World: "alpha",
-		MaxPlayers: 10, Backup: BackupPolicy{Keep: 10}, Ports: Ports{Game: 7777, Query: 27015}}
+		MaxPlayers: 10, Backup: BackupPolicy{Keep: 10}, Ports: Ports{Game: 7777, Query: 27015}, SecretDelivery: "file"}
 	in.normalize()
 	return in
 }
@@ -55,6 +55,9 @@ func TestValidate(t *testing.T) {
 		"negative cpu":          func(in *Instance) { in.Limits.CPUQuotaPercent = -1 },
 		"display name control":  func(in *Instance) { in.DisplayName = "a\tb" },
 		"bad cluster":           func(in *Instance) { in.Cluster = "Has Space" },
+		"no secret delivery":    func(in *Instance) { in.SecretDelivery = "" },
+		"bad secret delivery":   func(in *Instance) { in.SecretDelivery = "environment" },
+		"secret delivery case":  func(in *Instance) { in.SecretDelivery = "Command_Line" },
 	}
 	for name, mutate := range cases {
 		in := validInstance()
@@ -72,8 +75,12 @@ func TestValidate(t *testing.T) {
 	good.Limits = Limits{MemoryMax: "8G", CPUQuotaPercent: 200}
 	good.BindIP = "192.0.2.10"
 	good.Cluster = "eu-1"
+	good.SecretDelivery = "command_line"
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
+	}
+	if !good.OutputHidden() || validInstance().OutputHidden() {
+		t.Fatal("only an instance with command-line delivery has its output hidden from the read role")
 	}
 }
 

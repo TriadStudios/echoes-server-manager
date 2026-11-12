@@ -3,7 +3,6 @@ package instances
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -66,11 +65,13 @@ type Options struct {
 }
 
 // View is an instance as the API shows it: settings, which secrets are set,
-// and the live status.
+// the live status, and warnings (codes, see WarningText) about things an
+// operator should know.
 type View struct {
 	Instance
-	Secrets SecretFlags `json:"secrets"`
-	Status  Status      `json:"status"`
+	Secrets  SecretFlags `json:"secrets"`
+	Status   Status      `json:"status"`
+	Warnings []string    `json:"warnings"`
 }
 
 // LogLine is the data of a "log" event.
@@ -122,6 +123,10 @@ type rt struct {
 	current []string
 	started []string
 	filter  *gameserver.Scrubber
+	// hiddenGen counts how often the instance was set to pass its
+	// passwords on the command line. A reader of its output for the read
+	// role checks that it did not change while it read.
+	hiddenGen uint64
 }
 
 // setFilterLocked rebuilds the filter for server output. in.mu must be
@@ -219,6 +224,9 @@ func New(opts Options) (*Manager, error) {
 			continue
 		}
 		in.normalize()
+		if in.SecretDelivery == "" {
+			in.SecretDelivery = gameserver.SecretDelivery
+		}
 		if in.Name != e.Name() {
 			m.log.Warn("skipping instance whose name does not match its folder", "folder", e.Name(), "name", in.Name)
 			continue
@@ -280,7 +288,11 @@ func (m *Manager) Resume() error {
 			in.started = nil
 			in.setFilterLocked()
 		}
+		unsafe := in.cfg.OutputHidden()
 		in.mu.Unlock()
+		if unsafe {
+			m.warnUnsafe(in.name)
+		}
 		if auto && !adopted[in.name] {
 			go func(name string) {
 				if _, err := m.Start(context.Background(), name, false); err != nil {
@@ -400,8 +412,20 @@ func (m *Manager) emitLocked(in *rt) {
 	if err := m.st.WriteJSON(stateFile(in.name), st, 0o600); err != nil {
 		m.log.Warn("cannot write state file", "instance", in.name, "err", err)
 	}
-	m.bus.Publish(events.TypeState, in.name, st)
+	m.publishState(in.name, st, in.cfg.OutputHidden())
 	m.log.Info("instance state", "instance", in.name, "state", st.State, "reason", st.Reason)
+}
+
+// publishState publishes a state event. When the instance's output is
+// hidden from the read role the event is restricted: that role gets it
+// with the notice in place of the reason, also when it asks for remembered
+// events later, whatever the instance is set to by then.
+func (m *Manager) publishState(name string, st Status, hidden bool) {
+	if hidden {
+		m.bus.PublishRestricted(events.TypeState, name, st, st.ForRead())
+		return
+	}
+	m.bus.Publish(events.TypeState, name, st)
 }
 
 func (m *Manager) view(in *rt) View {
@@ -409,7 +433,21 @@ func (m *Manager) view(in *rt) View {
 	v := View{Instance: in.cfg.clone(), Status: in.status}
 	in.mu.Unlock()
 	v.Secrets = m.secretFlags(in.name)
+	v.Warnings = m.warnings(v.Instance)
 	return v
+}
+
+// warnings lists, as codes, what an operator should know about an instance
+// on this box. It is never nil.
+func (m *Manager) warnings(cfg Instance) []string {
+	w := []string{}
+	if cfg.OutputHidden() {
+		w = append(w, WarnSecretsOnCommandLine)
+	}
+	if !m.sup.LimitsEnforced() && (cfg.Limits.MemoryMax != "" || cfg.Limits.CPUQuotaPercent > 0) {
+		w = append(w, WarnLimitsNotEnforced)
+	}
+	return w
 }
 
 // List returns every instance, sorted by name.
@@ -488,7 +526,8 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 	in := Instance{
 		Name: req.Name, DisplayName: req.Name, Channel: channel, Build: b.Version, World: req.Name,
 		MaxPlayers: DefaultMaxPlayers, Listed: channel == builds.ChannelLive, RestartOnCrash: true,
-		Backup: BackupPolicy{Keep: DefaultBackupKeep}, Created: now, Updated: now,
+		Backup: BackupPolicy{Keep: DefaultBackupKeep}, SecretDelivery: gameserver.SecretDelivery,
+		Created: now, Updated: now,
 	}
 	in.normalize()
 	req.Settings.apply(&in)
@@ -517,11 +556,31 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 	m.setLocked(r, Stopped, "created")
 	r.mu.Unlock()
 	m.log.Info("instance created", "instance", in.Name, "build", in.Build, "game_port", ports.Game, "query_port", ports.Query)
+	if in.OutputHidden() {
+		m.warnUnsafe(in.Name)
+	}
 	return m.view(r), nil
 }
 
+// warnUnsafe writes the warning about an instance that passes its
+// passwords on the server command line to the service log.
+func (m *Manager) warnUnsafe(name string) {
+	m.log.Warn("instance passes its passwords on the server command line: "+WarningText(WarnSecretsOnCommandLine), "instance", name)
+}
+
+// outputSetAside is the state reason of an instance right after its
+// server output was set aside.
+const outputSetAside = "server output set aside: secret_delivery changed to file"
+
 // Patch changes settings. Changes to a running instance take effect at the
 // next start; restartRequired says so.
+//
+// One change is refused while the instance runs: secret_delivery from
+// "command_line" back to "file". What the server wrote until then holds its
+// command line with the passwords. The read role, kept from that output so
+// far, may see the instance's output again after the change, so the change
+// sets the output files aside (see setAsideOutput), and that needs the
+// server stopped.
 func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -532,8 +591,6 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	}
 	in.op.Lock()
 	defer in.op.Unlock()
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	in.mu.Lock()
 	old := in.cfg.clone()
 	active := in.status.State.active()
@@ -543,6 +600,15 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	if err := cfg.Validate(); err != nil {
 		return View{}, false, err
 	}
+	toFile := old.OutputHidden() && !cfg.OutputHidden()
+	toCommandLine := !old.OutputHidden() && cfg.OutputHidden()
+	if toFile && (active || m.alive(name)) {
+		return View{}, false, fault.New(fault.Conflict, "instance_running",
+			"instance %s is running; stop it before changing secret_delivery to %q: its server output so far holds the passwords and is set aside at the change",
+			name, cfg.SecretDelivery)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if cfg.Channel != old.Channel {
 		b, err := m.builds.Get(cfg.Build)
 		if err == nil && b.Channel != cfg.Channel {
@@ -562,6 +628,13 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 		}
 		cfg.Ports = ports
 	}
+	if toFile {
+		// First the files, then the setting: if ESM stops in between, the
+		// instance is still hidden from the read role.
+		if err := m.setAsideOutput(name); err != nil {
+			return View{}, false, fault.Wrap(fault.Conflict, "busy", err, "cannot set aside the server output of instance %s", name)
+		}
+	}
 	cfg.Updated = m.now()
 	if err := m.st.WriteJSON(instFile(name), cfg, 0o600); err != nil {
 		return View{}, false, err
@@ -569,11 +642,23 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	in.mu.Lock()
 	in.cfg = cfg
 	in.nextRestart, in.nextBackup = time.Time{}, time.Time{}
+	if toCommandLine {
+		in.hiddenGen++
+	}
+	if toFile {
+		// The reason so far may repeat what the server said.
+		in.status.Reason = outputSetAside
+	}
 	if active {
 		in.status.RestartRequired = true
+	}
+	if active || toFile || toCommandLine {
 		m.emitLocked(in)
 	}
 	in.mu.Unlock()
+	if toCommandLine {
+		m.warnUnsafe(name)
+	}
 	return m.view(in), active, nil
 }
 
@@ -603,6 +688,7 @@ func (m *Manager) Delete(ctx context.Context, name string, purgeBackups bool) (e
 	}
 	in.deleted = true
 	st := in.status
+	hidden := in.cfg.OutputHidden()
 	in.mu.Unlock()
 	if err := m.st.RemoveAll(instDir(name)); err != nil {
 		return err
@@ -613,7 +699,7 @@ func (m *Manager) Delete(ctx context.Context, name string, purgeBackups bool) (e
 		}
 	}
 	st.State, st.Reason, st.Since, st.PID = Deleted, "deleted", m.now(), 0
-	m.bus.Publish(events.TypeState, name, st)
+	m.publishState(name, st, hidden)
 	m.log.Info("instance deleted", "instance", name, "purge_backups", purgeBackups)
 	return nil
 }
@@ -784,16 +870,6 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	}
 	in.mu.Unlock()
 	return m.secretFlags(name), active, nil
-}
-
-// Warnings lists things an operator should know about an instance's
-// settings on this box.
-func (m *Manager) Warnings(v View) []string {
-	w := []string{}
-	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
-		w = append(w, fmt.Sprintf("limits are not enforced by the %s supervisor", m.sup.Kind()))
-	}
-	return w
 }
 
 // Cluster groups instance names by their cluster field.

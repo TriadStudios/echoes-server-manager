@@ -351,7 +351,7 @@ func TestSecretsFileLifecycle(t *testing.T) {
 	}
 	noPieces(t, "server's own files", raw, secret)
 	for _, source := range []string{SourceServer, SourceConsole} {
-		lines, err := r.m.Logs("alpha", source, 1000)
+		lines, err := r.m.Logs("alpha", source, 1000, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -448,7 +448,7 @@ func TestServerOutputIsFiltered(t *testing.T) {
 	raw, _ := json.Marshal(evs)
 	noPieces(t, "events", string(raw), secret)
 	for _, source := range []string{SourceServer, SourceConsole} {
-		lines, err := r.m.Logs("alpha", source, 1000)
+		lines, err := r.m.Logs("alpha", source, 1000, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -458,7 +458,7 @@ func TestServerOutputIsFiltered(t *testing.T) {
 			t.Errorf("nothing is masked in the %s log:\n%s", source, text)
 		}
 	}
-	lines, _ := r.m.Logs("alpha", SourceServer, 1000)
+	lines, _ := r.m.Logs("alpha", SourceServer, 1000, true)
 	want := "Admin logged in with " + gameserver.Mask + " after trying " + gameserver.Mask + " and " + gameserver.Mask
 	if text := strings.Join(lines, "\n"); !strings.Contains(text, want) || !strings.Contains(text, "?Password="+gameserver.Mask) {
 		t.Fatalf("the server log:\n%s", text)

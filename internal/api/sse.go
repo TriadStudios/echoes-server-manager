@@ -19,10 +19,13 @@ var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, ev
 // events streams events as Server-Sent Events. Each event has an id, a
 // type (state, log, build or audit) and the event as JSON data. A client
 // that reconnects with Last-Event-ID gets the events it missed while they
-// are still in memory. Audit events are only sent to admins.
+// are still in memory. Audit events are only sent to admins. Of an
+// instance that passes its passwords on the server command line the read
+// role gets no log events, and state events with a notice in place of the
+// reason; that was decided when each event was published.
 func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 	q := r.URL.Query()
-	f := events.Filter{Instance: q.Get("instance")}
+	f := events.Filter{Instance: q.Get("instance"), Public: !c.full()}
 	if t := q.Get("types"); t != "" {
 		for _, typ := range strings.Split(t, ",") {
 			typ = strings.TrimSpace(typ)

@@ -11,6 +11,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/doctor"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 )
 
@@ -124,14 +125,24 @@ type Box struct {
 	Instances      int       `json:"instances"`
 	Running        int       `json:"running"`
 	Builds         int       `json:"builds"`
+	// DefaultSecretDelivery is how a new instance hands its server the
+	// passwords unless it says otherwise.
+	DefaultSecretDelivery string `json:"default_secret_delivery"`
+	// SecretsOnCommandLine names the instances that pass their passwords on
+	// the server command line: unsafe on a shared box.
+	SecretsOnCommandLine []string `json:"secrets_on_command_line"`
 }
 
 func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 	list := s.o.Instances.List()
 	running := 0
+	unsafe := []string{}
 	for _, v := range list {
 		if v.Status.State == instances.Running {
 			running++
+		}
+		if v.OutputHidden() {
+			unsafe = append(unsafe, v.Name)
 		}
 	}
 	bl, err := s.o.Builds.List()
@@ -145,6 +156,7 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,
 		Started: s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
 		Instances: len(list), Running: running, Builds: len(bl),
+		DefaultSecretDelivery: gameserver.SecretDelivery, SecretsOnCommandLine: unsafe,
 	})
 }
 
@@ -252,8 +264,7 @@ type InstanceList struct {
 // InstanceChange answers create and change calls.
 type InstanceChange struct {
 	instances.View
-	RestartRequired bool     `json:"restart_required"`
-	Warnings        []string `json:"warnings"`
+	RestartRequired bool `json:"restart_required"`
 }
 
 // DeleteRequest is the body of DELETE /instances/{name}.
@@ -300,8 +311,26 @@ type ClusterList struct {
 	Clusters []instances.Cluster `json:"clusters"`
 }
 
+// full reports whether the caller may see everything about an instance.
+// The read role may not: of an instance that passes its passwords on the
+// server command line it gets neither the server output nor the failure
+// details (see instances.HiddenNotice).
+func (c *call) full() bool { return c.role.Allows(auth.RoleOperator) }
+
+// show returns an instance as the caller may see it.
+func (c *call) show(v instances.View) instances.View {
+	if c.full() {
+		return v
+	}
+	return v.ForRead()
+}
+
 func (s *Server) listInstances(w http.ResponseWriter, r *http.Request, c *call) error {
-	return writeJSON(w, http.StatusOK, InstanceList{Instances: s.o.Instances.List()})
+	list := s.o.Instances.List()
+	for i := range list {
+		list[i] = c.show(list[i])
+	}
+	return writeJSON(w, http.StatusOK, InstanceList{Instances: list})
 }
 
 func (s *Server) createInstance(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -314,7 +343,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request, c *call)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusCreated, InstanceChange{View: v, Warnings: s.o.Instances.Warnings(v)})
+	return writeJSON(w, http.StatusCreated, InstanceChange{View: c.show(v)})
 }
 
 func (s *Server) getInstance(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -322,7 +351,7 @@ func (s *Server) getInstance(w http.ResponseWriter, r *http.Request, c *call) er
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, v)
+	return writeJSON(w, http.StatusOK, c.show(v))
 }
 
 func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -336,7 +365,7 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request, c *call) 
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, InstanceChange{View: v, RestartRequired: restart, Warnings: s.o.Instances.Warnings(v)})
+	return writeJSON(w, http.StatusOK, InstanceChange{View: c.show(v), RestartRequired: restart})
 }
 
 func (s *Server) deleteInstance(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -367,7 +396,7 @@ func (s *Server) putSecrets(w http.ResponseWriter, r *http.Request, c *call) err
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: s.o.Instances.Warnings(v)})
+	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings})
 }
 
 // action reads the target instance and an optional JSON body.
@@ -472,11 +501,11 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request, c *call) error 
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request, c *call) error {
-	st, err := s.o.Instances.Status(r.PathValue("name"))
+	v, err := s.o.Instances.Get(r.PathValue("name"))
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, st)
+	return writeJSON(w, http.StatusOK, c.show(v).Status)
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -489,7 +518,7 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request, c *call) error {
 		source = instances.SourceServer
 	}
 	name := r.PathValue("name")
-	lines, err := s.o.Instances.Logs(name, source, n)
+	lines, err := s.o.Instances.Logs(name, source, n, c.full())
 	if err != nil {
 		return err
 	}
