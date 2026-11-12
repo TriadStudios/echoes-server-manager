@@ -1,2 +1,2 @@
 # echoes-server-manager
-ESM (Echoes Server Manager): install, run, update and monitor Echoes of Durinn dedicated servers from a web page, command line or API. Options: add a README, pick the Go .gitignore, and choose a license.
+ESM (Echoes Server Manager): install, run, update and monitor Echoes of Durinn dedicated servers from a web page, command line or API.
