@@ -192,3 +192,27 @@ func TestDoctorRunsOneAtATime(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// A log download reads up to 16 MiB into memory: at most two run at once,
+// and a third is told to come back (429) instead of piling up.
+func TestLogDownloadsAreLimited(t *testing.T) {
+	s := New(Options{})
+	for range cap(s.logDownloads) {
+		s.logDownloads <- struct{}{}
+	}
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if recover() != nil {
+				t.Fatal("a third download ran while two were running")
+			}
+		}()
+		s.SocketHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/instances/alpha/logs/download", nil))
+	}()
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "busy") || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("%d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	if cap(s.logDownloads) != 2 {
+		t.Fatalf("%d downloads at once", cap(s.logDownloads))
+	}
+}

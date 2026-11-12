@@ -528,7 +528,8 @@ skipped.
   the disk that holds the root, as the system reports them, with the same
   null-and-reason rule, and the time zone that restart times use.
 - Downloads: `GET .../logs/download` gives a log as text with the rules of
-  the log tail (at most the newest 16 MiB); `GET .../backups/{id}/download`
+  the log tail (at most the newest 16 MiB, read into memory, so at most two
+  run at once and another gets 429 `busy`); `GET .../backups/{id}/download`
   gives a backup as a tar.gz (operator role). Both write in pieces, each
   with its own write deadline, so only a client that stops reading is cut
   off.

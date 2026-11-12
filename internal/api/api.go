@@ -52,6 +52,9 @@ const (
 	// counted from its first byte, and, in an event stream, to read each
 	// event.
 	DefaultWriteTimeout = time.Minute
+	// maxLogDownloads is how many log downloads may run at once; each
+	// holds up to instances.MaxLogDownloadBytes of the file in memory.
+	maxLogDownloads = 2
 	// DefaultFailDelay is how long a failed login or setup code waits
 	// before it is answered.
 	DefaultFailDelay = time.Second
@@ -112,6 +115,8 @@ type Server struct {
 	allow      map[string][]string // path pattern -> methods
 	hosts      *hostSet            // nil: no Host check
 	doctorBusy atomic.Bool         // a health check is running
+	// logDownloads holds a token for each log download that runs.
+	logDownloads chan struct{}
 }
 
 // access says who may call a route.
@@ -228,7 +233,7 @@ func New(o Options) *Server {
 		o.FailDelay = DefaultFailDelay
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
-		hosts: newHostSet(o.Listen, o.PublicHosts)}
+		hosts: newHostSet(o.Listen, o.PublicHosts), logDownloads: make(chan struct{}, maxLogDownloads)}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
 		if _, ok := s.allow[rt.path]; !ok {

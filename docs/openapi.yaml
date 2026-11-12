@@ -566,7 +566,8 @@ paths:
         bytes, passwords ESM knows masked), and refused the same way: for an
         instance with `secret_delivery: command_line` the `read` role gets
         403 `hidden_unsafe_secrets`. At most the newest 16 MiB of the file;
-        when the file is longer, a first line says so.
+        when the file is longer, a first line says so. At most two log
+        downloads run at once; another gets 429 `busy` with Retry-After.
       parameters:
         - $ref: "#/components/parameters/Name"
         - name: source
@@ -581,6 +582,7 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/backups:
     get:
       tags: [instances]

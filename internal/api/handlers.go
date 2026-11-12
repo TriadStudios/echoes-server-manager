@@ -678,6 +678,15 @@ func attachment(h http.Header, contentType, filename string) {
 }
 
 func (s *Server) logsDownload(w http.ResponseWriter, r *http.Request, c *call) error {
+	// A download holds up to 16 MiB of the file in memory: only a few run
+	// at once, and the rest are asked to come back.
+	select {
+	case s.logDownloads <- struct{}{}:
+		defer func() { <-s.logDownloads }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		return errStatus(http.StatusTooManyRequests, "busy", "%d log downloads are running; try again in a few seconds", cap(s.logDownloads))
+	}
 	source := r.URL.Query().Get("source")
 	if source == "" {
 		source = instances.SourceServer
