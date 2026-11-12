@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
@@ -95,13 +96,14 @@ type Options struct {
 
 // Server serves the API and the page.
 type Server struct {
-	o     Options
-	log   *slog.Logger
-	root  http.Handler // guard around mux
-	mux   *http.ServeMux
-	paths *http.ServeMux      // every API path once, for 405 answers
-	allow map[string][]string // path pattern -> methods
-	hosts *hostSet            // nil: no Host check
+	o          Options
+	log        *slog.Logger
+	root       http.Handler // guard around mux
+	mux        *http.ServeMux
+	paths      *http.ServeMux      // every API path once, for 405 answers
+	allow      map[string][]string // path pattern -> methods
+	hosts      *hostSet            // nil: no Host check
+	doctorBusy atomic.Bool         // a health check is running
 }
 
 // access says who may call a route.
@@ -162,7 +164,8 @@ func init() {
 	r("POST", p+"/logout", optional, "", "logout", (*Server).logout)
 	r("GET", p+"/session", required, read, "session.get", (*Server).session)
 	r("GET", p+"/box", required, read, "box.get", (*Server).box)
-	r("GET", p+"/box/doctor", required, read, "box.doctor", (*Server).doctor)
+	// The check test-binds every free port of both ranges: admin only.
+	r("GET", p+"/box/doctor", required, admin, "box.doctor", (*Server).doctor)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
 	// Installing a build is installing a program that runs with ESM's own
 	// rights: admin only. Switching an instance to an installed build is

@@ -17,7 +17,8 @@ info:
       session id is only ever in the cookie (HttpOnly), never in a body.
     - The unix socket `<root>/esm.sock`, which acts as admin.
 
-    Roles: `read` may make every GET call except `/tokens` and `/audit`;
+    Roles: `read` may make every GET call except `/tokens`, `/audit` and
+    `/box/doctor`;
     `operator` may also start, stop, restart, update, back up and restore
     instances; `admin` may do everything, installing builds included (a
     build is a program that runs with ESM's own rights).
@@ -177,7 +178,11 @@ paths:
   /api/v1/box/doctor:
     get:
       tags: [box]
-      summary: Run the read-only checks from the service's point of view
+      summary: Run the read-only checks from the service's point of view (admin)
+      description: |
+        The check binds every free port of both ranges for a moment, so it
+        is for admins only and runs one at a time: while one runs, another
+        call gets 409 `doctor_running`.
       responses:
         "200":
           description: Check results.
@@ -185,6 +190,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DoctorReport" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/builds:
     get:
       tags: [builds]

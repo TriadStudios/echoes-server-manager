@@ -582,7 +582,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   address.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
-  audit log, and the server output and state reasons of instances that pass
+  audit log, the health check (`/box/doctor`, which binds every free port
+  of both ranges for a moment; admins only, one at a time), and the server
+  output and state reasons of instances that pass
   their passwords on the command line; `operator` sees those too and also
   starts, stops, restarts, updates, backs up and restores; `admin` does
   everything else (install builds, create, change, delete, secrets, tokens,

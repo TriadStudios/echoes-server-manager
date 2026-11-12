@@ -80,6 +80,11 @@ func TestRolesOfRoutes(t *testing.T) {
 			if r.Role != "admin" {
 				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
 			}
+		case r.Path == "/api/v1/box/doctor":
+			// The check test-binds every free port of both ranges.
+			if r.Role != "admin" {
+				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
+			}
 		case r.Method == "POST" && r.Path == "/api/v1/builds":
 			// A build is a program that runs with ESM's own rights.
 			if r.Role != "admin" {
@@ -106,4 +111,23 @@ func oneOf(s string, list ...string) bool {
 		}
 	}
 	return false
+}
+
+// The health check runs one at a time: while one runs, another is
+// refused with 409 instead of binding the same ports again.
+func TestDoctorRunsOneAtATime(t *testing.T) {
+	s := New(Options{})
+	s.doctorBusy.Store(true)
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if recover() != nil {
+				t.Fatal("a second check ran while one was running")
+			}
+		}()
+		s.SocketHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/box/doctor", nil))
+	}()
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "doctor_running") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
 }

@@ -205,6 +205,12 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 }
 
 func (s *Server) doctor(w http.ResponseWriter, r *http.Request, c *call) error {
+	// The check binds every free port of both ranges for a moment: one at
+	// a time, so that checks cannot keep the ports busy for starts.
+	if !s.doctorBusy.CompareAndSwap(false, true) {
+		return errStatus(http.StatusConflict, "doctor_running", "a health check is already running; try again when it is done")
+	}
+	defer s.doctorBusy.Store(false)
 	used := map[int]bool{}
 	for _, v := range s.o.Instances.List() {
 		used[v.Ports.Game], used[v.Ports.Query] = true, true
