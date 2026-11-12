@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
@@ -148,5 +149,66 @@ func TestScrubMasksWholeSwitchValues(t *testing.T) {
 		if got := Scrub(in); got != want {
 			t.Errorf("Scrub(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Free-text fields are cut to MaxField bytes before they are written (as
+// valid UTF-8, with no piece of a token left in clear), so no caller can
+// make one entry large.
+func TestAppendCapsFields(t *testing.T) {
+	l, st := openLog(t)
+	var seen []Entry
+	l.SetNotify(func(e Entry) { seen = append(seen, e) })
+	huge := strings.Repeat("<", 1<<20)
+	tok := "esm_" + strings.Repeat("Q", 43)
+	e := Entry{
+		Actor:  Actor{Kind: ActorAnonymous, ID: huge, Role: huge},
+		Action: huge,
+		Target: strings.Repeat("é", 1000),
+		Error:  strings.Repeat("x", MaxField-10) + tok,
+	}
+	if err := l.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := st.ReadFile(FileName)
+	if len(b) > 16<<10 {
+		t.Fatalf("one entry took %d bytes", len(b))
+	}
+	if strings.Contains(string(b), "QQQQQQ") {
+		t.Fatalf("a cut token is left in clear: %s", b)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("%d notifications", len(seen))
+	}
+	got := seen[0]
+	for name, v := range map[string]string{"actor id": got.Actor.ID, "role": got.Actor.Role, "action": got.Action, "target": got.Target, "error": got.Error} {
+		if len(v) > MaxField || !utf8.ValidString(v) {
+			t.Errorf("%s: %d bytes, valid UTF-8 %v", name, len(v), utf8.ValidString(v))
+		}
+	}
+	if !strings.HasPrefix(got.Target, "éé") || !strings.HasPrefix(got.Actor.ID, "<<<") {
+		t.Errorf("the start of a field is kept: %q", got.Target[:10])
+	}
+}
+
+// A line that is too long to read (written by an older version, or by
+// hand) is skipped like any other unreadable line; the entries around it
+// are still listed.
+func TestRecentSkipsOverlongLines(t *testing.T) {
+	l, st := openLog(t)
+	l.Append(Entry{Action: "before", OK: true})
+	f, err := st.OpenAppend(FileName, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte(`{"action":"huge","target":"` + strings.Repeat("a", 3<<20) + "\"}\n"))
+	f.Close()
+	l.Append(Entry{Action: "after", OK: true})
+	got, err := l.Recent(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Action != "before" || got[1].Action != "after" {
+		t.Fatalf("got %+v", got)
 	}
 }
