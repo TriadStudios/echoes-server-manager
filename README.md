@@ -1,2 +1,140 @@
-# echoes-server-manager
-ESM (Echoes Server Manager): install, run, update and monitor Echoes of Durinn dedicated servers from a web page, command line or API. Options: add a README, pick the Go .gitignore, and choose a license.
+# ESM: Echoes Server Manager
+
+ESM installs, runs, updates and watches Echoes of Durinn dedicated servers on
+one machine. It is a single Go program: `esm serve` runs the service, and the
+same binary is the command line that talks to it. Everything ESM does is
+also available through a small HTTP API, which a web page will use later.
+
+## Status
+
+Early development. **Not ready for real hosts yet.**
+
+- Everything ESM assumes about the real game server (command-line switches,
+  log lines, save file locations, how it stops) lives in one place,
+  [`internal/gameserver`](internal/gameserver/gameserver.go), and is marked
+  UNCONFIRMED until it has been proven on a real host. Until then ESM is
+  tested against a fake server that follows those assumptions.
+- Linux is the first target. Windows hosts are planned for the first public
+  release; the code already builds and its tests pass there.
+- There is no web interface yet. The service serves a placeholder page; the
+  real page will be built with [Den](https://github.com/TriadStudios/Den) in
+  a later phase.
+
+## Build
+
+You need Go 1.24 or newer. ESM uses only the Go standard library.
+
+```sh
+go build ./cmd/esm
+```
+
+## Run
+
+```sh
+esm serve --root ~/durinn
+```
+
+The root folder holds everything ESM owns: config, builds, instances,
+backups, logs and secrets. Without `--root` ESM uses `$ESM_ROOT`, then
+`~/durinn`. For a service install, give ESM its own unprivileged account,
+let it own a folder such as `/opt/durinn`, and pass `--root /opt/durinn`.
+ESM refuses to run as root.
+
+On first start ESM writes `esm.json` with defaults and prints a one-time
+**setup code** to stderr. The setup code creates the first admin user for
+the web page (`POST /api/v1/setup`). You do not need it for the command
+line: on the box, the command line talks to the service over the unix
+socket `<root>/esm.sock`, which only the ESM account can open, and has full
+rights.
+
+For scripts and other machines, make an API token:
+
+```sh
+esm token create --role operator --name deploy
+```
+
+The token is shown once. Send it as `Authorization: Bearer <token>`, or use
+it with the command line: `esm --url https://<your-host> --token <token> list`.
+
+### Linux: keep servers running
+
+ESM prefers systemd user units for game servers (memory and CPU limits are
+then enforced). User units stop when the account logs out unless lingering
+is on; the box owner turns it on once:
+
+```sh
+sudo loginctl enable-linger <esm-account>
+```
+
+Without systemd, ESM starts servers as detached processes (limits are not
+enforced in that mode). Either way, stopping ESM leaves the game servers
+running; the next `esm serve` finds them again.
+
+## Command line tour
+
+```sh
+esm doctor                                   # read-only checks of this box
+esm build install ./build-1.0.0.tar.gz       # or a folder, or an https URL with --sha256
+esm build list
+esm create alpha --set Difficulty=hard       # ports are picked from the configured ranges
+esm start alpha                              # waits until the server is ready
+esm status alpha
+esm logs alpha -n 100 -f
+esm backup alpha
+esm update alpha --to 1.1.0                  # rolls back if the new build never gets ready
+esm restore alpha 20260101T120000Z-manual
+esm stop alpha
+esm list --json
+```
+
+Every command prints one result line, or one JSON object with `--json`, and
+exits 0 on success and 1 on error. `esm help` lists every command.
+
+## Safety rules
+
+- The API listens on `127.0.0.1:8740` by default. ESM refuses to listen on
+  any other address unless `tls_cert` and `tls_key` are set. To reach it from
+  elsewhere, put a reverse proxy with TLS in front, or set up TLS directly.
+- Passwords are stored as PBKDF2 hashes and API tokens as SHA-256 hashes.
+  Server passwords live in a private file per instance and are never shown
+  by the API or written to logs.
+- Logins are rate limited. Browser sessions use an HttpOnly, SameSite=Strict
+  cookie plus a CSRF token on every change. Tokens are never accepted in
+  URLs.
+- Every change, and every refused request, is written to an append-only
+  audit log.
+- Builds are checked against their manifest (SHA-256 of every file) before
+  they are installed, archives are unpacked with path checks, downloads must
+  be https with a known SHA-256, and installed files are read-only.
+- ESM only ever signals or stops processes it started itself (it checks the
+  process start time and executable before touching a pid).
+- ESM never changes the firewall. It tells you which ports each instance
+  uses; opening them is up to you.
+
+## Documentation
+
+- [docs/DESIGN.md](docs/DESIGN.md): how ESM works and why.
+- [docs/openapi.yaml](docs/openapi.yaml): the HTTP API.
+
+## Development
+
+```sh
+gofmt -l .
+go vet ./...
+go test ./...
+```
+
+The tests build a fake game server (`cmd/esm-fakeserver`) and drive whole
+services through the API and the command line. Tests that start systemd
+user units run only when asked: `ESM_TEST_SYSTEMD=1 go test ./...` on Linux.
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep changes small, add tests,
+and keep the standard-library-only rule. Anything about the real game server
+belongs in `internal/gameserver` (and in the fake server, so the tests
+follow it).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
