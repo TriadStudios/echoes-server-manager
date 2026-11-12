@@ -191,7 +191,7 @@ func (s *Systemd) escapeArg(a string) string {
 	if s.expandFlag {
 		return a
 	}
-	return strings.ReplaceAll(a, "$", "$$")
+	return gameserver.EscapeForSystemd(a)
 }
 
 // Start runs spec as the transient unit esm-<name>.service.
@@ -257,8 +257,9 @@ func (s *Systemd) Start(ctx context.Context, spec Spec) error {
 	}
 	if _, err := s.systemctl(ctx, "systemd-run", args...); err != nil {
 		// systemd-run may repeat parts of the command line in its own
-		// messages; hide the password values.
-		return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.HideValues(err.Error(), gameserver.SecretValues(spec.Args)))
+		// messages, escaped as above; hide the password values in every
+		// form.
+		return startError(spec, err)
 	}
 	s.mu.Lock()
 	s.seen[spec.Name] = time.Now()

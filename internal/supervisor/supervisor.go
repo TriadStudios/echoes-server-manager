@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -208,3 +209,12 @@ func checkSpec(st *store.Store, s Spec) error {
 }
 
 func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
+
+// startError reports a failed start of spec. The tools a supervisor calls
+// may repeat the command line in their messages, so the text is scrubbed of
+// the password values in spec.Args, in every form they take on the way
+// (systemd's doubled dollars, quoting), and of anything after a password
+// switch.
+func startError(spec Spec, err error) error {
+	return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.ScrubLine(err.Error(), gameserver.SecretValues(spec.Args)))
+}

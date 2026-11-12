@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -150,7 +149,7 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	if err != nil {
 		// The error names the executable; hide password values anyway in
 		// case it ever repeats the arguments.
-		return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.HideValues(err.Error(), gameserver.SecretValues(spec.Args)))
+		return startError(spec, err)
 	}
 	pid := cmd.Process.Pid
 	// While we have not waited for it the pid cannot be reused, so the

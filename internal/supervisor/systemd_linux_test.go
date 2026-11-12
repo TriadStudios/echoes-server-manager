@@ -223,3 +223,64 @@ func TestSystemdStartErrorHidesPasswords(t *testing.T) {
 		t.Fatalf("start error lost its detail: %v", err)
 	}
 }
+
+// fakeOldSystemd puts a systemctl on PATH that reports systemd 252 (older
+// than --expand-environment, so ESM doubles every "$" of the command line)
+// and hands every other call to the real one, and a systemd-run that fails,
+// records its arguments in dir/args and repeats them: whole, and each
+// value without its switch. It returns dir.
+func fakeOldSystemd(t *testing.T) string {
+	t.Helper()
+	real, err := exec.LookPath("systemctl")
+	if err != nil {
+		t.Skip("no systemctl")
+	}
+	dir := t.TempDir()
+	scripts := map[string]string{
+		"systemctl": "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'systemd 252 (252.19-1)'; exit 0; fi\nexec '" + real + "' \"$@\"\n",
+		"systemd-run": "#!/bin/sh\nprintf '%s\n' \"$@\" > '" + dir + "/args'\n" +
+			"echo \"Failed to start transient service unit: $*\" >&2\n" +
+			"for a in \"$@\"; do case \"$a\" in *=*) echo \"invalid value: ${a#*=}\" >&2;; esac; done\nexit 1\n",
+	}
+	for name, body := range scripts {
+		if err := os.WriteFile(dir+"/"+name, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return dir
+}
+
+// On systemd versions without --expand-environment the command line goes
+// to systemd-run with every "$" doubled. When systemd-run fails and repeats
+// it, the passwords are hidden in that form too.
+func TestSystemdOldVersionHidesEscapedPasswords(t *testing.T) {
+	needSystemd(t)
+	dir := fakeOldSystemd(t)
+	r := newRig(t)
+	name := uniqueName("sdold")
+	cleanupUnit(t, name)
+	s := newSystemd(t, r)
+	if s.expandFlag {
+		t.Fatal("the fake systemctl --version was not used")
+	}
+	const pw, admin = `p$ss w$rd &"';%,=<> 42`, "adm$n-$ecret"
+	spec := r.spec(name)
+	spec.Args = append(spec.Args, "-ServerPassword="+pw, "-AdminPassword="+admin)
+	err := s.Start(context.Background(), spec)
+	if err == nil {
+		t.Fatal("start with a failing systemd-run succeeded")
+	}
+	args, _ := os.ReadFile(dir + "/args")
+	if !strings.Contains(string(args), "-ServerPassword="+strings.ReplaceAll(pw, "$", "$$")) {
+		t.Fatalf("systemd-run did not get the escaped command line:\n%s", args)
+	}
+	for _, piece := range []string{"p$ss", "p$$ss", "w$rd", "w$$rd", `&"';%,=<>`, "adm$n", "adm$$n", "$ecret", "$$ecret"} {
+		if strings.Contains(err.Error(), piece) {
+			t.Errorf("start error shows %q:\n%v", piece, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "invalid value: ") {
+		t.Fatalf("start error lost systemd-run's message: %v", err)
+	}
+}
