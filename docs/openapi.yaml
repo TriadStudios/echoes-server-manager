@@ -1,0 +1,1016 @@
+openapi: 3.1.0
+info:
+  title: ESM API
+  version: "0"
+  summary: HTTP API of ESM, the Echoes Server Manager.
+  description: |
+    ESM manages Echoes of Durinn dedicated servers on one box. The command
+    line, the web page and scripts all use this API.
+
+    Authentication, one of:
+    - `Authorization: Bearer <token>` with a token made by `esm token create`
+      or `POST /api/v1/tokens`. Tokens are never accepted in URLs.
+    - The `esm_session` cookie from `POST /api/v1/login`. Every call that
+      is not a GET must also send `X-CSRF-Token` with the `csrf_token` from
+      the login answer (or from `GET /api/v1/session`). If an `Origin`
+      header is sent, it must match the host.
+    - The unix socket `<root>/esm.sock`, which acts as admin.
+
+    Roles: `read` may make every GET call except `/tokens` and `/audit`;
+    `operator` may also start, stop, restart, update, back up and restore
+    instances and install builds; `admin` may do everything.
+
+    Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
+    Request bodies are JSON and at most 1 MiB. Calls that change something
+    are POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
+    `{}`); each writes an audit entry, as does every refused call.
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:8740
+security:
+  - bearer: []
+  - session: []
+tags:
+  - name: logins
+  - name: box
+  - name: builds
+  - name: instances
+  - name: events
+  - name: tokens
+paths:
+  /api/v1/setup:
+    get:
+      tags: [logins]
+      summary: Whether the first admin still has to be created
+      security: []
+      responses:
+        "200":
+          description: Setup state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupStatus" }
+    post:
+      tags: [logins]
+      summary: Create the first admin with the one-time setup code
+      description: Works only while no admin exists. The setup code is printed by `esm serve` when it is made.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetupRequest" }
+      responses:
+        "201":
+          description: Admin created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/login:
+    post:
+      tags: [logins]
+      summary: Log in and get the session cookie
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Logged in. The `esm_session` cookie is HttpOnly, SameSite=Strict, Path=/, and Secure behind TLS.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/logout:
+    post:
+      tags: [logins]
+      summary: End the session and clear the cookie
+      security: []
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Logged out.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoggedOut" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/session:
+    get:
+      tags: [logins]
+      summary: Who the caller is
+      description: For cookie sessions the answer also carries the CSRF token, so a reloaded page can find it again.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionInfo" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/box:
+    get:
+      tags: [box]
+      summary: Facts about this box and the service
+      responses:
+        "200":
+          description: Box facts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Box" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/box/doctor:
+    get:
+      tags: [box]
+      summary: Run the read-only checks from the service's point of view
+      responses:
+        "200":
+          description: Check results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DoctorReport" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/builds:
+    get:
+      tags: [builds]
+      summary: List installed builds, newest first
+      responses:
+        "200":
+          description: Builds.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildList" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [builds]
+      summary: Install a build (operator)
+      description: |
+        The source is a folder or a .zip, .tar.gz or .tgz file on the box, or
+        an https URL to such an archive. A sha256 is required for URLs. The
+        manifest and the hash of every file are checked before the build is
+        installed; the call returns when the install is done.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstallRequest" }
+      responses:
+        "201":
+          description: Installed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Build" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/builds/{version}:
+    delete:
+      tags: [builds]
+      summary: Remove a build no instance uses (admin)
+      parameters:
+        - $ref: "#/components/parameters/Version"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/builds/prune:
+    post:
+      tags: [builds]
+      summary: Remove every build no instance uses (admin)
+      description: An instance uses its current build and its newest keep_previous_builds previous builds.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Removed builds.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Removed" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/instances:
+    get:
+      tags: [instances]
+      summary: List instances with their status
+      responses:
+        "200":
+          description: Instances, sorted by name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstanceList" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [instances]
+      summary: Create an instance (admin)
+      description: Ports left out (or 0) are picked from the configured ranges. The instance is stopped until started.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInstance" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstanceChange" }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}:
+    get:
+      tags: [instances]
+      summary: One instance with its status
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: The instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Instance" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [instances]
+      summary: Change settings (admin)
+      description: |
+        Only the fields sent change. The build is changed with an update,
+        not here. Changes to a running instance take effect at its next
+        start (restart_required is true).
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstanceChange" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [instances]
+      summary: Delete a stopped instance (admin)
+      description: Backups are kept unless purge_backups is true.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteRequest" }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deleted" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/secrets:
+    put:
+      tags: [instances]
+      summary: Set or clear the server and admin passwords (admin)
+      description: A field left out stays as it is; an empty string clears it. Secrets are never returned.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SecretsRequest" }
+      responses:
+        "200":
+          description: Which secrets are set now.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretsResult" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/start:
+    post:
+      tags: [instances]
+      summary: Start (operator)
+      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/Wait"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Status after the start.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/stop:
+    post:
+      tags: [instances]
+      summary: Stop politely, then by force after stop_timeout (operator)
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Status after the stop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/restart:
+    post:
+      tags: [instances]
+      summary: Stop, then start (operator)
+      parameters:
+        - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/Wait"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Status after the restart.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/update:
+    post:
+      tags: [instances]
+      summary: Switch to another build of the same channel (operator)
+      description: |
+        Backs up the save files, stops a running server, starts the new
+        build and waits until it is ready. If it does not become ready the
+        old build is put back and started, and the answer is 422 with code
+        update_failed ("update failed, rolled back to ..."). World data is
+        not touched by a rollback. An instance that was stopped is stopped
+        again after the new build proved ready. Always waits.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateRequest" }
+      responses:
+        "200":
+          description: Status on the new build.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/backup:
+    post:
+      tags: [instances]
+      summary: Back up the save files now (operator)
+      description: A running server is given up to backup_save_wait to write its next world save first.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "201":
+          description: The new backup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Backup" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/restore:
+    post:
+      tags: [instances]
+      summary: Put a backup's save files back (operator)
+      description: A running server is stopped first and started again after; the current save files are backed up first (reason pre-restore).
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestoreRequest" }
+      responses:
+        "200":
+          description: Status after the restore.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/status:
+    get:
+      tags: [instances]
+      summary: Live status of one instance
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/logs:
+    get:
+      tags: [instances]
+      summary: The last lines of the server log or the console output
+      description: Follow new lines with the events stream (type log).
+      parameters:
+        - $ref: "#/components/parameters/Name"
+        - name: lines
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 200 }
+        - name: source
+          in: query
+          schema: { type: string, enum: [server, console], default: server }
+      responses:
+        "200":
+          description: Log lines, oldest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Logs" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/instances/{name}/backups:
+    get:
+      tags: [instances]
+      summary: Backups of an instance, newest first
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      responses:
+        "200":
+          description: Backups.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupList" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/events:
+    get:
+      tags: [events]
+      summary: Server-Sent Events stream
+      description: |
+        Each event has `id:`, `event:` (state, log, build or audit) and
+        `data:` with the Event as JSON. A comment line is sent every 15
+        seconds to keep the connection open. Reconnect with the
+        `Last-Event-ID` header to get the events missed meanwhile, as long as
+        they are still held in memory. Audit events are sent to admins only.
+        Without Last-Event-ID the stream starts with new events.
+      parameters:
+        - name: instance
+          in: query
+          description: Only events of this instance.
+          schema: { type: string }
+        - name: types
+          in: query
+          description: Comma-separated event types (state, log, build, audit).
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+      responses:
+        "200":
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/Event" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/clusters:
+    get:
+      tags: [instances]
+      summary: Clusters named by instances
+      responses:
+        "200":
+          description: Clusters, sorted by name.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClusterList" }
+  /api/v1/tokens:
+    get:
+      tags: [tokens]
+      summary: List API tokens (admin)
+      responses:
+        "200":
+          description: Tokens (never the token values).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenList" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [tokens]
+      summary: Make an API token (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenRequest" }
+      responses:
+        "201":
+          description: The token. Its value is shown only in this answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NewToken" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/tokens/{id}:
+    delete:
+      tags: [tokens]
+      summary: Revoke an API token (admin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deleted" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/audit:
+    get:
+      tags: [box]
+      summary: The newest audit entries, oldest first (admin)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        "200":
+          description: Audit entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditList" }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: An ESM API token ("esm_" followed by 43 characters).
+    session:
+      type: apiKey
+      in: cookie
+      name: esm_session
+      description: Session cookie from /api/v1/login. Non-GET calls also need the X-CSRF-Token header.
+  parameters:
+    Name:
+      name: name
+      in: path
+      required: true
+      description: Instance name.
+      schema: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+    Version:
+      name: version
+      in: path
+      required: true
+      description: Build version.
+      schema: { type: string, pattern: "^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$" }
+    Wait:
+      name: wait
+      in: query
+      description: Return only when the server is running or has failed.
+      schema: { type: boolean, default: false }
+  requestBodies:
+    Empty:
+      description: An empty object (or no body).
+      content:
+        application/json:
+          schema: { type: object, additionalProperties: false }
+  responses:
+    Error:
+      description: Error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many failed attempts from this client or for this user name.
+      headers:
+        Retry-After:
+          description: Seconds to wait.
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine code, for example bad_request, invalid, unauthorized,
+                bad_credentials, bad_setup_code, csrf, origin, forbidden,
+                not_found, method_not_allowed, conflict, already_running,
+                instance_exists, instance_running, port_in_use, no_free_ports,
+                build_exists, build_in_use, hash_mismatch, unsafe_archive,
+                bad_manifest, too_large, no_build, update_failed,
+                start_failed, not_ready, rate_limited, internal.
+            message: { type: string }
+    Duration:
+      description: A duration such as "90s" or "1h30m", or a number of seconds.
+      type: [string, number]
+    SetupStatus:
+      type: object
+      properties:
+        setup_needed: { type: boolean }
+    SetupRequest:
+      type: object
+      required: [code, username, password]
+      properties:
+        code: { type: string, description: The 24-character setup code. }
+        username: { type: string }
+        password: { type: string, minLength: 12 }
+    UserInfo:
+      type: object
+      properties:
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+    Role:
+      type: string
+      enum: [read, operator, admin]
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+    LoginResult:
+      type: object
+      properties:
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        csrf_token: { type: string }
+    LoggedOut:
+      type: object
+      properties:
+        logged_out: { type: boolean }
+    SessionInfo:
+      type: object
+      properties:
+        kind: { type: string, enum: [user, token, socket] }
+        id: { type: string, description: User name, token id, or "socket". }
+        role: { $ref: "#/components/schemas/Role" }
+        csrf_token: { type: string, description: Only for cookie sessions. }
+    Box:
+      type: object
+      properties:
+        version: { type: string }
+        root: { type: string }
+        os: { type: string }
+        supervisor: { type: string, enum: [process, systemd] }
+        limits_enforced: { type: boolean }
+        game_ports: { type: string, examples: ["7777-7786"] }
+        query_ports: { type: string, examples: ["27015-27024"] }
+        listen: { type: string }
+        tls: { type: boolean }
+        started: { type: string, format: date-time }
+        uptime_seconds: { type: integer }
+        instances: { type: integer }
+        running: { type: integer }
+        builds: { type: integer }
+        passwords_on_command_line:
+          type: boolean
+          description: Whether server passwords are passed on the server command line (an unconfirmed assumption about the game server).
+    DoctorReport:
+      type: object
+      properties:
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/DoctorCheck" }
+        problems: { type: integer }
+        warnings: { type: integer }
+    DoctorCheck:
+      type: object
+      properties:
+        name: { type: string }
+        status: { type: string, enum: [ok, warn, fail] }
+        message: { type: string }
+    Build:
+      type: object
+      properties:
+        version: { type: string }
+        commit: { type: string }
+        channel: { type: string, enum: [live, test] }
+        executable: { type: string, description: Path of this OS's executable inside the build. }
+        installed: { type: string, format: date-time }
+        files: { type: integer }
+        size_bytes: { type: integer }
+        used_by:
+          type: array
+          items: { type: string }
+    BuildList:
+      type: object
+      properties:
+        builds:
+          type: array
+          items: { $ref: "#/components/schemas/Build" }
+    InstallRequest:
+      type: object
+      required: [source]
+      properties:
+        source: { type: string, description: A folder or archive path on the box, or an https URL. }
+        sha256: { type: string, description: Required for URLs. }
+    Removed:
+      type: object
+      properties:
+        removed:
+          type: array
+          items: { type: string }
+    Ports:
+      type: object
+      properties:
+        game: { type: integer, minimum: 0, maximum: 65535 }
+        query: { type: integer, minimum: 0, maximum: 65535 }
+    Schedule:
+      type: object
+      properties:
+        restart_at:
+          type: array
+          description: Daily restart times, local time.
+          items: { type: string, pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" }
+    BackupPolicy:
+      type: object
+      properties:
+        every: { $ref: "#/components/schemas/Duration" }
+        keep: { type: integer, minimum: 1, maximum: 1000 }
+    Limits:
+      type: object
+      description: Enforced only by the systemd supervisor.
+      properties:
+        memory_max: { type: string, examples: ["8G"] }
+        cpu_quota_percent: { type: integer, minimum: 0 }
+    SecretFlags:
+      type: object
+      properties:
+        server_password_set: { type: boolean }
+        admin_password_set: { type: boolean }
+    Settings:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name: { type: string, maxLength: 64 }
+        cluster: { type: string }
+        channel: { type: string, enum: [live, test] }
+        map: { type: string, description: Empty means the server's default map. }
+        world: { type: string }
+        ports: { $ref: "#/components/schemas/Ports" }
+        bind_ip: { type: string }
+        max_players: { type: integer, minimum: 1, maximum: 200 }
+        rules:
+          type: object
+          description: Each rule becomes -Key=Value on the server command line.
+          additionalProperties: { type: string, maxLength: 256 }
+        listed: { type: boolean }
+        autostart: { type: boolean }
+        restart_on_crash: { type: boolean }
+        schedule: { $ref: "#/components/schemas/Schedule" }
+        backup: { $ref: "#/components/schemas/BackupPolicy" }
+        limits: { $ref: "#/components/schemas/Limits" }
+        extra_args:
+          type: array
+          items: { type: string }
+    CreateInstance:
+      allOf:
+        - $ref: "#/components/schemas/Settings"
+        - type: object
+          required: [name]
+          properties:
+            name: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+            build: { type: string, description: Default is the newest installed build of the channel. }
+    Instance:
+      type: object
+      properties:
+        name: { type: string }
+        display_name: { type: string }
+        cluster: { type: string }
+        channel: { type: string, enum: [live, test] }
+        build: { type: string }
+        map: { type: string }
+        world: { type: string }
+        ports: { $ref: "#/components/schemas/Ports" }
+        bind_ip: { type: string }
+        max_players: { type: integer }
+        rules:
+          type: object
+          additionalProperties: { type: string }
+        listed: { type: boolean }
+        autostart: { type: boolean }
+        restart_on_crash: { type: boolean }
+        schedule: { $ref: "#/components/schemas/Schedule" }
+        backup: { $ref: "#/components/schemas/BackupPolicy" }
+        limits: { $ref: "#/components/schemas/Limits" }
+        extra_args:
+          type: array
+          items: { type: string }
+        previous_builds:
+          type: array
+          items: { type: string }
+        created: { type: string, format: date-time }
+        updated: { type: string, format: date-time }
+        secrets: { $ref: "#/components/schemas/SecretFlags" }
+        status: { $ref: "#/components/schemas/Status" }
+    InstanceList:
+      type: object
+      properties:
+        instances:
+          type: array
+          items: { $ref: "#/components/schemas/Instance" }
+    InstanceChange:
+      allOf:
+        - $ref: "#/components/schemas/Instance"
+        - type: object
+          properties:
+            restart_required: { type: boolean }
+            warnings:
+              type: array
+              items: { type: string }
+    DeleteRequest:
+      type: object
+      properties:
+        purge_backups: { type: boolean, default: false }
+    Deleted:
+      type: object
+      properties:
+        deleted: { type: string }
+    SecretsRequest:
+      type: object
+      properties:
+        server_password: { type: string, maxLength: 128 }
+        admin_password: { type: string, maxLength: 128 }
+    SecretsResult:
+      type: object
+      properties:
+        secrets: { $ref: "#/components/schemas/SecretFlags" }
+        restart_required: { type: boolean }
+        warnings:
+          type: array
+          items: { type: string }
+    State:
+      type: string
+      enum: [stopped, starting, running, stopping, crashed, failed, updating, deleted]
+      description: deleted appears only in the last state event of a deleted instance.
+    Status:
+      type: object
+      properties:
+        name: { type: string }
+        state: { $ref: "#/components/schemas/State" }
+        reason: { type: string }
+        since: { type: string, format: date-time }
+        build: { type: string }
+        pid: { type: integer }
+        started_at: { type: string, format: date-time }
+        ready_at: { type: string, format: date-time }
+        ready_source: { type: string, enum: ["", status_file, log_line, query_port] }
+        exit_code: { type: [integer, "null"], description: Last exit code when known. }
+        crashes: { type: integer, description: Crashes inside the back-off window. }
+        gave_up: { type: boolean }
+        next_restart: { type: string, format: date-time }
+        restart_required: { type: boolean }
+    UpdateRequest:
+      type: object
+      required: [to]
+      properties:
+        to: { type: string, description: Build version. }
+    RestoreRequest:
+      type: object
+      required: [backup]
+      properties:
+        backup: { type: string, description: Backup id. }
+    Backup:
+      type: object
+      properties:
+        id: { type: string, examples: ["20260101T120000Z-manual"] }
+        instance: { type: string }
+        created: { type: string, format: date-time }
+        reason: { type: string, enum: [manual, scheduled, pre-update, pre-restore] }
+        build: { type: string }
+        files:
+          type: array
+          items: { type: string }
+        size_bytes: { type: integer }
+        save_confirmed:
+          type: boolean
+          description: The server was stopped, or a world save was seen just before the copy.
+    BackupList:
+      type: object
+      properties:
+        backups:
+          type: array
+          items: { $ref: "#/components/schemas/Backup" }
+    Logs:
+      type: object
+      properties:
+        instance: { type: string }
+        source: { type: string, enum: [server, console] }
+        lines:
+          type: array
+          items: { type: string }
+    Cluster:
+      type: object
+      properties:
+        name: { type: string }
+        instances:
+          type: array
+          items: { type: string }
+    ClusterList:
+      type: object
+      properties:
+        clusters:
+          type: array
+          items: { $ref: "#/components/schemas/Cluster" }
+    Token:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        created: { type: string, format: date-time }
+        last_used: { type: string, format: date-time }
+    TokenList:
+      type: object
+      properties:
+        tokens:
+          type: array
+          items: { $ref: "#/components/schemas/Token" }
+    TokenRequest:
+      type: object
+      required: [role]
+      properties:
+        name: { type: string, maxLength: 64 }
+        role: { $ref: "#/components/schemas/Role" }
+    NewToken:
+      allOf:
+        - $ref: "#/components/schemas/Token"
+        - type: object
+          properties:
+            token: { type: string, description: The token value. Shown only once. }
+    Actor:
+      type: object
+      properties:
+        kind: { type: string, enum: [user, token, socket, system, anonymous] }
+        id: { type: string }
+        role: { type: string }
+    AuditEntry:
+      type: object
+      properties:
+        time: { type: string, format: date-time }
+        actor: { $ref: "#/components/schemas/Actor" }
+        action: { type: string, examples: ["instance.start"] }
+        target: { type: string }
+        ok: { type: boolean }
+        error: { type: string }
+    AuditList:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+    LogLine:
+      type: object
+      properties:
+        source: { type: string, enum: [server, console] }
+        line: { type: string }
+    BuildEvent:
+      type: object
+      properties:
+        action: { type: string, enum: [installed, removed] }
+        version: { type: string }
+    Event:
+      type: object
+      description: The data of one Server-Sent Event.
+      properties:
+        id: { type: integer }
+        time: { type: string, format: date-time }
+        type: { type: string, enum: [state, log, build, audit] }
+        instance: { type: string }
+        data:
+          oneOf:
+            - $ref: "#/components/schemas/Status"
+            - $ref: "#/components/schemas/LogLine"
+            - $ref: "#/components/schemas/BuildEvent"
+            - $ref: "#/components/schemas/AuditEntry"
