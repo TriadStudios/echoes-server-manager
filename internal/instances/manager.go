@@ -629,11 +629,18 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 		cfg.Ports = ports
 	}
 	if toFile {
-		// First the files, then the setting: if ESM stops in between, the
-		// instance is still hidden from the read role.
+		// First the files and the reason, then the setting: if ESM stops
+		// in between, the instance is still hidden from the read role, and
+		// nothing from before the change is left to show afterwards.
 		if err := m.setAsideOutput(name); err != nil {
 			return View{}, false, fault.Wrap(fault.Conflict, "busy", err, "cannot set aside the server output of instance %s", name)
 		}
+		// The reason so far may repeat what the server or a supervisor's
+		// tool said.
+		in.mu.Lock()
+		in.status.Reason = outputSetAside
+		m.emitLocked(in)
+		in.mu.Unlock()
 	}
 	cfg.Updated = m.now()
 	if err := m.st.WriteJSON(instFile(name), cfg, 0o600); err != nil {
@@ -644,10 +651,6 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	in.nextRestart, in.nextBackup = time.Time{}, time.Time{}
 	if toCommandLine {
 		in.hiddenGen++
-	}
-	if toFile {
-		// The reason so far may repeat what the server said.
-		in.status.Reason = outputSetAside
 	}
 	if active {
 		in.status.RestartRequired = true
