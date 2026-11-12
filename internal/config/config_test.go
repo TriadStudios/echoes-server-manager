@@ -211,3 +211,22 @@ func TestPeekWritesNothing(t *testing.T) {
 		t.Fatal("unknown field accepted")
 	}
 }
+
+// Local build sources come from the import folder: <root>/imports unless
+// build_import_dir says otherwise, relative to the root.
+func TestImportDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	c := Defaults(root)
+	if got := c.ImportDir(); got != filepath.Join(root, "imports") {
+		t.Errorf("default %q", got)
+	}
+	c.BuildImportDir = "incoming"
+	if got := c.ImportDir(); got != filepath.Join(root, "incoming") {
+		t.Errorf("relative %q", got)
+	}
+	abs := filepath.Join(t.TempDir(), "elsewhere")
+	c.BuildImportDir = abs + string(filepath.Separator)
+	if got := c.ImportDir(); got != abs {
+		t.Errorf("absolute %q", got)
+	}
+}

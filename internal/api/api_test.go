@@ -80,6 +80,11 @@ func TestRolesOfRoutes(t *testing.T) {
 			if r.Role != "admin" {
 				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
 			}
+		case r.Method == "POST" && r.Path == "/api/v1/builds":
+			// A build is a program that runs with ESM's own rights.
+			if r.Role != "admin" {
+				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
+			}
 		case r.Method == "GET" && r.Path != "/api/v1/setup":
 			if r.Role != "read" {
 				t.Errorf("%s %s should be readable with the read role, has %q", r.Method, r.Path, r.Role)

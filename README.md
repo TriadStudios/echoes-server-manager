@@ -83,7 +83,7 @@ running; the next `esm serve` finds them again.
 
 ```sh
 esm doctor                                   # read-only checks of this box
-esm build install ./build-1.0.0.tar.gz       # or a folder, or an https URL with --sha256
+esm build install ~/durinn/imports/build-1.0.0.tar.gz  # or a folder there, or an https URL with --sha256
 esm build list
 esm create alpha --set Difficulty=hard       # ports are picked from the configured ranges
 esm start alpha                              # waits until the server is ready
@@ -152,7 +152,15 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   audit log.
 - Builds are checked against their manifest (SHA-256 of every file) before
   they are installed, archives are unpacked with path checks, downloads must
-  be https with a known SHA-256, and installed files are read-only.
+  be https with a known SHA-256, and installed files are read-only. A local
+  build must be in the import folder (`<root>/imports`, or
+  `build_import_dir` in `esm.json`); ESM reads no other local path for it.
+- **A build runs with ESM's own rights.** A game server build is a program,
+  and ESM starts it as its own account: it can read every file ESM keeps
+  (the secrets files with users, tokens and server passwords) and reach the
+  unix socket, which acts as admin. So only the admin role installs builds;
+  the operator role cannot (it can still update an instance to a build an
+  admin installed). Install only builds you trust.
 - ESM only ever signals or stops processes it started itself (it checks the
   process start time and executable before touching a pid).
 - ESM never changes the firewall. It tells you which ports each instance

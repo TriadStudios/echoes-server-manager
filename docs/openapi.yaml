@@ -19,7 +19,8 @@ info:
 
     Roles: `read` may make every GET call except `/tokens` and `/audit`;
     `operator` may also start, stop, restart, update, back up and restore
-    instances and install builds; `admin` may do everything.
+    instances; `admin` may do everything, installing builds included (a
+    build is a program that runs with ESM's own rights).
 
     Server passwords are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
@@ -192,12 +193,18 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
     post:
       tags: [builds]
-      summary: Install a build (operator)
+      summary: Install a build (admin)
       description: |
-        The source is a folder or a .zip, .tar.gz or .tgz file on the box, or
-        an https URL to such an archive. A sha256 is required for URLs. The
-        manifest and the hash of every file are checked before the build is
-        installed; the call returns when the install is done.
+        The source is a folder or a .zip, .tar.gz or .tgz file inside the
+        import folder on the box (`build_import_dir`, by default
+        `<root>/imports`; a relative path is taken from there), or an https
+        URL to such an archive. Any other local path is refused with 422
+        `source_not_allowed`, which says nothing about the path. A sha256 is
+        required for URLs; a failed download names only the class of the
+        server's status. The manifest and the hash of every file are checked
+        before the build is installed; the call returns when the install is
+        done. A build runs with ESM's own rights, so only admins install
+        builds.
       requestBody:
         required: true
         content:

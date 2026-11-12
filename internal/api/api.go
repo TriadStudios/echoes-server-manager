@@ -157,7 +157,10 @@ func init() {
 	r("GET", p+"/box", required, read, "box.get", (*Server).box)
 	r("GET", p+"/box/doctor", required, read, "box.doctor", (*Server).doctor)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
-	r("POST", p+"/builds", required, oper, "build.install", (*Server).installBuild)
+	// Installing a build is installing a program that runs with ESM's own
+	// rights: admin only. Switching an instance to an installed build is
+	// an operator's update.
+	r("POST", p+"/builds", required, admin, "build.install", (*Server).installBuild)
 	r("DELETE", p+"/builds/{version}", required, admin, "build.delete", (*Server).deleteBuild)
 	r("POST", p+"/builds/prune", required, admin, "build.prune", (*Server).pruneBuilds)
 	r("GET", p+"/instances", required, read, "instance.list", (*Server).listInstances)

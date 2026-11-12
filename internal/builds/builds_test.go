@@ -38,7 +38,11 @@ func newRig(t *testing.T, o builds.Options) *rig {
 	t.Cleanup(func() { st.Close() })
 	bus := events.NewBus(64)
 	o.Bus = bus
-	return &rig{st: st, m: builds.New(st, o), bus: bus, src: t.TempDir()}
+	src := t.TempDir()
+	if o.ImportDir == "" {
+		o.ImportDir = src
+	}
+	return &rig{st: st, m: builds.New(st, o), bus: bus, src: src}
 }
 
 func code(err error) string { return fault.CodeOf(err) }
@@ -187,7 +191,7 @@ func TestManifestProblemsRefused(t *testing.T) {
 		other = "linux"
 	}
 	noExe := testkit.MakeBuild(t, filepath.Join(r.src, "d"), testkit.BuildOptions{Version: "3.3", ThisOSOnly: true})
-	m2 := builds.New(r.st, builds.Options{GOOS: other})
+	m2 := builds.New(r.st, builds.Options{GOOS: other, ImportDir: r.src})
 	if _, err := m2.Install(ctx, noExe, ""); code(err) != "no_executable" {
 		t.Fatalf("no executable for this OS: %v", err)
 	}
@@ -274,7 +278,7 @@ func TestInstallFromURL(t *testing.T) {
 		w.Write(data)
 	}))
 	defer srv.Close()
-	m := builds.New(r.st, builds.Options{HTTPClient: srv.Client()})
+	m := builds.New(r.st, builds.Options{HTTPClient: srv.Client(), ImportDir: r.src})
 	ctx := context.Background()
 	url := srv.URL + "/builds/b.tgz?sig=secret-value"
 	if _, err := m.Install(ctx, url, ""); code(err) != "invalid" {
@@ -312,5 +316,74 @@ func TestCleanTemp(t *testing.T) {
 	}
 	if r.st.Exists("tmp/build-abc") || !r.st.Exists("tmp/other") {
 		t.Fatal("CleanTemp removed the wrong things")
+	}
+}
+
+// A local source must lie inside the import folder; a relative one is
+// taken from there. Anything outside is refused with one answer, whether
+// it exists or not, so the answer tells nothing about other folders.
+func TestLocalSourcesOnlyFromTheImportFolder(t *testing.T) {
+	r := newRig(t, builds.Options{})
+	ctx := context.Background()
+	outside := t.TempDir()
+	folder := testkit.MakeBuild(t, outside, testkit.BuildOptions{Version: "1.0"})
+	zipPath := filepath.Join(outside, "b.zip")
+	testkit.MakeZip(t, folder, zipPath)
+	refused := map[string]string{
+		"a folder outside":         folder,
+		"an archive outside":       zipPath,
+		"a path that is not there": filepath.Join(outside, "nothing-here"),
+		"a way out":                filepath.Join("..", filepath.Base(outside)),
+		"the parent":               filepath.Dir(r.src),
+	}
+	var first string
+	for what, src := range refused {
+		_, err := r.m.Install(ctx, src, "")
+		if code(err) != "source_not_allowed" {
+			t.Errorf("%s: %v (code %s), want source_not_allowed", what, err, code(err))
+			continue
+		}
+		if strings.Contains(err.Error(), filepath.Base(outside)) {
+			t.Errorf("%s: the answer names the path: %v", what, err)
+		}
+		if first == "" {
+			first = err.Error()
+		} else if err.Error() != first {
+			t.Errorf("%s: answer %q differs from %q", what, err, first)
+		}
+	}
+	// A link inside the import folder that leads out is refused too.
+	link := filepath.Join(r.src, "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Logf("no symbolic links here: %v", err)
+	} else if _, err := r.m.Install(ctx, link, ""); code(err) != "source_not_allowed" {
+		t.Errorf("a link out of the import folder: %v (code %s)", err, code(err))
+	}
+	if list, _ := r.m.List(); len(list) != 0 {
+		t.Fatalf("builds from outside were installed: %v", list)
+	}
+	// Inside, by its full path or relative to the import folder.
+	inside := testkit.MakeBuild(t, filepath.Join(r.src, "a"), testkit.BuildOptions{Version: "2.0"})
+	if _, err := r.m.Install(ctx, inside, ""); err != nil {
+		t.Fatalf("full path inside: %v", err)
+	}
+	testkit.MakeZip(t, testkit.MakeBuild(t, filepath.Join(r.src, "b"), testkit.BuildOptions{Version: "3.0"}), filepath.Join(r.src, "b.zip"))
+	if _, err := r.m.Install(ctx, "b.zip", ""); err != nil {
+		t.Fatalf("relative path inside: %v", err)
+	}
+	r.noLeftovers(t)
+}
+
+// A failed download says no more than the class of the server's answer.
+func TestDownloadErrorsSayLittle(t *testing.T) {
+	r := newRig(t, builds.Options{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Error(w, "internal detail 1234", http.StatusTeapot)
+	}))
+	defer srv.Close()
+	m := builds.New(r.st, builds.Options{HTTPClient: srv.Client(), ImportDir: r.src})
+	_, err := m.Install(context.Background(), srv.URL+"/b.zip", strings.Repeat("a", 64))
+	if code(err) != "download_failed" || strings.Contains(err.Error(), "418") || strings.Contains(err.Error(), "Teapot") || !strings.Contains(err.Error(), "4xx") {
+		t.Fatalf("got %v", err)
 	}
 }

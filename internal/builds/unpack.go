@@ -115,13 +115,12 @@ func (w *writer) file(name string, mode fs.FileMode, r io.Reader) error {
 	return nil
 }
 
-// unpackZip extracts a .zip file into the writer's folder.
-func unpackZip(path string, w *writer) error {
-	zr, err := zip.OpenReader(path)
+// unpackZip extracts a .zip file of size bytes into the writer's folder.
+func unpackZip(r io.ReaderAt, size int64, w *writer) error {
+	zr, err := zip.NewReader(r, size)
 	if err != nil {
 		return fault.Wrap(fault.Invalid, "bad_archive", err, "cannot read the zip archive")
 	}
-	defer zr.Close()
 	for _, f := range zr.File {
 		mode := f.Mode()
 		switch {
@@ -148,14 +147,9 @@ func unpackZip(path string, w *writer) error {
 	return nil
 }
 
-// unpackTarGz extracts a .tar.gz file into the writer's folder.
-func unpackTarGz(path string, w *writer) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
+// unpackTarGz extracts a .tar.gz stream into the writer's folder.
+func unpackTarGz(r io.Reader, w *writer) error {
+	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return fault.Wrap(fault.Invalid, "bad_archive", err, "cannot read the gzip stream")
 	}
@@ -195,12 +189,7 @@ func unpackTarGz(path string, w *writer) error {
 // copyFolder copies a plain folder (no links, no special files) into the
 // writer's folder. Files are read through an os.Root on the source, so a
 // file swapped for a link that leaves the folder cannot be followed.
-func copyFolder(src string, w *writer) error {
-	sr, err := os.OpenRoot(src)
-	if err != nil {
-		return err
-	}
-	defer sr.Close()
+func copyFolder(sr *os.Root, w *writer) error {
 	return fs.WalkDir(sr.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

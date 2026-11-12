@@ -97,6 +97,7 @@ are refused, so typos are reported.
 | `socket`               | `<root>/esm.sock` | Unix socket path. |
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
 | `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
+| `build_import_dir`     | `<root>/imports`  | The only folder local build sources are read from (created 0700 at start; a relative path is taken from the root). |
 | `game_ports`           | `7777-7786`       | Range for game ports. |
 | `query_ports`          | `27015-27024`     | Range for query ports. |
 | `supervisor`           | `auto`            | `auto`, `systemd` or `process`. |
@@ -376,12 +377,30 @@ Every file except the manifest must be listed with its SHA-256, and the
 executable for the box's operating system must be listed. A build is
 installed from:
 
-- a local folder (copied; links and special files refused);
-- a local `.zip`, `.tar.gz` or `.tgz` archive (unpacked with path checks:
-  no absolute paths, no `..`, no links, no devices, no duplicate names,
-  size and file-count limits);
+- a folder inside the import folder (copied; links and special files
+  refused);
+- a `.zip`, `.tar.gz` or `.tgz` archive inside the import folder (unpacked
+  with path checks: no absolute paths, no `..`, no links, no devices, no
+  duplicate names, size and file-count limits);
 - an `https` URL to such an archive, with a required SHA-256 (plain http is
-  refused; redirects must stay on https).
+  refused; redirects must stay on https). A failed download names only the
+  class of the server's status; the details go to the service log.
+
+The import folder is `<root>/imports` unless `build_import_dir` says
+otherwise. A relative source is taken from it. ESM opens local sources
+through an `os.Root` on that folder, so neither `..` nor a link leads out of
+it, and any other path is refused with `source_not_allowed`, an answer that
+says nothing about the path (whether it exists, what it is, who may read
+it).
+
+**A build runs with ESM's own rights.** A build is a program, and its
+server runs as the ESM account: it can read every file in the root, the
+secrets files with users, token hashes and every instance's passwords
+included, and connect to the unix socket, which acts as admin. Installing
+a build is therefore as much as being admin, and only the `admin` role may
+do it (`POST /api/v1/builds`). The `operator` role can still update an
+instance to a build an admin installed. Keeping game servers away from
+ESM's files is an open item (see [Open items](#open-items)).
 
 Everything is unpacked into `tmp/`, the manifest and every hash are checked,
 and only then is the folder moved into `builds/<version>/`. Files are made
@@ -544,8 +563,8 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
   audit log, and the server output and state reasons of instances that pass
   their passwords on the command line; `operator` sees those too and also
-  starts, stops, restarts, updates, backs up, restores and installs builds;
-  `admin` does everything else (create, change, delete, secrets, tokens,
+  starts, stops, restarts, updates, backs up and restores; `admin` does
+  everything else (install builds, create, change, delete, secrets, tokens,
   pruning). Tokens are never accepted in URLs.
 - **Page headers.** Every reply ESM writes, of the page and of the API,
   errors and the router's own redirects included, carries a strict
@@ -652,6 +671,15 @@ else.
   real server facts confirmed on a real host.
 - **Later:** player controls, Steam installs, Windows hosts (planned for
   the first public release).
+
+## Open items
+
+- **Keep game servers away from ESM's files.** Today a game server runs as
+  the ESM account, so a compromised server (it faces the internet) can read
+  ESM's secrets and act as admin through the socket. Planned: run game
+  servers under a separate account, or at least deny them `<root>/secrets`,
+  the socket and the other instances' folders (systemd
+  `InaccessiblePaths=`), and move the socket out of their reach.
 
 ## Open questions
 

@@ -140,7 +140,12 @@ func Start(o Options) (_ *Service, err error) {
 		return nil, err
 	}
 	cleanups = append(cleanups, func() { s.sup.Close() })
-	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient})
+	// Local build sources are read from the import folder only.
+	importDir := cfg.ImportDir()
+	if err := os.MkdirAll(importDir, 0o700); err != nil {
+		log.Warn("cannot create the build import folder", "path", importDir, "err", err)
+	}
+	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient, ImportDir: importDir})
 	if err := bm.CleanTemp(); err != nil {
 		log.Warn("cannot clean the tmp folder", "err", err)
 	}

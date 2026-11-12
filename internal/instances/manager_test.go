@@ -86,8 +86,9 @@ func newRig(t *testing.T, tune func(*config.Config)) *rig {
 		t.Fatal(err)
 	}
 	bus := events.NewBus(4096)
-	b := builds.New(st, builds.Options{Bus: bus})
-	r := &rig{t: t, st: st, cfg: cfg, b: b, bus: bus, src: t.TempDir(), log: &syncBuffer{}}
+	src := t.TempDir()
+	b := builds.New(st, builds.Options{Bus: bus, ImportDir: src})
+	r := &rig{t: t, st: st, cfg: cfg, b: b, bus: bus, src: src, log: &syncBuffer{}}
 	// Every server that reaches running listens on loopback only.
 	running := bus.Subscribe(events.Filter{Types: []string{events.TypeState}}, 4096)
 	watched := make(chan struct{})

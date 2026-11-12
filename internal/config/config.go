@@ -101,7 +101,11 @@ type Config struct {
 	// TLS). The session cookie is then marked Secure, as with tls_cert and
 	// tls_key. Off by default: a Secure cookie is never sent over plain
 	// http, so turning this on without such a proxy breaks browser logins.
-	BehindTLSProxy     bool     `json:"behind_tls_proxy"`
+	BehindTLSProxy bool `json:"behind_tls_proxy"`
+	// BuildImportDir is the folder a local build source (a folder or an
+	// archive) must be in. Empty means <root>/imports; a relative path is
+	// taken from the root.
+	BuildImportDir     string   `json:"build_import_dir,omitempty"`
 	GamePorts          string   `json:"game_ports"`
 	QueryPorts         string   `json:"query_ports"`
 	Supervisor         string   `json:"supervisor"` // auto | systemd | process
@@ -198,6 +202,22 @@ func (c *Config) SocketPath() string {
 		return c.Socket
 	}
 	return filepath.Join(c.Root, "esm.sock")
+}
+
+// DefaultImportDir is the import folder inside the root.
+const DefaultImportDir = "imports"
+
+// ImportDir returns the absolute import folder for local build sources
+// (see BuildImportDir).
+func (c *Config) ImportDir() string {
+	dir := c.BuildImportDir
+	if dir == "" {
+		dir = DefaultImportDir
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(c.Root, dir)
+	}
+	return filepath.Clean(dir)
 }
 
 // Validate checks every field and returns the first problem found.

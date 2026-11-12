@@ -92,6 +92,7 @@ func newESMWith(t *testing.T, supervisorKind string, opts ...option) *harness {
 		"ready_timeout":    "10s",
 		"backup_save_wait": "3s",
 		"log_level":        "debug",
+		"build_import_dir": h.src,
 	}
 	for _, o := range opts {
 		o(cfg)
