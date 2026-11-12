@@ -2,9 +2,11 @@ package gameserver
 
 import (
 	"encoding/json"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The value of a password switch is masked up to the next switch or the end
@@ -111,5 +113,62 @@ func TestScrubberShortValues(t *testing.T) {
 	var none *Scrubber
 	if got := none.Scrub("-AdminPassword=abc def"); got != "-AdminPassword="+Mask {
 		t.Fatalf("nil scrubber: %q", got)
+	}
+}
+
+// Masking a switch value takes time in proportion to the text, however
+// much white space it holds: a long run of spaces inside a value must not
+// be scanned again from every space.
+func TestSwitchRuleTakesLinearTime(t *testing.T) {
+	for _, in := range []string{
+		"-password=" + strings.Repeat(" ", 400000) + "x",
+		"-ServerPassword=a" + strings.Repeat(" \t", 200000) + "b",
+		strings.Repeat("-AdminPassword= ", 50000),
+	} {
+		start := time.Now()
+		out := ScrubLine(in, nil)
+		if d := time.Since(start); d > time.Second {
+			t.Fatalf("masking %d bytes took %s", len(in), d)
+		}
+		if strings.Contains(out, "x") && strings.HasPrefix(in, "-password=") {
+			t.Fatalf("value not masked: %q...", out[:40])
+		}
+	}
+}
+
+// The end of a switch value is found as the first version of the rule
+// found it, on every short mix of the characters that matter.
+func TestSwitchValueEndMatchesTheRule(t *testing.T) {
+	// slowEnd is the rule written plainly: before the first white space
+	// (not at the start) that is followed by more white space, an optional
+	// quote, "-" and a letter; or at a line end.
+	slowEnd := func(v string) int {
+		for i := 0; i < len(v); i++ {
+			c := v[i]
+			if c == '\n' || c == '\r' {
+				return i
+			}
+			if i > 0 && (c == ' ' || c == '\t') {
+				rest := strings.TrimLeft(v[i:], " \t")
+				if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
+					rest = rest[1:]
+				}
+				if len(rest) >= 2 && rest[0] == '-' && ('a' <= rest[1] && rest[1] <= 'z' || 'A' <= rest[1] && rest[1] <= 'Z') {
+					return i
+				}
+			}
+		}
+		return len(v)
+	}
+	alphabet := []byte{' ', '\t', '-', 'a', 'Z', '1', '"', '\'', '\n', '='}
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 200000 {
+		b := make([]byte, rng.IntN(12))
+		for i := range b {
+			b[i] = alphabet[rng.IntN(len(alphabet))]
+		}
+		if got, want := switchValueEnd(string(b)), slowEnd(string(b)); got != want {
+			t.Fatalf("switchValueEnd(%q) = %d, want %d", b, got, want)
+		}
 	}
 }
