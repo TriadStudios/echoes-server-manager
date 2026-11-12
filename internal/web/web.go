@@ -7,12 +7,14 @@
 // nothing loaded from other origins, no framing.
 //
 // Paths that name no file get index.html, so the page can route on the
-// client side.
+// client side. Paths that try to leave the folder or reach something that
+// is not a page file get 404 (see fileName); a folder is never listed.
 package web
 
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"path"
@@ -60,14 +62,27 @@ func Handler() http.Handler {
 	if err != nil {
 		panic(err)
 	}
+	return serve(files)
+}
+
+// serve serves the files of files for GET and HEAD requests.
+func serve(files fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		SetSecurityHeaders(w.Header())
-		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		name, ok := fileName(r.URL.Path)
+		if !ok {
+			notFound(w)
+			return
+		}
+		if fi, err := fs.Stat(files, name); name != "" && err == nil && fi.IsDir() {
+			notFound(w) // a folder is never listed
+			return
+		}
 		b, err := fs.ReadFile(files, name)
 		if name == "" || err != nil {
 			name = "index.html"
 			if b, err = fs.ReadFile(files, name); err != nil {
-				http.Error(w, "page missing", http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, "internal", "the page is missing from this build")
 				return
 			}
 		}
@@ -79,4 +94,43 @@ func Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(b))
 	})
+}
+
+// fileName turns a request path (as decoded from the URL) into the name of
+// a page file, "" for the index. It refuses, whatever the files are, every
+// path that could reach outside the page folder or something that is not
+// meant to be served, on any system:
+//
+//   - a "." or ".." segment, however it was written ("%2e%2e" too);
+//   - a backslash (also "%5c"), which Windows takes for a folder separator;
+//   - a colon, as in a drive letter ("/C:/Windows/win.ini") or a Windows
+//     stream name ("file::$DATA");
+//   - a segment that starts with a dot (dotfiles and dot folders);
+//   - control characters, NUL among them.
+func fileName(p string) (string, bool) {
+	if !strings.HasPrefix(p, "/") {
+		return "", false
+	}
+	if strings.ContainsAny(p, `\:`) || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if strings.HasPrefix(seg, ".") {
+			return "", false
+		}
+	}
+	return strings.TrimPrefix(path.Clean(p), "/"), true
+}
+
+func notFound(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not_found", "no such page")
+}
+
+// writeError writes ESM's error shape, {"error": {"code", "message"}}.
+func writeError(w http.ResponseWriter, status int, code, msg string) {
+	b, _ := json.Marshal(map[string]map[string]string{"error": {"code": code, "message": msg}})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	w.Write(append(b, '\n'))
 }
