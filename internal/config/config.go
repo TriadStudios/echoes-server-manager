@@ -101,7 +101,18 @@ type Config struct {
 	// TLS). The session cookie is then marked Secure, as with tls_cert and
 	// tls_key. Off by default: a Secure cookie is never sent over plain
 	// http, so turning this on without such a proxy breaks browser logins.
-	BehindTLSProxy     bool     `json:"behind_tls_proxy"`
+	BehindTLSProxy bool `json:"behind_tls_proxy"`
+	// PublicHosts are the host names (host, or host:port) browsers and
+	// clients may use for ESM besides localhost, 127.0.0.1 and [::1] with
+	// the listen port and the listen address itself: the name a reverse
+	// proxy passes on, for one. A request for any other name is refused,
+	// so a page of another site cannot reach ESM by pointing its own name
+	// at this box.
+	PublicHosts []string `json:"public_hosts,omitempty"`
+	// BuildImportDir is the folder a local build source (a folder or an
+	// archive) must be in. Empty means <root>/imports; a relative path is
+	// taken from the root.
+	BuildImportDir     string   `json:"build_import_dir,omitempty"`
 	GamePorts          string   `json:"game_ports"`
 	QueryPorts         string   `json:"query_ports"`
 	Supervisor         string   `json:"supervisor"` // auto | systemd | process
@@ -200,6 +211,22 @@ func (c *Config) SocketPath() string {
 	return filepath.Join(c.Root, "esm.sock")
 }
 
+// DefaultImportDir is the import folder inside the root.
+const DefaultImportDir = "imports"
+
+// ImportDir returns the absolute import folder for local build sources
+// (see BuildImportDir).
+func (c *Config) ImportDir() string {
+	dir := c.BuildImportDir
+	if dir == "" {
+		dir = DefaultImportDir
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(c.Root, dir)
+	}
+	return filepath.Clean(dir)
+}
+
 // Validate checks every field and returns the first problem found.
 func (c *Config) Validate() error {
 	if _, _, err := SplitListen(c.Listen); err != nil {
@@ -207,6 +234,11 @@ func (c *Config) Validate() error {
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return errors.New("config: tls_cert and tls_key must be set together")
+	}
+	for _, h := range c.PublicHosts {
+		if err := checkPublicHost(h); err != nil {
+			return fmt.Errorf("config: public_hosts: %w", err)
+		}
 	}
 	g, err := ParsePortRange(c.GamePorts)
 	if err != nil {
@@ -248,6 +280,23 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("config: log_level must be debug, info, warn or error, not %q", c.LogLevel)
+	}
+	return nil
+}
+
+// checkPublicHost checks one public_hosts entry: a host name or address,
+// with an optional port.
+func checkPublicHost(h string) error {
+	bad := fmt.Errorf("%q must be a host name, or host:port, without a scheme or path", h)
+	if h == "" || len(h) > 255 || strings.ContainsAny(h, "/\\ \t@?#,;") {
+		return bad
+	}
+	if host, port, err := net.SplitHostPort(h); err == nil {
+		if n, err := strconv.Atoi(port); host == "" || err != nil || n < 1 || n > 65535 {
+			return bad
+		}
+	} else if strings.Contains(strings.Trim(h, "[]"), ":") && net.ParseIP(strings.Trim(h, "[]")) == nil {
+		return bad
 	}
 	return nil
 }

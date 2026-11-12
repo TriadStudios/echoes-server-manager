@@ -206,3 +206,35 @@ func TestSessionCookieRules(t *testing.T) {
 		})
 	}
 }
+
+// Through a tunnel or a proxy on the box every client arrives from
+// 127.0.0.1. Failed logins with made-up names from there must not lock the
+// real admin out: the limit counts per user name, not per shared address.
+// The audit log records neither made-up name.
+func TestLoopbackLoginsLockNobodyOut(t *testing.T) {
+	h := newESM(t)
+	m := regexp.MustCompile(`ESM setup code: ([A-Z2-7]{24})`).FindStringSubmatch(h.stderr.String())
+	if m == nil {
+		t.Fatal("no setup code printed")
+	}
+	if st := h.call("POST", "/api/v1/setup", "", api.SetupRequest{Code: m[1], Username: "admin", Password: adminPassword}, nil); st != http.StatusCreated {
+		t.Fatalf("setup: %d", st)
+	}
+	var eb api.ErrorBody
+	for i := range auth.DefaultRateMax {
+		if st := h.call("POST", "/api/v1/login", "", api.LoginRequest{Username: fmt.Sprintf("made-up-%d", i), Password: "wrong password!!"}, &eb); st != http.StatusUnauthorized {
+			t.Fatalf("made-up name %d: %d %+v", i, st, eb)
+		}
+	}
+	var lr api.LoginResult
+	if st := h.call("POST", "/api/v1/login", "", api.LoginRequest{Username: "admin", Password: adminPassword}, &lr); st != http.StatusOK || lr.Username != "admin" {
+		t.Fatalf("the real admin after made-up names from 127.0.0.1: %d %+v", st, lr)
+	}
+	b, err := os.ReadFile(filepath.Join(h.root, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "made-up") || !strings.Contains(string(b), auth.UnknownName) {
+		t.Fatalf("audit log: %s", b)
+	}
+}

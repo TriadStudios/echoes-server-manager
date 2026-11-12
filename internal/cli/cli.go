@@ -81,7 +81,7 @@ Instances:
   restore <name> <backup-id>
 
 Builds:
-  build install <folder|archive|https-url> [--sha256 HEX]
+  build install <folder|archive|https-url> [--sha256 HEX]   (local sources from the import folder)
   build list
   build prune
 

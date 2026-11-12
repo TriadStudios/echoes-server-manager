@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -197,5 +198,44 @@ func TestTailLines(t *testing.T) {
 	}
 	if got, _ := m.tailLines("log", 10); len(got) != 0 {
 		t.Fatalf("empty file: %q", got)
+	}
+}
+
+// A huge line costs no more to show than a long one: it is cut to a
+// bounded piece before it is masked.
+func TestShowOutputMasksABoundedPiece(t *testing.T) {
+	filter := gameserver.NewScrubber([]string{"hunter22"})
+	line := "say hunter22 -ServerPassword=x -log " + strings.Repeat("a b ", 1<<20) // 4 MiB
+	showOutput(filter, line)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got := showOutput(filter, line)
+	runtime.ReadMemStats(&after)
+	if d := after.TotalAlloc - before.TotalAlloc; d > 1<<20 {
+		t.Fatalf("showing one line of %d bytes allocated %d bytes", len(line), d)
+	}
+	if want := "say " + gameserver.Mask + " -ServerPassword=" + gameserver.Mask + " -log a b"; !strings.HasPrefix(got, want) || len(got) != maxLineBytes {
+		t.Fatalf("got %d bytes: %.80q", len(got), got)
+	}
+	// A value masked whole makes the piece short: the line is masked
+	// whole, and that is right too.
+	if got := showOutput(filter, "-ServerPassword="+strings.Repeat("a b ", 1<<20)); got != "-ServerPassword="+gameserver.Mask {
+		t.Fatalf("got %.80q", got)
+	}
+}
+
+// When masking shrinks the cut piece so much that its end would be shown,
+// the end may hold the start of a password that the cut split: then the
+// whole line is masked instead.
+func TestShowOutputNeverShowsAPieceOfACutPassword(t *testing.T) {
+	secret := "Sw0rdfish-" + strings.Repeat("q", 90) // 100 bytes
+	filter := gameserver.NewScrubber([]string{secret})
+	line := strings.Repeat(secret, maxScrubBytes/len(secret)+5) // the cut falls inside a copy
+	if maxScrubBytes%len(secret) == 0 {
+		t.Fatal("pick a length that the cut splits")
+	}
+	got := showOutput(filter, line)
+	if strings.Contains(got, "Sw0rd") || strings.Contains(got, "qqqq") {
+		t.Fatalf("a piece of the password is shown: %.200q", got)
 	}
 }

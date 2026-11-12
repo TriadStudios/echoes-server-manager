@@ -45,6 +45,11 @@ func newClient(g *globals) (*client, error) {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return nil, usageErr("--url must be an http or https URL")
 		}
+		// The token goes with every request: over plain http it would cross
+		// the network in clear, so http is only for this machine.
+		if u.Scheme == "http" && !config.IsLoopback(u.Hostname()) {
+			return nil, usageErr("--url must be https for another machine (plain http would send the token in clear); http is accepted only for localhost")
+		}
 		tok := g.token
 		if tok == "" {
 			tok = os.Getenv(TokenEnv)

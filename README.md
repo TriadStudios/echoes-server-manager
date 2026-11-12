@@ -62,8 +62,18 @@ For scripts and other machines, make an API token:
 esm token create --role operator --name deploy
 ```
 
-The token is shown once. Send it as `Authorization: Bearer <token>`, or use
-it with the command line: `esm --url https://<your-host> --token <token> list`.
+The token is shown once. Send it as `Authorization: Bearer <token>`. For
+the command line, put it in the `ESM_TOKEN` environment variable, for
+example from a file only you can read, and give the address with `--url`:
+
+```sh
+export ESM_TOKEN="$(cat ~/.esm-token)"
+esm --url https://<your-host> list
+```
+
+(`--token` works too, but other accounts on the machine can read command
+lines in the process list.) `--url` must be https unless it points to this
+machine: over plain http the token would cross the network in clear.
 
 ### Linux: keep servers running
 
@@ -102,7 +112,7 @@ may do is the same as in the API.
 
 ```sh
 esm doctor                                   # read-only checks of this box
-esm build install ./build-1.0.0.tar.gz       # or a folder, or an https URL with --sha256
+esm build install ~/durinn/imports/build-1.0.0.tar.gz  # or a folder there, or an https URL with --sha256
 esm build list
 esm create alpha --set Difficulty=hard       # ports are picked from the configured ranges
 esm start alpha                              # waits until the server is ready
@@ -162,20 +172,36 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
 - Logins are rate limited, and login and setup take only JSON from the same
   origin. Browser sessions use an HttpOnly, SameSite=Strict cookie that
   lasts 12 hours, plus a separate CSRF token on every change. Behind a TLS
-  reverse proxy, set `behind_tls_proxy` so the cookie is also Secure.
+  reverse proxy, set `behind_tls_proxy` so the cookie is also Secure, and
+  list the name clients use in `public_hosts`: ESM answers only requests
+  for `localhost` (and the loopback addresses) with its port, its listen
+  address, and those names, so a page of another site cannot reach it by
+  pointing its own name at your box.
   Tokens are never accepted in URLs.
 - Requests and replies are bounded: headers 64 KiB, bodies 1 MiB, slow
   clients are cut off, a client that stops reading an event stream is
   dropped without holding anything up, and log tails are capped.
-- Every change, and every refused request, is written to an append-only
-  audit log.
+- Every call that changes something or tries to (whether it works, fails
+  or is refused), and every call refused for lack of a role, is written to
+  an append-only audit log. A read refused for a missing login (401) or a
+  host name that is not ESM's (421) is not.
 - Builds are checked against their manifest (SHA-256 of every file) before
   they are installed, archives are unpacked with path checks, downloads must
-  be https with a known SHA-256, and installed files are read-only.
+  be https with a known SHA-256, and installed files are read-only. A local
+  build must be in the import folder (`<root>/imports`, or
+  `build_import_dir` in `esm.json`); ESM reads no other local path for it.
+- **A build runs with ESM's own rights.** A game server build is a program,
+  and ESM starts it as its own account: it can read every file ESM keeps
+  (the secrets files with users, tokens and server passwords) and reach the
+  unix socket, which acts as admin. So only the admin role installs builds;
+  the operator role cannot (it can still update an instance to a build an
+  admin installed). Install only builds you trust.
 - ESM only ever signals or stops processes it started itself (it checks the
   process start time and executable before touching a pid).
 - ESM never changes the firewall. It tells you which ports each instance
   uses; opening them is up to you.
+
+Known limits are listed in [docs/DESIGN.md](docs/DESIGN.md#known-limits).
 
 ## Documentation
 

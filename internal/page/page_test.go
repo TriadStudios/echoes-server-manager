@@ -87,7 +87,7 @@ func newSite(t *testing.T) *site {
 	s.svc, err = service.Start(service.Options{
 		Root: root, Version: "test", Stderr: s.stderr,
 		WatchInterval: 50 * time.Millisecond, SchedulerInterval: time.Hour, KeepAlive: 200 * time.Millisecond,
-		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000},
+		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000}, FailDelay: 10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -408,7 +408,8 @@ func TestEveryScreen(t *testing.T) {
 
 	// Two servers: alpha in the default mode, beta with its passwords on
 	// the command line; both run, alpha has a backup.
-	src := t.TempDir()
+	// Local builds come from the import folder of the root.
+	src := s.root + string(os.PathSeparator) + "imports"
 	for _, v := range []string{"1.0", "1.1"} {
 		dir := testkit.MakeBuild(t, src, testkit.BuildOptions{Version: v})
 		s.must(http.StatusCreated, "POST", "/api/v1/builds", s.admin, api.InstallRequest{Source: dir}, nil)
@@ -511,10 +512,21 @@ func TestEveryScreen(t *testing.T) {
 	if !strings.Contains(admin["/box"], "sudo ufw allow") {
 		t.Error("firewall commands")
 	}
-	// The health check, which test-binds ports, runs only when asked.
-	if strings.Contains(rd["/box"], "game_ports") || !strings.Contains(rd["/box"], "Run the health check") ||
-		!strings.Contains(rd["/box?check=1"], "game_ports") || !strings.Contains(rd["/box?check=1"], "Run again") {
+	// The health check, which test-binds ports, runs only when an admin
+	// asks.
+	if strings.Contains(admin["/box"], "game_ports") || !strings.Contains(admin["/box"], "Run the health check") ||
+		!strings.Contains(admin["/box?check=1"], "game_ports") || !strings.Contains(admin["/box?check=1"], "Run again") {
 		t.Error("the health check")
+	}
+	for _, pg := range []map[string]string{op, rd} {
+		if strings.Contains(pg["/box?check=1"], "game_ports") || strings.Contains(pg["/box"], "Run the health check") || !strings.Contains(pg["/box"], "health check needs the admin role") {
+			t.Error("the health check is for admins only")
+		}
+	}
+	// A build runs with ESM's own rights: only admins install one.
+	if !strings.Contains(admin["/builds"], "Check and install") || strings.Contains(op["/builds"], "Check and install") ||
+		!strings.Contains(op["/builds"], "Installing builds needs the admin role") {
+		t.Error("installing builds is for admins only")
 	}
 
 	// Live updates: the event streams each screen opens.

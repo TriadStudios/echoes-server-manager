@@ -156,8 +156,22 @@ func (in *rt) outputFilter() *gameserver.Scrubber {
 // (state reasons, errors) holds no password and is never matched against
 // one: masking a password out of ESM's own words would only show where it
 // was.
+//
+// A line longer than maxScrubBytes is cut to that before it is masked, so
+// a huge line costs no more than a long one. The cut may split a password,
+// leaving its start unmasked at the end of the piece; that end is never
+// shown as long as the masked piece is longer than what is shown plus the
+// longest password form. When masks shrank it more than that, the whole
+// line is masked instead.
 func showOutput(filter *gameserver.Scrubber, line string) string {
-	return showLine(audit.Scrub(filter.Scrub(line)))
+	mask := func(s string) string { return audit.Scrub(filter.Scrub(s)) }
+	if len(line) > maxScrubBytes {
+		guard := max(filter.Longest(), scrubGuard)
+		if out := mask(line[:maxScrubBytes]); len(out) >= maxLineBytes+guard {
+			return showLine(out)
+		}
+	}
+	return showLine(mask(line))
 }
 
 // run is one start of a server process.

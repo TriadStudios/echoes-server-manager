@@ -39,25 +39,25 @@
 
 <section class="stack" aria-labelledby="install-h">
 <h2 class="label" id="install-h">Install a build</h2>
-{{if not $v.Operator}}<p class="note">Installing builds needs the operator role.</p>{{end}}
+<p class="note">A build is a program that runs with ESM's own rights: it can read everything ESM keeps. Install only builds you trust.{{if not $v.Admin}} Installing builds needs the admin role.{{end}}</p>
 <div class="grid">
 <form class="panel stack" data-form="install" aria-labelledby="folder-h">
-<h3 class="sub" id="folder-h">From a folder on this box</h3>
-<fieldset class="bare"{{if not $v.Operator}} disabled{{end}}>
+<h3 class="sub" id="folder-h">From a folder in the import folder</h3>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Folder</legend>
-<label class="field"><span>Folder path</span><input type="text" name="source" class="mono" required placeholder="/path/to/server-build"></label>
+<label class="field"><span>Folder path, or its name in the import folder</span><input type="text" name="source" class="mono" required placeholder="server-build"></label>
 </fieldset>
-<p class="note">The folder needs a manifest.json that lists every file with its SHA-256.</p>
-{{if $v.Operator}}<button type="submit" class="btn primary">Check and install</button>{{end}}
+<p class="note">ESM reads local builds only from its import folder: imports in ESM's folder, unless build_import_dir in esm.json names another. The folder needs a manifest.json that lists every file with its SHA-256.</p>
+{{if $v.Admin}}<button type="submit" class="btn primary">Check and install</button>{{end}}
 </form>
 <form class="panel stack" data-form="install" aria-labelledby="archive-h">
 <h3 class="sub" id="archive-h">From an archive or a web address</h3>
-<fieldset class="bare"{{if not $v.Operator}} disabled{{end}}>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Archive</legend>
-<label class="field"><span>Archive path on this box, or https address (.zip, .tar.gz)</span><input type="text" name="source" class="mono" required placeholder="https://..."></label>
+<label class="field"><span>Archive in the import folder, or https address (.zip, .tar.gz)</span><input type="text" name="source" class="mono" required placeholder="https://..."></label>
 <label class="field"><span>SHA-256 of the archive (required for a web address)</span><input type="text" name="sha256" class="mono" pattern="[0-9a-fA-F]{64}" maxlength="64"></label>
 </fieldset>
-{{if $v.Operator}}<button type="submit" class="btn quiet">Download and install</button>{{end}}
+{{if $v.Admin}}<button type="submit" class="btn quiet">Download and install</button>{{end}}
 </form>
 <div class="panel stack off" aria-labelledby="steam-h">
 <h3 class="sub" id="steam-h">From Steam</h3>

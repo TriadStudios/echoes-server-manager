@@ -43,8 +43,14 @@ ESM is not:
   and a token.
 - **Standard library only.** No third-party Go modules.
 - **Plain files.** State is JSON files under the root, written atomically
-  (temporary file, sync, rename). Every file access goes through an
-  `os.Root` handle on the root, so a path can never resolve outside it.
+  (temporary file, sync, rename). Every file ESM writes in the root, and
+  most it reads, goes through an `os.Root` handle on the root, so such a
+  path can never resolve outside it; local build sources are read through
+  one on the import folder. Plain paths are used for the socket and for
+  creating the import folder, and for a few reads: the read-only checks of
+  `esm doctor` and the config read without a running service, a server's
+  status file, the save files a backup copies (each checked to be a
+  regular file), and the process checks under `/proc`.
 
 The web page is plain HTML made by the service on the same origin as the
 API (see [The web page](#the-web-page)); it may be rebuilt with
@@ -91,9 +97,11 @@ are refused, so typos are reported.
 | Field                  | Default           | Meaning |
 |------------------------|-------------------|---------|
 | `listen`               | `127.0.0.1:8740`  | API address. Anything but loopback needs TLS. |
-| `socket`               | `<root>/esm.sock` | Unix socket path. |
+| `socket`               | `<root>/esm.sock` | Unix socket path, at most 107 bytes on Linux (103 on macOS), in a folder only the ESM account can write to. |
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
 | `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
+| `public_hosts`         | (none)            | Further host names (`host` for any port, or `host:port`) the API and the page answer to; see [Logins and exposure](#logins-and-exposure). |
+| `build_import_dir`     | `<root>/imports`  | The only folder local build sources are read from (created 0700 at start; a relative path is taken from the root). |
 | `game_ports`           | `7777-7786`       | Range for game ports. |
 | `query_ports`          | `27015-27024`     | Range for query ports. |
 | `supervisor`           | `auto`            | `auto`, `systemd` or `process`. |
@@ -373,12 +381,30 @@ Every file except the manifest must be listed with its SHA-256, and the
 executable for the box's operating system must be listed. A build is
 installed from:
 
-- a local folder (copied; links and special files refused);
-- a local `.zip`, `.tar.gz` or `.tgz` archive (unpacked with path checks:
-  no absolute paths, no `..`, no links, no devices, no duplicate names,
-  size and file-count limits);
+- a folder inside the import folder (copied; links and special files
+  refused);
+- a `.zip`, `.tar.gz` or `.tgz` archive inside the import folder (unpacked
+  with path checks: no absolute paths, no `..`, no links, no devices, no
+  duplicate names, size and file-count limits);
 - an `https` URL to such an archive, with a required SHA-256 (plain http is
-  refused; redirects must stay on https).
+  refused; redirects must stay on https). A failed download names only the
+  class of the server's status; the details go to the service log.
+
+The import folder is `<root>/imports` unless `build_import_dir` says
+otherwise. A relative source is taken from it. ESM opens local sources
+through an `os.Root` on that folder, so neither `..` nor a link leads out of
+it, and any other path is refused with `source_not_allowed`, an answer that
+says nothing about the path (whether it exists, what it is, who may read
+it).
+
+**A build runs with ESM's own rights.** A build is a program, and its
+server runs as the ESM account: it can read every file in the root, the
+secrets files with users, token hashes and every instance's passwords
+included, and connect to the unix socket, which acts as admin. Installing
+a build is therefore as much as being admin, and only the `admin` role may
+do it (`POST /api/v1/builds`). The `operator` role can still update an
+instance to a build an admin installed. Keeping game servers away from
+ESM's files is an open item (see [Open items](#open-items)).
 
 Everything is unpacked into `tmp/`, the manifest and every hash are checked,
 and only then is the folder moved into `builds/<version>/`. Files are made
@@ -432,6 +458,12 @@ to its client a deadline (a minute). So a client that stops reading, or
 reads too slowly, can hold up neither a state change nor another client:
 its stream ends, and it reconnects with `Last-Event-ID`.
 
+A stream lasts only as long as the login it was opened with. Before every
+event and every keep-alive it checks that its token still exists, or that
+its session is still open (not logged out, not expired), with the same
+role; if not, the stream ends without sending the event, and a reconnect
+needs a valid login.
+
 ## Backups
 
 A backup copies the server's save files (the adapter's save glob) into
@@ -462,7 +494,7 @@ skipped.
 - Reads are GET. Every change is POST, PUT, PATCH or DELETE with a JSON body
   (an empty body counts as `{}`), at most 1 MiB.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
-  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 422, 429 or 500. (The
+  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 421, 422, 429 or 500. (The
   HTTP server itself answers malformed requests and request headers over
   the cap with a plain 400 or 431, without that shape or ESM's headers.)
 - **Limits.** Request headers: at most 64 KiB, within 10 seconds. A request
@@ -476,8 +508,12 @@ skipped.
   long (a start that waits for ready, a build download, an event stream);
   the API sets those deadlines per request instead.
 - Every change writes an audit entry (who, what, target, success, error).
-  Refused calls are audited too. Audit entries and logs never contain
-  passwords or tokens.
+  Calls that try to change something are recorded whether they work, fail
+  or are refused, and so is every call refused for lack of a role (403); a
+  read refused for a missing login (401) or another host name (421) is
+  not. Audit entries and logs never contain
+  passwords or tokens. Each text field of an entry is cut to 256 bytes, and
+  reading the audit log skips a line it cannot read.
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
   `secrets_unconfirmed` (both in [Passwords](#passwords)) and
   `limits_not_enforced` (it has resource limits and the process supervisor
@@ -505,9 +541,22 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   to start on any other address unless `tls_cert` and `tls_key` are set. A
   reverse proxy with TLS in front of a loopback ESM is the expected way to
   reach it from elsewhere.
+- **Host names.** On TCP, ESM answers only requests that name one of its
+  own hosts in the `Host` header: `localhost`, `127.0.0.1` and `[::1]`
+  with the listen port, the listen address itself when it is a specific
+  address, and the names in `public_hosts`. Anything else, the page
+  included, gets 421 `misdirected_request`. A page of another site that
+  points its own name at 127.0.0.1 (DNS rebinding) sends its own name, so
+  it reaches nothing. The unix socket is not checked.
 - **Unix socket.** `<root>/esm.sock` (mode 0600) acts as admin; it is how
-  the command line on the box works. A stale socket file is removed at start;
-  a socket that still answers means another ESM already serves the root.
+  the command line on the box works. It is made under a umask that leaves
+  it to its owner, so it is never open to other accounts, not even before
+  its mode is set, and ESM refuses to start when other accounts may write
+  to its folder (they could remove or replace it). A socket path longer
+  than the system takes (107 bytes on Linux, 103 on macOS) is refused at
+  start with a message that says so; set `socket` to a shorter path. A
+  stale socket file is removed at start; a socket that still answers means
+  another ESM already serves the root.
 - **Setup code.** While no admin exists, ESM makes a one-time setup code
   (24 characters, valid for 24 hours), prints it once and keeps only its
   hash. `POST /api/v1/setup` with the code creates the first admin.
@@ -529,26 +578,40 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   body, a log or the audit log. Every non-GET call with the cookie must
   send `X-CSRF-Token` with the session's CSRF token, a random value of its
   own (given at login and by `GET /api/v1/session`), and an `Origin` header,
-  when present, must match the scheme and the host. Failed logins are limited to 5 per 5
-  minutes per client address and per user name.
+  when present, must match the scheme and the host. Failed logins are
+  limited to 5 per 5 minutes per user name, and per client address for a
+  client that connects from an address of its own (see the next point).
+  Every failed login is answered after a pause of one second. The audit
+  log keeps the name typed at login or setup only when it is an existing
+  user's name; otherwise it says `(unknown)`, or `(invalid)` for text that
+  cannot be a user name, so a password typed into the name field is never
+  written down.
 - **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
   on loopback. It must pass the `Host` header through unchanged (the
-  `Origin` checks compare against it), and `behind_tls_proxy` should be set
+  `Origin` checks compare against it), that name must be listed in
+  `public_hosts`, and `behind_tls_proxy` should be set
   so the session cookie is Secure and an `Origin` must say `https` (with it
   set, browser logins work only through the proxy). Do not set it without such a proxy: a
   Secure cookie is never sent over plain http, so browser logins would
   stop working. ESM takes the client address from the connection, never
-  from forwarding headers, so behind a proxy the login rate limit per
-  client address counts all clients together (the limit per user name
-  still applies).
+  from forwarding headers: those can be forged unless ESM is told which
+  proxies to trust, and it has no such setting. Behind a proxy or an SSH
+  tunnel every client has the same address, so a limit per address would
+  let anyone lock every user out with a few wrong logins. So when
+  `behind_tls_proxy` is set, or a client connects from a loopback address,
+  failed logins count per user name only, each is answered after the
+  pause, and setup codes tried that way share one limit. A client that
+  connects directly from an address of its own is also limited per
+  address.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
-  audit log, backup downloads, and the server output and state reasons of
-  instances that pass their passwords on the command line; `operator` sees
-  those too and also starts, stops, restarts, updates, backs up, restores,
-  downloads backups and installs builds;
-  `admin` does everything else (create, change, delete, secrets, tokens,
-  pruning). Tokens are never accepted in URLs.
+  audit log, backup downloads, the health check (`/box/doctor`, which binds
+  every free port of both ranges for a moment; admins only, one at a time),
+  and the server output and state reasons of instances that pass their
+  passwords on the command line; `operator` sees those too and also starts,
+  stops, restarts, updates, backs up, restores and downloads backups;
+  `admin` does everything else (install builds, create, change, delete,
+  secrets, tokens, pruning). Tokens are never accepted in URLs.
 - **Page headers.** Every reply ESM writes, of the page and of the API,
   errors and the router's own redirects included, carries a strict
   Content-Security-Policy (no inline scripts or styles, nothing from other
@@ -608,8 +671,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   whether players can reach the box from outside, and a budget for all
   game servers together.
 - **Health check on demand.** The Box screen runs the health check
-  (`GET /api/v1/box/doctor`) only when asked, because it test-binds every
-  free port of the ranges.
+  (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
+  every free port of the ranges; other roles are told it needs the admin
+  role. The Builds screen offers installing only to admins.
 - **Fonts.** The system's own fonts: a narrow sans-serif for headings, a
   plain one for text, a monospace for numbers and logs. No font files are
   shipped. Fonts under an open licence can be added later as `.woff2`
@@ -622,7 +686,7 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 ## Command line
 
 ```
-esm [--root DIR] [--json] [--url URL --token TOKEN] <command> [arguments]
+esm [--root DIR] [--json] [--url URL [--token TOKEN]] <command> [arguments]
 
 serve | doctor [--bind IP] | version
 list | status [name]
@@ -637,6 +701,12 @@ backup <name>
 restore <name> <backup-id>
 token create --role read|operator|admin [--name NAME]
 ```
+
+With `--url` the command line talks to an ESM elsewhere with an API token,
+best given in `ESM_TOKEN` (a `--token` argument shows in the process
+list). `--url` must be https, except to this machine (`localhost`,
+127.0.0.1, `[::1]`): over plain http the token would cross the network in
+clear.
 
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
@@ -711,6 +781,30 @@ else.
   real server facts confirmed on a real host.
 - **Later:** player controls, Steam installs, Windows hosts (planned for
   the first public release).
+
+## Known limits
+
+- **Passwords can be confirmed by an admin.** A setting that contains an
+  instance's password is refused (422 `password_in_settings`), so an admin
+  can test a guess by putting it into, say, the display name. Admins set
+  the passwords anyway; the API still never shows them.
+- **Users and sessions.** There is no way yet to change or remove a user,
+  or to end other sessions; restarting ESM ends every session.
+- **The socket on Windows.** Windows has no mode 0600 for the socket file
+  and ESM sets no ACLs, so the socket is as private as its folder's ACL.
+- **Separate arguments are not a boundary for the real server.** ESM hands
+  a server each setting as its own argument, but an Unreal server joins its
+  command line back together and searches it for switches. A display name
+  or rule value such as `x -SecretsFile=...` could then act as a switch.
+
+## Open items
+
+- **Keep game servers away from ESM's files.** Today a game server runs as
+  the ESM account, so a compromised server (it faces the internet) can read
+  ESM's secrets and act as admin through the socket. Planned: run game
+  servers under a separate account, or at least deny them `<root>/secrets`,
+  the socket and the other instances' folders (systemd
+  `InaccessiblePaths=`), and move the socket out of their reach.
 
 ## Open questions
 

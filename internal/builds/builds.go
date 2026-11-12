@@ -55,6 +55,7 @@ type Limits struct {
 type Options struct {
 	GOOS       string       // default runtime.GOOS
 	Limits     Limits       // zero fields take the defaults
+	ImportDir  string       // absolute path of the folder local sources must be in
 	HTTPClient *http.Client // for https sources; default: no overall timeout, https-only redirects
 	Bus        *events.Bus  // optional: build events are published here
 	Logger     *slog.Logger
@@ -272,67 +273,110 @@ func (m *Manager) Install(ctx context.Context, source, wantSHA256 string) (Build
 		if err := m.download(ctx, u, archive, wantSHA256); err != nil {
 			return Build{}, err
 		}
-		abs, err := m.st.Abs(archive)
+		f, err := m.st.Open(archive)
 		if err != nil {
 			return Build{}, err
 		}
-		if err := unpack(kind, abs, w); err != nil {
+		defer f.Close()
+		if err := unpack(kind, f, w); err != nil {
 			return Build{}, err
 		}
 	default:
-		abs, err := filepath.Abs(source)
-		if err != nil {
-			return Build{}, fault.Invalidf("invalid source path %q", source)
-		}
-		fi, err := os.Stat(abs)
-		if err != nil {
-			return Build{}, fault.Invalidf("source %s: %v", abs, unwrapPathError(err))
-		}
-		if fi.IsDir() {
-			if wantSHA256 != "" {
-				return Build{}, fault.Invalidf("sha256 applies to archives and downloads, not folders")
-			}
-			if err := copyFolder(abs, w); err != nil {
-				return Build{}, err
-			}
-			break
-		}
-		kind := archiveKind(abs)
-		if kind == "" || !fi.Mode().IsRegular() {
-			return Build{}, fault.Invalidf("source must be a folder, a .zip, .tar.gz or .tgz file, or an https URL")
-		}
-		if fi.Size() > m.opts.Limits.MaxBytes {
-			return Build{}, fault.New(fault.Invalid, "too_large", "the archive is larger than %d bytes", m.opts.Limits.MaxBytes)
-		}
-		if wantSHA256 != "" {
-			sum, err := fileSHA256(abs)
-			if err != nil {
-				return Build{}, err
-			}
-			if sum != wantSHA256 {
-				return Build{}, fault.New(fault.Invalid, "hash_mismatch", "the archive's sha256 is %s, not %s", sum, wantSHA256)
-			}
-		}
-		if err := unpack(kind, abs, w); err != nil {
+		if err := m.installLocal(source, wantSHA256, w); err != nil {
 			return Build{}, err
 		}
 	}
 	return m.finish(tree)
 }
 
-func unwrapPathError(err error) error {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
+// notAllowed refuses a local source outside the import folder. It says
+// nothing about the source itself (whether it exists, what it is, who may
+// read it), only where sources may be.
+func (m *Manager) notAllowed() error {
+	if m.opts.ImportDir == "" {
+		return fault.New(fault.Invalid, "source_not_allowed", "local sources are off: give an https URL")
 	}
-	return err
+	return fault.New(fault.Invalid, "source_not_allowed",
+		"a local source must be a readable folder or archive inside the import folder %s (or give an https URL)", m.opts.ImportDir)
 }
 
-func unpack(kind, abs string, w *writer) error {
-	if kind == kindZip {
-		return unpackZip(abs, w)
+// installLocal copies or unpacks a local source into w. The source must lie
+// inside the import folder (a relative path is taken from there), and it
+// is opened through an os.Root on that folder, so neither ".." nor a link
+// can lead out of it.
+func (m *Manager) installLocal(source, wantSHA256 string, w *writer) error {
+	dir := m.opts.ImportDir
+	if dir == "" {
+		return m.notAllowed()
 	}
-	return unpackTarGz(abs, w)
+	abs := source
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(dir, abs)
+	}
+	rel, err := filepath.Rel(dir, filepath.Clean(abs))
+	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
+		return m.notAllowed()
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("open the import folder: %w", err)
+	}
+	defer root.Close()
+	f, err := root.Open(rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fault.Invalidf("there is no %s in the import folder %s", filepath.ToSlash(rel), dir)
+	}
+	if err != nil {
+		return m.notAllowed()
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return m.notAllowed()
+	}
+	if fi.IsDir() {
+		if wantSHA256 != "" {
+			return fault.Invalidf("sha256 applies to archives and downloads, not folders")
+		}
+		sub, err := root.OpenRoot(rel)
+		if err != nil {
+			return m.notAllowed()
+		}
+		defer sub.Close()
+		return copyFolder(sub, w)
+	}
+	kind := archiveKind(rel)
+	if kind == "" || !fi.Mode().IsRegular() {
+		return fault.Invalidf("source must be a folder, a .zip, .tar.gz or .tgz file, or an https URL")
+	}
+	if fi.Size() > m.opts.Limits.MaxBytes {
+		return fault.New(fault.Invalid, "too_large", "the archive is larger than %d bytes", m.opts.Limits.MaxBytes)
+	}
+	if wantSHA256 != "" {
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return err
+		}
+		if sum := hex.EncodeToString(h.Sum(nil)); sum != wantSHA256 {
+			return fault.New(fault.Invalid, "hash_mismatch", "the archive's sha256 is %s, not %s", sum, wantSHA256)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+	}
+	return unpack(kind, f, w)
+}
+
+// unpack extracts the archive in f into w.
+func unpack(kind string, f *os.File, w *writer) error {
+	if kind == kindZip {
+		fi, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		return unpackZip(f, fi.Size(), w)
+	}
+	return unpackTarGz(f, w)
 }
 
 // download fetches u into rel, checking size and sha256.
@@ -341,13 +385,18 @@ func (m *Manager) download(ctx context.Context, u *url.URL, rel, wantSHA256 stri
 	if err != nil {
 		return fault.Invalidf("invalid URL: %v", err)
 	}
+	// An answer names no more than the class of the server's status; the
+	// details (addresses, messages of the server) go to the service log
+	// only, so a download cannot serve to probe other machines.
 	resp, err := m.opts.HTTPClient.Do(req)
 	if err != nil {
-		return fault.Wrap(fault.Failed, "download_failed", err, "download failed")
+		m.log.Warn("build download failed", "url", RedactSource(u.String()), "err", err)
+		return fault.New(fault.Failed, "download_failed", "download failed: no answer from the server (details in the service log)")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fault.New(fault.Failed, "download_failed", "download failed: HTTP %s", resp.Status)
+		m.log.Warn("build download failed", "url", RedactSource(u.String()), "status", resp.Status)
+		return fault.New(fault.Failed, "download_failed", "download failed: the server answered with a %dxx status", resp.StatusCode/100)
 	}
 	if resp.ContentLength > m.opts.Limits.MaxBytes {
 		return fault.New(fault.Invalid, "too_large", "the download is larger than %d bytes", m.opts.Limits.MaxBytes)
@@ -362,7 +411,8 @@ func (m *Manager) download(ctx context.Context, u *url.URL, rel, wantSHA256 stri
 		err = cerr
 	}
 	if err != nil {
-		return fault.Wrap(fault.Failed, "download_failed", err, "download failed")
+		m.log.Warn("build download failed", "url", RedactSource(u.String()), "err", err)
+		return fault.New(fault.Failed, "download_failed", "download failed: the transfer broke off (details in the service log)")
 	}
 	if n > m.opts.Limits.MaxBytes {
 		return fault.New(fault.Invalid, "too_large", "the download is larger than %d bytes", m.opts.Limits.MaxBytes)
@@ -499,19 +549,6 @@ func (m *Manager) hashFile(rel string) (string, int64, error) {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Remove deletes an installed build. The caller makes sure no instance

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
@@ -23,6 +24,10 @@ var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, ev
 // instance that passes its passwords on the server command line the read
 // role gets no log events, and state events with a notice in place of the
 // reason; that was decided when each event was published.
+//
+// The stream ends with its login: before every event and keep-alive it
+// checks that the token or session it was opened with still holds (see
+// loginHolds), so a deleted token or an ended session gets nothing more.
 //
 // A client that stops reading never holds anything up: the bus drops its
 // subscription once the subscription's buffer is full (publishing never
@@ -91,17 +96,50 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 			if !ok {
 				return nil // shutting down, or too far behind: the client reconnects
 			}
+			if !s.loginHolds(c) {
+				return nil
+			}
 			deadline()
 			if writeEvent(w, e) != nil || rc.Flush() != nil {
 				return nil
 			}
 		case <-tick.C:
+			if !s.loginHolds(c) {
+				return nil
+			}
 			deadline()
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil || rc.Flush() != nil {
 				return nil
 			}
 		}
 	}
+}
+
+// loginHolds reports whether the login a stream was opened with still
+// holds, with at least the role it had: the token still exists, the
+// session is still open (not logged out, not expired). A stream checks it
+// before every event and every keep-alive, so it ends with its login.
+func (s *Server) loginHolds(c *call) bool {
+	var role auth.Role
+	switch {
+	case c.actor.Kind == audit.ActorSocket:
+		return true
+	case c.actor.Kind == audit.ActorToken:
+		r, err := s.o.Auth.TokenRole(c.actor.ID)
+		if err != nil {
+			return false
+		}
+		role = r
+	case c.session != nil:
+		sess, err := s.o.Auth.Session(c.session.ID)
+		if err != nil {
+			return false
+		}
+		role = sess.Role
+	default:
+		return false
+	}
+	return role.Allows(c.role)
 }
 
 // sseBuffer is how many events a stream's subscription holds for a client

@@ -11,7 +11,8 @@ const (
 	// and downloading backups.
 	RoleRead Role = "read"
 	// RoleOperator may also start, stop, restart, update, back up and
-	// restore instances, download their backups and install builds.
+	// restore instances and download their backups (not install builds: a
+	// build runs with ESM's own rights).
 	RoleOperator Role = "operator"
 	// RoleAdmin may do everything.
 	RoleAdmin Role = "admin"

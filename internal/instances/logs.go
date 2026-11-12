@@ -24,6 +24,10 @@ const (
 	maxLineBytes   = 4096      // longer lines are cut when they are shown
 	maxFollowChunk = 256 << 10 // read at most this much per check
 	maxTailBytes   = 8 << 20   // a tail reads at most this much from the end
+	maxScrubBytes  = 64 << 10  // longer lines are cut to this before they are masked
+	// scrubGuard is more than any token, or piece of one, at the end of a
+	// cut piece (see showOutput).
+	scrubGuard = 1 << 10
 	// MaxTailLines is the most lines one log request returns.
 	MaxTailLines = 5000
 	// MaxLogReplyBytes bounds what one log request returns: its lines,

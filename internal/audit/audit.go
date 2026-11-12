@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"regexp"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
@@ -22,6 +24,10 @@ import (
 
 // FileName is the audit log name inside the ESM root.
 const FileName = "audit.log"
+
+// MaxField is the most bytes a text field of an entry keeps; a longer
+// value is cut (see Append).
+const MaxField = 256
 
 // Actor kinds.
 const (
@@ -88,14 +94,41 @@ func Scrub(s string) string {
 	return gameserver.ScrubLine(s, nil)
 }
 
-// Append writes e as one line. A zero Time is set to now.
+// clipMark ends a field that was cut.
+const clipMark = "..."
+
+// partialToken is what may be left of an ESM token at the end of a cut
+// field: too short for the token pattern, but still a piece of one.
+var partialToken = regexp.MustCompile(`esm_[A-Za-z0-9_-]*$`)
+
+// clip cuts s to at most MaxField bytes, on a character boundary, and
+// marks the cut. A token cut in two is masked like a whole one.
+func clip(s string) string {
+	if len(s) <= MaxField {
+		return s
+	}
+	cut := MaxField - len(clipMark)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return partialToken.ReplaceAllString(s[:cut], "esm_********") + clipMark
+}
+
+// Append writes e as one line. A zero Time is set to now. Every text field
+// is cut to MaxField bytes first, so the caller's input never makes an
+// entry large (or the masking slow); then the free-text fields are
+// scrubbed (see Scrub).
 func (l *Log) Append(e Entry) error {
 	if e.Time.IsZero() {
 		e.Time = l.now().UTC()
 	}
-	e.Target = Scrub(e.Target)
-	e.Error = Scrub(e.Error)
-	e.Actor.ID = Scrub(e.Actor.ID)
+	e.Actor.Kind = clip(e.Actor.Kind)
+	e.Actor.Role = clip(e.Actor.Role)
+	e.Action = clip(e.Action)
+	// A mask can be longer than what it hides: cut again after scrubbing.
+	e.Target = clip(Scrub(clip(e.Target)))
+	e.Error = clip(Scrub(clip(e.Error)))
+	e.Actor.ID = clip(Scrub(clip(e.Actor.ID)))
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -140,8 +173,11 @@ func (l *Log) Close() error {
 	return err
 }
 
+// maxLine is the longest line Recent reads; a longer one is skipped.
+const maxLine = 1 << 20
+
 // Recent returns up to limit of the newest entries, oldest first.
-// Lines that do not parse are skipped.
+// Lines that do not parse, or are longer than maxLine, are skipped.
 func (l *Log) Recent(limit int) ([]Entry, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -156,22 +192,43 @@ func (l *Log) Recent(limit int) ([]Entry, error) {
 	defer f.Close()
 	ring := make([]Entry, 0, limit)
 	start := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
+	add := func(line []byte) {
 		var e Entry
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
-			continue
+		if json.Unmarshal(line, &e) != nil {
+			return
 		}
 		if len(ring) < limit {
 			ring = append(ring, e)
-			continue
+			return
 		}
 		ring[start] = e
 		start = (start + 1) % limit
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+	br := bufio.NewReaderSize(f, 64<<10)
+	var line []byte
+	tooLong := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if !tooLong {
+			if len(line)+len(chunk) > maxLine {
+				tooLong, line = true, line[:0]
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue // the same line goes on
+		}
+		if !tooLong && len(line) > 0 {
+			add(line)
+		}
+		line, tooLong = line[:0], false
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make([]Entry, 0, len(ring))
 	out = append(out, ring[start:]...)

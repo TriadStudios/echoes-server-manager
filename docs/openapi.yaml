@@ -17,10 +17,11 @@ info:
       session id is only ever in the cookie (HttpOnly), never in a body.
     - The unix socket `<root>/esm.sock`, which acts as admin.
 
-    Roles: `read` may make every GET call except `/tokens`, `/audit` and
-    backup downloads; `operator` may also start, stop, restart, update,
-    back up, restore and download backups of instances and install builds;
-    `admin` may do everything.
+    Roles: `read` may make every GET call except `/tokens`, `/audit`,
+    `/box/doctor` and backup downloads; `operator` may also start, stop,
+    restart, update, back up, restore and download backups of instances;
+    `admin` may do everything, installing builds included (a build is a
+    program that runs with ESM's own rights).
 
     Server passwords are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
@@ -33,6 +34,11 @@ info:
     its `log` events are not sent) and a fixed notice in place of every
     state reason. `operator` and `admin` get both.
 
+    On TCP, a request must name one of ESM's own hosts in `Host`
+    (`localhost`, `127.0.0.1` or `[::1]` with the listen port, the listen
+    address, or a `public_hosts` entry); any other gets 421
+    `misdirected_request`. The unix socket is not checked.
+
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
     arrive within 30 seconds (408 `request_timeout`); request headers are at
@@ -40,7 +46,9 @@ info:
     has a minute to read a reply, counted from its first byte, and in an
     event stream a minute for each event. Calls that change something are
     POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
-    `{}`); each writes an audit entry, as does every refused call.
+    `{}`); each writes an audit entry, refused or not, as does every call
+    refused for lack of a role (403). A read refused for a missing login
+    (401) or another host name (421) is not recorded.
 
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks
@@ -176,7 +184,11 @@ paths:
   /api/v1/box/doctor:
     get:
       tags: [box]
-      summary: Run the read-only checks from the service's point of view
+      summary: Run the read-only checks from the service's point of view (admin)
+      description: |
+        The check binds every free port of both ranges for a moment, so it
+        is for admins only and runs one at a time: while one runs, another
+        call gets 409 `doctor_running`.
       responses:
         "200":
           description: Check results.
@@ -184,6 +196,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DoctorReport" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/box/firewall:
     get:
       tags: [box]
@@ -212,12 +226,18 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
     post:
       tags: [builds]
-      summary: Install a build (operator)
+      summary: Install a build (admin)
       description: |
-        The source is a folder or a .zip, .tar.gz or .tgz file on the box, or
-        an https URL to such an archive. A sha256 is required for URLs. The
-        manifest and the hash of every file are checked before the build is
-        installed; the call returns when the install is done.
+        The source is a folder or a .zip, .tar.gz or .tgz file inside the
+        import folder on the box (`build_import_dir`, by default
+        `<root>/imports`; a relative path is taken from there), or an https
+        URL to such an archive. Any other local path is refused with 422
+        `source_not_allowed`, which says nothing about the path. A sha256 is
+        required for URLs; a failed download names only the class of the
+        server's status. The manifest and the hash of every file are checked
+        before the build is installed; the call returns when the install is
+        done. A build runs with ESM's own rights, so only admins install
+        builds.
       requestBody:
         required: true
         content:
@@ -620,6 +640,10 @@ paths:
         A client that stops reading holds up nothing: once 1024 events wait
         for it, or one write to it takes longer than a minute, its stream
         ends, and it reconnects with Last-Event-ID.
+
+        The stream ends, without sending the next event, once the login it
+        was opened with is gone: its token deleted, its session logged out or
+        expired. It checks before every event and every keep-alive.
       parameters:
         - name: instance
           in: query

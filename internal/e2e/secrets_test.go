@@ -407,13 +407,22 @@ func (h *harness) checkNothingToHide(t *testing.T, name string, ev *eventLog, pi
 			t.Errorf("the %s log has a password switch, or something masked:\n%s", source, text)
 		}
 	}
-	for _, path := range []string{"/instances/" + name + "/status", "/instances/" + name, "/instances", "/box", "/box/doctor"} {
+	for _, path := range []string{"/instances/" + name + "/status", "/instances/" + name, "/instances", "/box"} {
 		var raw json.RawMessage
 		if st := h.call("GET", "/api/v1"+path, read, nil, &raw); st != http.StatusOK {
 			t.Fatalf("GET %s with a read token: %d %s", path, st, raw)
 		}
 		noPieces(t, "answer of GET "+path, raw, pieces)
 	}
+	// The health check is for admins only.
+	var doc json.RawMessage
+	if st := h.call("GET", "/api/v1/box/doctor", read, nil, &doc); st != http.StatusForbidden {
+		t.Fatalf("GET /box/doctor with a read token: %d %s", st, doc)
+	}
+	if st := h.call("GET", "/api/v1/box/doctor", h.admin, nil, &doc); st != http.StatusOK {
+		t.Fatalf("GET /box/doctor as admin: %d %s", st, doc)
+	}
+	noPieces(t, "answer of GET /box/doctor", doc, pieces)
 	if ev != nil {
 		evRaw, err := json.Marshal(ev.all())
 		if err != nil {

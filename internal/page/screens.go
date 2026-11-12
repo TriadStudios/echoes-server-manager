@@ -411,8 +411,8 @@ func (p *Page) box(v *view) {
 		return
 	}
 	// The health check test-binds the free ports of the ranges: it runs
-	// only when asked for, not on every look at the box.
-	if v.r.URL.Query().Get("check") == "1" {
+	// only when an admin asks for it, not on every look at the box.
+	if v.r.URL.Query().Get("check") == "1" && v.Admin() {
 		d.Checked = true
 		if err := v.c.get("/api/v1/box/doctor", &d.Doctor); err != nil {
 			d.DoctorWhy = err.Error()

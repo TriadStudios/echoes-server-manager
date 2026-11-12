@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -53,6 +54,9 @@ type Options struct {
 	// reply deadlines (api.DefaultBodyTimeout, api.DefaultWriteTimeout).
 	BodyTimeout  time.Duration
 	WriteTimeout time.Duration
+	// FailDelay overrides how long a failed login waits for its answer
+	// (api.DefaultFailDelay).
+	FailDelay time.Duration
 }
 
 // Service is a running ESM.
@@ -127,7 +131,10 @@ func Start(o Options) (_ *Service, err error) {
 	}
 	if code != "" {
 		fmt.Fprintf(o.Stderr, "ESM setup code: %s (works once, for 24 hours; use it to create the first admin)\n", code)
-		log.Info("setup code created", "code", code)
+		// The code goes to stderr as a plain line, once, for whoever starts
+		// ESM. The JSON log may be collected and kept elsewhere, so it only
+		// says that a code was made.
+		log.Info("setup code created; it was printed once to stderr")
 	} else if !s.auth.HasAdmin() {
 		log.Info("waiting for setup; the setup code was shown when it was made (delete secrets/setup.json and restart for a new one)")
 	}
@@ -138,7 +145,12 @@ func Start(o Options) (_ *Service, err error) {
 		return nil, err
 	}
 	cleanups = append(cleanups, func() { s.sup.Close() })
-	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient})
+	// Local build sources are read from the import folder only.
+	importDir := cfg.ImportDir()
+	if err := os.MkdirAll(importDir, 0o700); err != nil {
+		log.Warn("cannot create the build import folder", "path", importDir, "err", err)
+	}
+	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient, ImportDir: importDir})
 	if err := bm.CleanTemp(); err != nil {
 		log.Warn("cannot clean the tmp folder", "err", err)
 	}
@@ -175,7 +187,8 @@ func Start(o Options) (_ *Service, err error) {
 		Version: o.Version, Config: cfg, Auth: s.auth, Audit: s.audit, Bus: s.bus, Instances: s.inst,
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
-		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout,
+		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
+		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts,
 		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
@@ -219,6 +232,12 @@ func newHTTPServer(h http.Handler, errLog *log.Logger) *http.Server {
 // listenSocket listens on the unix socket, removing a stale socket file
 // first. A socket that still answers means another ESM serves this root.
 func listenSocket(path string) (net.Listener, error) {
+	if err := checkSocketPath(path); err != nil {
+		return nil, err
+	}
+	if err := checkSocketDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	if _, err := os.Lstat(path); err == nil {
 		if c, err := net.DialTimeout("unix", path, 2*time.Second); err == nil {
 			c.Close()
@@ -230,10 +249,11 @@ func listenSocket(path string) (net.Listener, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	l, err := net.Listen("unix", path)
+	l, err := listenUnix(path)
 	if err != nil {
-		return nil, fmt.Errorf("listen on the socket %s (set \"socket\" in esm.json to a shorter path if it is too long): %w", path, err)
+		return nil, fmt.Errorf("listen on the socket %s: %w", path, err)
 	}
+	socketListened(path)
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		l.Close()
 		return nil, err

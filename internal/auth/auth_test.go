@@ -618,7 +618,7 @@ func TestParallelLoginsAreLimited(t *testing.T) {
 		},
 	}
 	for name, attempt := range cases {
-		m.Limiter().Reset("user:admin")
+		m.Limiter().Reset(userKey("admin"))
 		checked, limited, other := parallel(40, attempt)
 		if len(other) > 0 || checked > DefaultRateMax || checked+limited != 40 {
 			t.Errorf("%s: %d password checks, %d refused, other %v; want at most %d checks", name, checked, limited, other, DefaultRateMax)
@@ -662,5 +662,138 @@ func TestSuccessGivesTheAttemptBack(t *testing.T) {
 	var rl *RateLimitError
 	if _, err := m.Login("192.0.2.3", "admin", "correct horse battery"); !errors.As(err, &rl) {
 		t.Fatalf("after five failures: %v", err)
+	}
+}
+
+// Behind a proxy or a tunnel every client arrives from the same address,
+// so the address is no key there (the caller passes ""): failed logins
+// with made-up names lock nobody out, while the limit per user name still
+// holds. A client with an address of its own keeps the limit per address.
+func TestSharedAddressDoesNotLockOut(t *testing.T) {
+	m, _, _ := newManager(t)
+	if _, err := m.CreateUser("admin", goodPassword, RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	for i := range DefaultRateMax {
+		if _, err := m.Login("", fmt.Sprintf("nobody%d", i), "wrong password!!"); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("made-up name %d: %v", i, err)
+		}
+	}
+	if _, err := m.Login("", "admin", goodPassword); err != nil {
+		t.Fatalf("the admin was locked out by made-up names: %v", err)
+	}
+	for range DefaultRateMax {
+		m.Login("", "Admin", "wrong password!!")
+	}
+	var rl *RateLimitError
+	if _, err := m.Login("", "admin", goodPassword); !errors.As(err, &rl) {
+		t.Fatalf("the limit per user name is gone: %v", err)
+	}
+	for i := range DefaultRateMax {
+		m.Login("198.51.100.7", fmt.Sprintf("other%d", i), "wrong password!!")
+	}
+	if _, err := m.Login("198.51.100.7", "someone", "wrong password!!"); !errors.As(err, &rl) {
+		t.Fatalf("the limit per address is gone for a direct client: %v", err)
+	}
+}
+
+// Setup codes tried from the shared address count against one key of
+// their own, not against the logins from that address.
+func TestSetupFromSharedAddress(t *testing.T) {
+	m, _, _ := newManager(t)
+	code, _ := m.EnsureSetupCode()
+	for range DefaultRateMax {
+		m.Setup("", "WRONGWRONGWRONGWRONGWRON", "admin", goodPassword)
+	}
+	if _, err := m.Setup("", code, "admin", goodPassword); StatusCode(err) != http.StatusTooManyRequests {
+		t.Fatalf("setup codes from the shared address are not limited: %v", err)
+	}
+	if _, err := m.Login("", "nobody", "wrong password!!"); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("failed setup codes blocked a login: %v", err)
+	}
+}
+
+// The limiter keeps short keys only and forgets keys whose failures have
+// aged out, and it never holds more than maxKeys keys.
+func TestLimiterStaysSmall(t *testing.T) {
+	c := &clock{t: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)}
+	l := NewLimiter(time.Minute, 5, c.Now)
+	long := strings.Repeat("k", 1<<20)
+	for range 5 {
+		l.Fail(long)
+	}
+	if l.Check(long) == nil {
+		t.Fatal("a long key is not limited")
+	}
+	for k := range l.fails {
+		if len(k) > 128 {
+			t.Fatalf("a key of %d bytes is kept", len(k))
+		}
+	}
+	for i := range 1000 {
+		l.Fail(fmt.Sprintf("user:n%d", i))
+	}
+	c.Add(2 * time.Minute)
+	l.Fail("user:last")
+	if n := len(l.fails); n != 1 {
+		t.Fatalf("%d keys kept after their failures aged out", n)
+	}
+	l.maxKeys = 100
+	for i := range 1000 {
+		l.Fail(fmt.Sprintf("user:m%d", i))
+		c.Add(time.Millisecond)
+	}
+	if n := len(l.fails); n > 100 {
+		t.Fatalf("%d keys kept, at most 100 allowed", n)
+	}
+	if l.Check("user:m999") == nil && len(l.fails["user:m999"]) != 1 {
+		t.Fatal("the newest key was dropped")
+	}
+}
+
+// What a login keeps of a typed name: an existing user's own name, else a
+// fixed placeholder, so a password typed into the name field is never
+// recorded.
+func TestAuditName(t *testing.T) {
+	m, _, _ := newManager(t)
+	if _, err := m.CreateUser("Admin", goodPassword, RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"admin":                   "Admin",
+		"ADMIN":                   "Admin",
+		"hunter2hunter2":          UnknownName,
+		"-password= x":            InvalidName,
+		"":                        InvalidName,
+		strings.Repeat("a", 1000): InvalidName,
+	}
+	for in, want := range cases {
+		if got := m.AuditName(in); got != want {
+			t.Errorf("AuditName(%.20q) = %.40q, want %q", in, got, want)
+		}
+	}
+}
+
+// The address the login limit counts against: none for loopback peers,
+// the unix socket, and every client behind a proxy.
+func TestLimitAddress(t *testing.T) {
+	cases := []struct {
+		remote string
+		proxy  bool
+		want   string
+	}{
+		{"198.51.100.7:4000", false, "198.51.100.7"},
+		{"198.51.100.7:4000", true, ""},
+		{"127.0.0.1:4000", false, ""},
+		{"[::1]:4000", false, ""},
+		{"@", false, ""},
+		{"", false, ""},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/login", nil)
+		r.RemoteAddr = c.remote
+		if got := LimitAddress(r, c.proxy); got != c.want {
+			t.Errorf("LimitAddress(%q, proxy %v) = %q, want %q", c.remote, c.proxy, got, c.want)
+		}
 	}
 }

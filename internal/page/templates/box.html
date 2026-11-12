@@ -100,16 +100,16 @@
 <p class="note">Copy it now. ESM keeps only a hash of it.</p>
 </div>
 </form>
-<p class="note">admin: everything. operator: start, stop, restart, update, back up, restore, install builds. read: look only. ESM has one login, made at setup; more people use tokens for now.</p>
+<p class="note">admin: everything, installing builds included. operator: start, stop, restart, update, back up, restore, download backups. read: look only. ESM has one login, made at setup; more people use tokens for now.</p>
 {{else}}<p class="panel empty">Logins and tokens need the admin role.</p>{{end}}
 </section>
 
 <section class="panel stack" aria-labelledby="health-h">
 <div class="spread">
 <h2 class="label" id="health-h">Health check</h2>
-<a class="btn" href="/box?check=1#health-h">{{if $d.Checked}}Run again{{else}}Run the health check{{end}}</a>
+{{if $v.Admin}}<a class="btn" href="/box?check=1#health-h">{{if $d.Checked}}Run again{{else}}Run the health check{{end}}</a>{{end}}
 </div>
-{{if not $d.Checked}}<p class="note">The health check test-binds every free port of the ranges, among other things, so it runs only when asked.</p>{{end}}
+{{if not $v.Admin}}<p class="note">The health check needs the admin role.</p>{{else if not $d.Checked}}<p class="note">The health check test-binds every free port of the ranges, among other things, so it runs only when asked, one at a time.</p>{{end}}
 {{if $d.DoctorWhy}}<p class="alert">{{$d.DoctorWhy}}</p>{{end}}
 <div class="rows">
 {{range $d.Doctor.Checks}}<div class="row check">

@@ -20,6 +20,23 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
+// LimitAddress is the client address the login rate limit counts failures
+// against, or "" when the address tells nothing about who the client is:
+// behind a proxy (behindProxy) or a tunnel every client arrives from the
+// same address, a loopback one, and the unix socket has no address at all.
+// Forwarding headers are not used: without a setting that names the
+// proxies, anyone can write them.
+func LimitAddress(r *http.Request, behindProxy bool) string {
+	if behindProxy {
+		return ""
+	}
+	ip := net.ParseIP(ClientIP(r))
+	if ip == nil || ip.IsLoopback() {
+		return ""
+	}
+	return ip.String()
+}
+
 // SessionCookie builds the esm_session cookie: HttpOnly (scripts cannot
 // read it), SameSite=Strict, Path=/, Max-Age equal to life (the lifetime of
 // the session), and Secure when browsers reach ESM over TLS (its own, or a

@@ -87,6 +87,16 @@ func NewScrubber(values []string) *Scrubber {
 	return sc
 }
 
+// Longest is the length of the longest form of a hidden value (0 for
+// none): a piece of text cut anywhere ends in at most that many bytes of
+// a split value.
+func (sc *Scrubber) Longest() int {
+	if sc == nil || len(sc.forms) == 0 {
+		return 0
+	}
+	return len(sc.forms[0])
+}
+
 // Scrub returns text with every occurrence of a secret value, in any of its
 // forms, replaced by Mask, and then the value of every password switch
 // masked (see MaskSwitches). Occurrences that overlap or touch become one
@@ -185,22 +195,35 @@ func MaskSwitches(s string) string {
 // switchValueEnd returns where the value at the start of v ends: before the
 // white space that starts the next switch, or at the end of the line. White
 // space right at the start does not end the value.
+//
+// It looks at every byte once: a run of white space is skipped in one go
+// and the switch test is made once, at its end.
 func switchValueEnd(v string) int {
-	for i := 0; i < len(v); i++ {
-		switch c := v[i]; {
+	for i := 0; i < len(v); {
+		c := v[i]
+		switch {
 		case c == '\n' || c == '\r':
 			return i
-		case i > 0 && (c == ' ' || c == '\t') && startsSwitch(v[i:]):
-			return i
+		case i > 0 && isBlank(c):
+			j := i + 1
+			for j < len(v) && isBlank(v[j]) {
+				j++
+			}
+			if startsSwitch(v[j:]) {
+				return i
+			}
+			i = j
+			continue
 		}
+		i++
 	}
 	return len(v)
 }
 
-// startsSwitch reports whether rest is white space, an optional quote, "-"
-// and a letter.
+func isBlank(c byte) bool { return c == ' ' || c == '\t' }
+
+// startsSwitch reports whether rest is an optional quote, "-" and a letter.
 func startsSwitch(rest string) bool {
-	rest = strings.TrimLeft(rest, " \t")
 	if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
 		rest = rest[1:]
 	}

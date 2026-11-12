@@ -5,8 +5,10 @@
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
 // change), or by arriving on the unix socket (admin). Tokens are never read
-// from URLs. Every call that changes something writes an audit entry, and
-// so does every refused call. Errors always have the shape
+// from URLs. Every call that changes something (or tries to) writes an
+// audit entry, and so does every call refused for lack of a role (403); a
+// read refused for a missing login (401) does not. Errors always have the
+// shape
 // {"error": {"code": "...", "message": "..."}}.
 package api
 
@@ -23,6 +25,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
@@ -49,6 +52,9 @@ const (
 	// counted from its first byte, and, in an event stream, to read each
 	// event.
 	DefaultWriteTimeout = time.Minute
+	// DefaultFailDelay is how long a failed login or setup code waits
+	// before it is answered.
+	DefaultFailDelay = time.Second
 )
 
 // Options wire a Server to the rest of ESM.
@@ -85,16 +91,27 @@ type Options struct {
 	// through which the page gets all its data: the same calls, rules and
 	// roles as any other client. Without a page "/" answers 404.
 	Page func(api http.Handler) http.Handler
+	// FailDelay is how long a failed login or setup code waits before it
+	// is answered (default DefaultFailDelay; negative for none).
+	FailDelay time.Duration
+	// Listen is the address the TCP listener is bound to, with its real
+	// port, and PublicHosts the further host names of public_hosts. With
+	// Listen set, a request on the TCP handler must name one of ESM's own
+	// hosts or gets 421 (see hostSet); the unix socket is not checked.
+	Listen      string
+	PublicHosts []string
 }
 
 // Server serves the API and the page.
 type Server struct {
-	o     Options
-	log   *slog.Logger
-	root  http.Handler // guard around mux
-	mux   *http.ServeMux
-	paths *http.ServeMux      // every API path once, for 405 answers
-	allow map[string][]string // path pattern -> methods
+	o          Options
+	log        *slog.Logger
+	root       http.Handler // guard around mux
+	mux        *http.ServeMux
+	paths      *http.ServeMux      // every API path once, for 405 answers
+	allow      map[string][]string // path pattern -> methods
+	hosts      *hostSet            // nil: no Host check
+	doctorBusy atomic.Bool         // a health check is running
 }
 
 // access says who may call a route.
@@ -155,10 +172,14 @@ func init() {
 	r("POST", p+"/logout", optional, "", "logout", (*Server).logout)
 	r("GET", p+"/session", required, read, "session.get", (*Server).session)
 	r("GET", p+"/box", required, read, "box.get", (*Server).box)
-	r("GET", p+"/box/doctor", required, read, "box.doctor", (*Server).doctor)
+	// The check test-binds every free port of both ranges: admin only.
+	r("GET", p+"/box/doctor", required, admin, "box.doctor", (*Server).doctor)
 	r("GET", p+"/box/firewall", required, read, "box.firewall", (*Server).firewall)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
-	r("POST", p+"/builds", required, oper, "build.install", (*Server).installBuild)
+	// Installing a build is installing a program that runs with ESM's own
+	// rights: admin only. Switching an instance to an installed build is
+	// an operator's update.
+	r("POST", p+"/builds", required, admin, "build.install", (*Server).installBuild)
 	r("DELETE", p+"/builds/{version}", required, admin, "build.delete", (*Server).deleteBuild)
 	r("POST", p+"/builds/prune", required, admin, "build.prune", (*Server).pruneBuilds)
 	r("GET", p+"/instances", required, read, "instance.list", (*Server).listInstances)
@@ -203,7 +224,11 @@ func New(o Options) *Server {
 	if o.WriteTimeout <= 0 {
 		o.WriteTimeout = DefaultWriteTimeout
 	}
-	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{}}
+	if o.FailDelay == 0 {
+		o.FailDelay = DefaultFailDelay
+	}
+	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
+		hosts: newHostSet(o.Listen, o.PublicHosts)}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
 		if _, ok := s.allow[rt.path]; !ok {
@@ -244,7 +269,9 @@ func (s *Server) apiOnly() http.Handler {
 
 // guard is the first handler of every request, to the API and to the page.
 // It sets the security headers, so every reply ESM writes has them, also
-// the redirects and errors of the router itself. It gives a request body a
+// the redirects and errors of the router itself. On the TCP listener it
+// refuses a request for a host name that is not ESM's (see checkHost),
+// before anything else looks at it. It gives a request body a
 // read deadline (lifted again once the body is in, see readBody), and a
 // reply a write deadline that starts with its first byte, so a client that
 // sends or reads too slowly cannot hold a request open. The HTTP servers
@@ -254,6 +281,9 @@ func (s *Server) apiOnly() http.Handler {
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		web.SetSecurityHeaders(w.Header())
+		if !s.checkHost(w, r) {
+			return
+		}
 		if r.ContentLength != 0 {
 			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(s.o.BodyTimeout))
 		}
