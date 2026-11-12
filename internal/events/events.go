@@ -195,6 +195,13 @@ func (b *Bus) publish(e Event) Event {
 	return e
 }
 
+// Subscribers returns how many subscriptions are open.
+func (b *Bus) Subscribers() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs)
+}
+
 // LastID returns the id of the newest event (0 when none).
 func (b *Bus) LastID() uint64 {
 	b.mu.Lock()

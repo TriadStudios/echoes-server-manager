@@ -150,6 +150,67 @@ func TestSlowSubscriberIsClosed(t *testing.T) {
 	}
 }
 
+// A subscriber that never reads holds nothing up: publishing never waits
+// for it, the others get every event in order while it is stalled, and the
+// bus drops it once its buffer is full.
+func TestStalledSubscriberNeverBlocks(t *testing.T) {
+	b := NewBus(64)
+	const n = 20000
+	stalled := b.Subscribe(Filter{}, 8)
+	// The reader's buffer holds everything, so only the stalled subscriber
+	// can fall behind.
+	reader := b.Subscribe(Filter{Types: []string{TypeState}}, n)
+	got := make(chan []uint64, 1)
+	go func() {
+		var ids []uint64
+		for e := range reader.C {
+			ids = append(ids, e.ID)
+			if len(ids) == n {
+				break
+			}
+		}
+		got <- ids
+	}()
+	published := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		for i := range n {
+			b.Publish(TypeState, "alpha", map[string]int{"i": i})
+		}
+		published <- time.Since(start)
+	}()
+	select {
+	case d := <-published:
+		t.Logf("%d events published in %s", n, d)
+	case <-time.After(20 * time.Second):
+		t.Fatal("publishing blocked on a stalled subscriber")
+	}
+	var ids []uint64
+	select {
+	case ids = <-got:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reading subscriber did not get every event")
+	}
+	for i, id := range ids {
+		if id != uint64(i+1) {
+			t.Fatalf("event %d has id %d: the reader lost events while another subscriber was stalled", i, id)
+		}
+	}
+	if !stalled.Lagged() {
+		t.Fatal("the stalled subscriber was not dropped")
+	}
+	if n := len(stalled.C); n != 8 {
+		t.Fatalf("the stalled subscriber holds %d events, want its buffer of 8", n)
+	}
+	if b.Subscribers() != 1 {
+		t.Fatalf("%d subscribers left, want the reader only", b.Subscribers())
+	}
+	reader.Close()
+	if b.Subscribers() != 0 {
+		t.Fatalf("%d subscribers after close", b.Subscribers())
+	}
+}
+
 func TestCloseBus(t *testing.T) {
 	b := NewBus(4)
 	s := b.Subscribe(Filter{}, 4)
