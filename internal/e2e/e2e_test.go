@@ -21,6 +21,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/service"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
@@ -31,8 +32,12 @@ func TestLifecycle(t *testing.T) {
 	lifecycle(t, newESM(t), "alpha")
 }
 
-// The same life cycle under systemd user units (Linux, on request).
-func TestLifecycleSystemd(t *testing.T) {
+// newSystemdESM starts a service with the systemd supervisor, or skips.
+// Tests that start systemd user units only run on request (Linux):
+//
+//	ESM_TEST_SYSTEMD=1 go test ./internal/e2e -run Systemd
+func newSystemdESM(t *testing.T) *harness {
+	t.Helper()
 	if os.Getenv("ESM_TEST_SYSTEMD") != "1" {
 		t.Skip("set ESM_TEST_SYSTEMD=1 to run tests that start systemd user units")
 	}
@@ -45,7 +50,26 @@ func TestLifecycleSystemd(t *testing.T) {
 	if box.Supervisor != "systemd" || !box.LimitsEnforced {
 		t.Fatalf("box %+v", box)
 	}
-	lifecycle(t, h, fmt.Sprintf("sd-%d", time.Now().UnixNano()%1_000_000_000))
+	return h
+}
+
+// unitSafeName is an instance name no other test run uses, because user
+// unit names are shared by everything the user runs.
+func unitSafeName(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()%1_000_000_000)
+}
+
+// The same life cycle, crash restart and adoption under systemd user units.
+func TestLifecycleSystemd(t *testing.T) {
+	lifecycle(t, newSystemdESM(t), unitSafeName("sd"))
+}
+
+func TestCrashRestartSystemd(t *testing.T) {
+	crashRestart(t, newSystemdESM(t), unitSafeName("sdc"))
+}
+
+func TestReadoptionSystemd(t *testing.T) {
+	readoption(t, newSystemdESM(t), unitSafeName("sda"), unitSafeName("sdb"))
 }
 
 func lifecycle(t *testing.T, h *harness, name string) {
@@ -84,17 +108,20 @@ func lifecycle(t *testing.T, h *harness, name string) {
 // 2: a crash leads to an automatic restart.
 func TestCrashRestart(t *testing.T) {
 	t.Parallel()
-	h := newESM(t)
+	crashRestart(t, newESM(t), "alpha")
+}
+
+func crashRestart(t *testing.T, h *harness, name string) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	h.create("alpha", "", nil)
+	h.create(name, "", nil)
 	var st instances.Status
-	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, &st)
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, &st)
 	pid := st.PID
-	if err := testkit.WriteControl(h.dataDir("alpha"), testkit.ControlCrash); err != nil {
+	if err := testkit.WriteControl(h.dataDir(name), testkit.ControlCrash); err != nil {
 		t.Fatal(err)
 	}
 	testkit.Eventually(t, 15*time.Second, func() bool {
-		st = h.status("alpha")
+		st = h.status(name)
 		return st.State == instances.Running && st.PID != pid
 	}, "no automatic restart")
 	if st.Crashes != 1 || st.GaveUp || st.ExitCode != nil {
@@ -119,14 +146,20 @@ func TestGiveUp(t *testing.T) {
 	}
 }
 
-// 4: a restarted ESM adopts a server it left running.
+// 4: a restarted ESM adopts a server it left running, and starts the
+// autostart instances that are not running.
 func TestReadoption(t *testing.T) {
 	t.Parallel()
-	h := newESM(t)
+	readoption(t, newESM(t), "alpha", "beta")
+}
+
+func readoption(t *testing.T, h *harness, name, auto string) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	v := h.create("alpha", "", nil)
+	v := h.create(name, "", nil)
+	h.create(auto, "", nil)
+	h.must(http.StatusOK, "PATCH", "/api/v1/instances/"+auto, map[string]any{"autostart": true}, nil)
 	var st instances.Status
-	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, &st)
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, &st)
 	pid := st.PID
 	h.stopService()
 	if !strings.Contains(h.stderr.String(), "leaving 1 game servers running") {
@@ -138,13 +171,16 @@ func TestReadoption(t *testing.T) {
 		t.Fatalf("server did not survive the ESM shutdown: %v", err)
 	}
 	h.startService()
-	st = h.waitState("alpha", instances.Running, 10*time.Second)
+	st = h.waitState(name, instances.Running, 10*time.Second)
 	if st.PID != pid {
 		t.Fatalf("adopted pid %d, want %d", st.PID, pid)
 	}
-	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, &st)
-	if st.State != instances.Stopped {
-		t.Fatalf("stop after adoption: %+v", st)
+	h.waitState(auto, instances.Running, 10*time.Second)
+	for _, n := range []string{name, auto} {
+		h.must(http.StatusOK, "POST", "/api/v1/instances/"+n+"/stop", struct{}{}, &st)
+		if st.State != instances.Stopped {
+			t.Fatalf("stop of %s after the restart: %+v", n, st)
+		}
 	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel2()
@@ -535,5 +571,92 @@ func TestErrorsAndPage(t *testing.T) {
 	h.must(http.StatusOK, "GET", "/api/v1/box/doctor", nil, &doc)
 	if len(doc.Checks) < 5 {
 		t.Fatalf("doctor %+v", doc)
+	}
+}
+
+// Secrets are stored, never shown, and masked in every log; changes to a
+// running instance wait for the next start.
+func TestSecretsAndChanges(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	h.create("alpha", "", nil)
+	const pw = "hunter2-but-longer"
+	var sr api.SecretsResult
+	h.must(http.StatusOK, "PUT", "/api/v1/instances/alpha/secrets", map[string]string{"server_password": pw, "admin_password": pw + "!"}, &sr)
+	if !sr.Secrets.ServerPasswordSet || !sr.Secrets.AdminPasswordSet || sr.RestartRequired {
+		t.Fatalf("secrets result %+v", sr)
+	}
+	var raw json.RawMessage
+	h.must(http.StatusOK, "GET", "/api/v1/instances/alpha", nil, &raw)
+	if strings.Contains(string(raw), pw) || !strings.Contains(string(raw), `"server_password_set":true`) {
+		t.Fatalf("instance shows the password or misses the flag: %s", raw)
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
+	var ch api.InstanceChange
+	h.must(http.StatusOK, "PATCH", "/api/v1/instances/alpha", map[string]any{"max_players": 20, "cluster": "eu-1"}, &ch)
+	if !ch.RestartRequired || !ch.Status.RestartRequired || ch.MaxPlayers != 20 {
+		t.Fatalf("change while running: %+v", ch)
+	}
+	var cl api.ClusterList
+	h.must(http.StatusOK, "GET", "/api/v1/clusters", nil, &cl)
+	if len(cl.Clusters) != 1 || cl.Clusters[0].Name != "eu-1" || !slices.Equal(cl.Clusters[0].Instances, []string{"alpha"}) {
+		t.Fatalf("clusters %+v", cl)
+	}
+	var eb api.ErrorBody
+	if st := h.call("PATCH", "/api/v1/instances/alpha", h.admin, map[string]any{"build": "2.0"}, &eb); st != http.StatusUnprocessableEntity {
+		t.Fatalf("build change by PATCH: %d %+v", st, eb)
+	}
+	if st := h.call("PATCH", "/api/v1/instances/alpha", h.admin, map[string]any{"rules": map[string]string{"Port": "1"}}, &eb); st != http.StatusUnprocessableEntity {
+		t.Fatalf("reserved rule: %d %+v", st, eb)
+	}
+	if st := h.call("DELETE", "/api/v1/instances/alpha", h.admin, struct{}{}, &eb); st != http.StatusConflict || eb.Error.Code != "instance_running" {
+		t.Fatalf("delete while running: %d %+v", st, eb)
+	}
+	var st instances.Status
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/restart?wait=true", struct{}{}, &st)
+	if st.State != instances.Running || st.RestartRequired {
+		t.Fatalf("after restart: %+v", st)
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, nil)
+	for _, f := range []string{
+		filepath.Join(h.root, "instances", "alpha", "console.log"),
+		gameserver.ServerLogPath(h.dataDir("alpha")),
+		filepath.Join(h.root, "audit.log"),
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), pw) {
+			t.Fatalf("%s contains the password", f)
+		}
+	}
+	if strings.Contains(h.stderr.String(), pw) || !strings.Contains(h.stderr.String(), "-ServerPassword=********") {
+		t.Fatal("the service log shows the password, or no masked launch line")
+	}
+	h.must(http.StatusOK, "DELETE", "/api/v1/instances/alpha", api.DeleteRequest{PurgeBackups: true}, nil)
+	if _, err := os.Stat(filepath.Join(h.root, "instances", "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("instance folder after delete: %v", err)
+	}
+}
+
+// The service refuses a non-loopback listen address without TLS.
+func TestListenRuleRefused(t *testing.T) {
+	t.Parallel()
+	root, err := os.MkdirTemp("", "esm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	if err := os.WriteFile(filepath.Join(root, "esm.json"), []byte(`{"listen":"0.0.0.0:0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Start(service.Options{Root: root, Stderr: &lockedBuffer{}})
+	if err == nil || !strings.Contains(err.Error(), "without TLS") {
+		t.Fatalf("start with an exposed listen address: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "esm.sock")); !os.IsNotExist(err) {
+		t.Fatal("a socket was left behind")
 	}
 }
