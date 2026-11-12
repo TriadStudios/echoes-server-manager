@@ -52,6 +52,9 @@ type Options struct {
 	// reply deadlines (api.DefaultBodyTimeout, api.DefaultWriteTimeout).
 	BodyTimeout  time.Duration
 	WriteTimeout time.Duration
+	// FailDelay overrides how long a failed login waits for its answer
+	// (api.DefaultFailDelay).
+	FailDelay time.Duration
 }
 
 // Service is a running ESM.
@@ -174,7 +177,7 @@ func Start(o Options) (_ *Service, err error) {
 		Version: o.Version, Config: cfg, Auth: s.auth, Audit: s.audit, Bus: s.bus, Instances: s.inst,
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
-		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout,
+		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
 	s.web = newHTTPServer(srv.Handler(), errLog)

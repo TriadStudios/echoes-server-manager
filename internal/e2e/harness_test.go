@@ -120,7 +120,7 @@ func (h *harness) startService() {
 	svc, err := service.Start(service.Options{
 		Root: h.root, Version: "test", Stderr: h.stderr,
 		WatchInterval: 50 * time.Millisecond, SchedulerInterval: time.Hour, KeepAlive: 200 * time.Millisecond,
-		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000},
+		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000}, FailDelay: 10 * time.Millisecond,
 	})
 	if err != nil {
 		h.t.Fatalf("start service: %v", err)

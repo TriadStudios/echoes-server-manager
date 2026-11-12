@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"runtime"
 	"strings"
@@ -69,14 +71,37 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	c.actor = audit.Actor{Kind: audit.ActorUser, ID: req.Username}
-	c.target = req.Username
-	u, err := s.o.Auth.Setup(auth.ClientIP(r), req.Code, req.Username, req.Password)
+	// Only a real user's name is recorded (see auth.Manager.AuditName).
+	name := s.o.Auth.AuditName(req.Username)
+	c.actor = audit.Actor{Kind: audit.ActorUser, ID: name}
+	c.target = name
+	u, err := s.o.Auth.Setup(auth.LimitAddress(r, s.behindProxy()), req.Code, req.Username, req.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrBadSetupCode) {
+			s.failPause(r.Context())
+		}
 		return err
 	}
-	c.actor.Role = string(u.Role)
+	c.actor = audit.Actor{Kind: audit.ActorUser, ID: u.Username, Role: string(u.Role)}
+	c.target = u.Username
 	return writeJSON(w, http.StatusCreated, UserInfo{Username: u.Username, Role: string(u.Role)})
+}
+
+// behindProxy reports whether behind_tls_proxy is set.
+func (s *Server) behindProxy() bool { return s.o.Config != nil && s.o.Config.BehindTLSProxy }
+
+// failPause holds the answer to a failed login or setup code for
+// FailDelay, or until the client goes away. No lock is held meanwhile.
+func (s *Server) failPause(ctx context.Context) {
+	if s.o.FailDelay <= 0 {
+		return
+	}
+	t := time.NewTimer(s.o.FailDelay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
@@ -87,9 +112,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	c.actor = audit.Actor{Kind: audit.ActorUser, ID: req.Username}
-	sess, err := s.o.Auth.Login(auth.ClientIP(r), req.Username, req.Password)
+	// Only a real user's name is recorded (see auth.Manager.AuditName).
+	c.actor = audit.Actor{Kind: audit.ActorUser, ID: s.o.Auth.AuditName(req.Username)}
+	// Behind a proxy or a tunnel all clients share one address: the limit
+	// then counts per user name only (see auth.LimitAddress), and every
+	// failure is answered late.
+	sess, err := s.o.Auth.Login(auth.LimitAddress(r, s.behindProxy()), req.Username, req.Password)
 	if err != nil {
+		if errors.Is(err, auth.ErrBadCredentials) {
+			s.failPause(r.Context())
+		}
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}

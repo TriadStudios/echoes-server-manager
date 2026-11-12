@@ -477,7 +477,8 @@ skipped.
   the API sets those deadlines per request instead.
 - Every change writes an audit entry (who, what, target, success, error).
   Refused calls are audited too. Audit entries and logs never contain
-  passwords or tokens.
+  passwords or tokens. Each text field of an entry is cut to 256 bytes, and
+  reading the audit log skips a line it cannot read.
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
   `secrets_unconfirmed` (both in [Passwords](#passwords)) and
   `limits_not_enforced` (it has resource limits and the process supervisor
@@ -515,8 +516,14 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   body, a log or the audit log. Every non-GET call with the cookie must
   send `X-CSRF-Token` with the session's CSRF token, a random value of its
   own (given at login and by `GET /api/v1/session`), and an `Origin` header,
-  when present, must match the scheme and the host. Failed logins are limited to 5 per 5
-  minutes per client address and per user name.
+  when present, must match the scheme and the host. Failed logins are
+  limited to 5 per 5 minutes per user name, and per client address for a
+  client that connects from an address of its own (see the next point).
+  Every failed login is answered after a pause of one second. The audit
+  log keeps the name typed at login or setup only when it is an existing
+  user's name; otherwise it says `(unknown)`, or `(invalid)` for text that
+  cannot be a user name, so a password typed into the name field is never
+  written down.
 - **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
   on loopback. It must pass the `Host` header through unchanged (the
   `Origin` checks compare against it), and `behind_tls_proxy` should be set
@@ -524,9 +531,15 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   set, browser logins work only through the proxy). Do not set it without such a proxy: a
   Secure cookie is never sent over plain http, so browser logins would
   stop working. ESM takes the client address from the connection, never
-  from forwarding headers, so behind a proxy the login rate limit per
-  client address counts all clients together (the limit per user name
-  still applies).
+  from forwarding headers: those can be forged unless ESM is told which
+  proxies to trust, and it has no such setting. Behind a proxy or an SSH
+  tunnel every client has the same address, so a limit per address would
+  let anyone lock every user out with a few wrong logins. So when
+  `behind_tls_proxy` is set, or a client connects from a loopback address,
+  failed logins count per user name only, each is answered after the
+  pause, and setup codes tried that way share one limit. A client that
+  connects directly from an address of its own is also limited per
+  address.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
   audit log, and the server output and state reasons of instances that pass

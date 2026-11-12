@@ -1,20 +1,38 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 )
 
-// Limiter counts failures per key (for example "ip:127.0.0.1" or
-// "user:admin") inside a sliding window. Once a key has max failures in the
-// window, Check refuses with *RateLimitError until the oldest of them ages out.
+// Bounds of the limiter's memory.
+const (
+	// maxKeyLen is the longest key kept as it is; a longer key is kept as
+	// its SHA-256.
+	maxKeyLen = 128
+	// defaultMaxKeys is the most keys the limiter holds. When it is full,
+	// keys whose failures have aged out go first, then the key whose newest
+	// failure is the oldest.
+	defaultMaxKeys = 1 << 16
+)
+
+// Limiter counts failures per key (for example "ip:192.0.2.1" or a user
+// name's key) inside a sliding window. Once a key has max failures in the
+// window, Check refuses with *RateLimitError until the oldest of them ages
+// out. Keys whose failures have all aged out are forgotten (at the latest
+// one window later), long keys are kept as a hash, and the number of keys is
+// bounded, so no stream of made-up names makes it grow without end.
 type Limiter struct {
 	window time.Duration
 	max    int
 	now    func() time.Time
 
-	mu    sync.Mutex
-	fails map[string][]time.Time
+	mu      sync.Mutex
+	fails   map[string][]time.Time
+	maxKeys int
+	swept   time.Time // when every key was last pruned
 }
 
 // NewLimiter makes a limiter allowing max failures per window.
@@ -22,7 +40,25 @@ func NewLimiter(window time.Duration, max int, now func() time.Time) *Limiter {
 	if now == nil {
 		now = time.Now
 	}
-	return &Limiter{window: window, max: max, now: now, fails: make(map[string][]time.Time)}
+	return &Limiter{window: window, max: max, now: now, fails: make(map[string][]time.Time), maxKeys: defaultMaxKeys}
+}
+
+// key is the map key for k: k itself, or its hash when k is long.
+func key(k string) string {
+	if len(k) <= maxKeyLen {
+		return k
+	}
+	sum := sha256.Sum256([]byte(k))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// hashed maps keys to map keys.
+func hashed(keys []string) []string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = key(k)
+	}
+	return out
 }
 
 func (l *Limiter) prune(key string, now time.Time) []time.Time {
@@ -40,12 +76,44 @@ func (l *Limiter) prune(key string, now time.Time) []time.Time {
 	return ts
 }
 
+// sweepLocked forgets every key whose failures have all aged out. Unless
+// forced it runs at most once a window, so its cost is spread thin.
+func (l *Limiter) sweepLocked(now time.Time, force bool) {
+	if !force && now.Sub(l.swept) < l.window {
+		return
+	}
+	l.swept = now
+	for k := range l.fails {
+		l.prune(k, now)
+	}
+}
+
+// addLocked records a failure at t against k, making room for a new key
+// when the limiter is full.
+func (l *Limiter) addLocked(k string, t time.Time) {
+	if _, ok := l.fails[k]; !ok && len(l.fails) >= l.maxKeys {
+		l.sweepLocked(t, true)
+		for len(l.fails) >= l.maxKeys {
+			oldest, at := "", time.Time{}
+			for k2, ts := range l.fails {
+				if last := ts[len(ts)-1]; oldest == "" || last.Before(at) {
+					oldest, at = k2, last
+				}
+			}
+			delete(l.fails, oldest)
+		}
+	}
+	l.fails[k] = append(l.fails[k], t)
+}
+
 // Check returns *RateLimitError when any key is over the limit. The
 // RetryAfter is the longest wait among the blocked keys.
 func (l *Limiter) Check(keys ...string) error {
+	keys = hashed(keys)
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.sweepLocked(now, false)
 	var wait time.Duration
 	for _, k := range keys {
 		ts := l.prune(k, now)
@@ -68,9 +136,11 @@ func (l *Limiter) Check(keys ...string) error {
 // the attempt turns out to succeed or not to count; a failed attempt just
 // keeps its reservation.
 func (l *Limiter) Reserve(keys ...string) (release func(), err error) {
+	keys = hashed(keys)
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.sweepLocked(now, false)
 	var wait time.Duration
 	for _, k := range keys {
 		ts := l.prune(k, now)
@@ -82,7 +152,7 @@ func (l *Limiter) Reserve(keys ...string) (release func(), err error) {
 		return nil, &RateLimitError{RetryAfter: wait}
 	}
 	for _, k := range keys {
-		l.fails[k] = append(l.fails[k], now)
+		l.addLocked(k, now)
 	}
 	var once sync.Once
 	return func() {
@@ -109,21 +179,23 @@ func (l *Limiter) Reserve(keys ...string) (release func(), err error) {
 
 // Fail records one failure against every key.
 func (l *Limiter) Fail(keys ...string) {
+	keys = hashed(keys)
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.sweepLocked(now, false)
 	for _, k := range keys {
-		ts := l.prune(k, now)
-		ts = append(ts, now)
-		if len(ts) > l.max {
-			ts = ts[len(ts)-l.max:]
+		l.prune(k, now)
+		l.addLocked(k, now)
+		if ts := l.fails[k]; len(ts) > l.max {
+			l.fails[k] = ts[len(ts)-l.max:]
 		}
-		l.fails[k] = ts
 	}
 }
 
 // Reset forgets the failures of every key.
 func (l *Limiter) Reset(keys ...string) {
+	keys = hashed(keys)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, k := range keys {

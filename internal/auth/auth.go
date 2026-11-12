@@ -256,11 +256,19 @@ func normalizeSetupCode(c string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(c), "-", ""))
 }
 
+// setupKey is the one limiter key of every setup code tried from an
+// address shared by many clients (see LimitAddress).
+const setupKey = "setup"
+
 // Setup uses the setup code to create the first admin. It works only while
-// no admin exists, consumes the code, and counts failures against clientIP
-// in the rate limiter.
-func (m *Manager) Setup(clientIP, code, username, password string) (User, error) {
-	keys := []string{"ip:" + clientIP}
+// no admin exists, consumes the code, and counts failures in the rate
+// limiter: against the client address addr, or, when addr is "" (an address
+// shared by many clients), against one key for all setup attempts.
+func (m *Manager) Setup(addr, code, username, password string) (User, error) {
+	keys := []string{setupKey}
+	if addr != "" {
+		keys = []string{"ip:" + addr}
+	}
 	// The attempt counts as a failure from the start; only attempts that
 	// do not test the code (or succeed) give the reservation back.
 	release, err := m.limiter.Reserve(keys...)
@@ -307,6 +315,45 @@ func (m *Manager) CreateUser(username, password string, role Role) (User, error)
 }
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// ValidUsername reports whether name has the form of a user name.
+func ValidUsername(name string) bool { return usernameRe.MatchString(name) }
+
+// Placeholders recorded in place of a name typed at login or setup.
+const (
+	// InvalidName stands for a name that cannot be a user name.
+	InvalidName = "(invalid)"
+	// UnknownName stands for a name of no existing user.
+	UnknownName = "(unknown)"
+)
+
+// AuditName is how a name typed at login or setup may be recorded (in the
+// audit log, and so in the event stream): the user's own name when such a
+// user exists, else InvalidName or UnknownName. A name that is no user's may
+// be a password typed into the wrong field, so it is never kept.
+func (m *Manager) AuditName(name string) string {
+	if !ValidUsername(name) {
+		return InvalidName
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range m.users {
+		if strings.EqualFold(u.Username, name) {
+			return u.Username
+		}
+	}
+	return UnknownName
+}
+
+// userKey is the limiter key of a name typed at login: a hash of the name
+// (any case), so the limiter keeps no typed text; every name that cannot
+// be a user name shares one key.
+func userKey(name string) string {
+	if !ValidUsername(name) {
+		return "user:" + InvalidName
+	}
+	return "user:" + sha256Hex(strings.ToLower(name))[:32]
+}
 
 func (m *Manager) addUserLocked(username, password string, role Role) (User, error) {
 	if !usernameRe.MatchString(username) {
@@ -356,13 +403,18 @@ func CheckPassword(pw string) error {
 }
 
 // Login checks a username and password and opens a session. Failures count
-// against both the client IP and the username; once either has RateMax
-// failures inside the window, attempts are refused with *RateLimitError
-// before the password is even checked. Each attempt is counted as a failure
-// before the (slow) check runs and given back only on success, so parallel
-// attempts cannot get past the limit.
-func (m *Manager) Login(clientIP, username, password string) (*Session, error) {
-	keys := []string{"ip:" + clientIP, "user:" + strings.ToLower(username)}
+// against the user name and, unless addr is "", against the client address
+// addr; once either has RateMax failures inside the window, attempts are
+// refused with *RateLimitError before the password is even checked. The
+// caller passes "" for an address that many clients share (see
+// LimitAddress): a limit on it would let anyone lock everyone out. Each
+// attempt is counted as a failure before the (slow) check runs and given
+// back only on success, so parallel attempts cannot get past the limit.
+func (m *Manager) Login(addr, username, password string) (*Session, error) {
+	keys := []string{userKey(username)}
+	if addr != "" {
+		keys = append(keys, "ip:"+addr)
+	}
 	release, err := m.limiter.Reserve(keys...)
 	if err != nil {
 		return nil, err
@@ -389,7 +441,7 @@ func (m *Manager) Login(clientIP, username, password string) (*Session, error) {
 		return nil, ErrBadCredentials // the reservation stays as the failure
 	}
 	release()
-	m.limiter.Reset("user:" + strings.ToLower(username))
+	m.limiter.Reset(userKey(username))
 	return m.newSession(found.Username, found.Role)
 }
 

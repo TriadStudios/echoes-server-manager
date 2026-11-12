@@ -48,6 +48,9 @@ const (
 	// counted from its first byte, and, in an event stream, to read each
 	// event.
 	DefaultWriteTimeout = time.Minute
+	// DefaultFailDelay is how long a failed login or setup code waits
+	// before it is answered.
+	DefaultFailDelay = time.Second
 )
 
 // Options wire a Server to the rest of ESM.
@@ -79,6 +82,9 @@ type Options struct {
 	// PortHost is where doctor test-binds free ports (default all
 	// interfaces).
 	PortHost string
+	// FailDelay is how long a failed login or setup code waits before it
+	// is answered (default DefaultFailDelay; negative for none).
+	FailDelay time.Duration
 }
 
 // Server serves the API and the page.
@@ -193,6 +199,9 @@ func New(o Options) *Server {
 	}
 	if o.WriteTimeout <= 0 {
 		o.WriteTimeout = DefaultWriteTimeout
+	}
+	if o.FailDelay == 0 {
+		o.FailDelay = DefaultFailDelay
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{}}
 	for _, rt := range routes {
