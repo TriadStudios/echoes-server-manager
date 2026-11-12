@@ -7,6 +7,8 @@
 package events
 
 import (
+	"encoding/json"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -20,13 +22,15 @@ const (
 	TypeBuild = "build"
 )
 
-// Event is one published event.
+// Event is one published event. Data is the JSON encoding of the payload,
+// made once at publish time, so every subscriber gets the same bytes and
+// nothing a publisher changes later can leak into it.
 type Event struct {
-	ID       uint64    `json:"id"`
-	Time     time.Time `json:"time"`
-	Type     string    `json:"type"`
-	Instance string    `json:"instance,omitempty"`
-	Data     any       `json:"data,omitempty"`
+	ID       uint64          `json:"id"`
+	Time     time.Time       `json:"time"`
+	Type     string          `json:"type"`
+	Instance string          `json:"instance,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
 }
 
 // Filter selects events. Empty fields match everything.
@@ -95,11 +99,19 @@ func (s *Subscription) Lagged() bool {
 	return s.lagged
 }
 
-// Publish records and delivers an event and returns it with its id and time.
-func (b *Bus) Publish(typ, instance string, data any) Event {
+// Publish encodes data as JSON (nil means no data), records and delivers
+// the event, and returns it with its id and time.
+func (b *Bus) Publish(typ, instance string, data any) (Event, error) {
+	var raw json.RawMessage
+	if data != nil {
+		var err error
+		if raw, err = json.Marshal(data); err != nil {
+			return Event{}, fmt.Errorf("events: encode %s data: %w", typ, err)
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	e := Event{ID: b.nextID, Time: b.now().UTC(), Type: typ, Instance: instance, Data: data}
+	e := Event{ID: b.nextID, Time: b.now().UTC(), Type: typ, Instance: instance, Data: raw}
 	b.nextID++
 	if len(b.ring) < b.size {
 		b.ring = append(b.ring, e)
@@ -108,7 +120,7 @@ func (b *Bus) Publish(typ, instance string, data any) Event {
 		b.start = (b.start + 1) % b.size
 	}
 	if b.closed {
-		return e
+		return e, nil
 	}
 	for s := range b.subs {
 		if !s.filter.Match(e) {
@@ -122,7 +134,7 @@ func (b *Bus) Publish(typ, instance string, data any) Event {
 			s.closeChan()
 		}
 	}
-	return e
+	return e, nil
 }
 
 // LastID returns the id of the newest event (0 when none).

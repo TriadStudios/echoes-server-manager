@@ -26,10 +26,19 @@ func TestPublishSubscribeFilter(t *testing.T) {
 	alpha := b.Subscribe(Filter{Instance: "alpha"}, 8)
 	states := b.Subscribe(Filter{Types: []string{TypeState}}, 8)
 
-	e1 := b.Publish(TypeState, "alpha", map[string]string{"state": "running"})
-	e2 := b.Publish(TypeLog, "beta", "line")
+	e1, err := b.Publish(TypeState, "alpha", map[string]string{"state": "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, _ := b.Publish(TypeLog, "beta", "line")
 	if e1.ID != 1 || e2.ID != 2 || e1.Time.IsZero() {
 		t.Fatalf("ids %d %d", e1.ID, e2.ID)
+	}
+	if string(e1.Data) != `{"state":"running"}` || string(e2.Data) != `"line"` {
+		t.Fatalf("data %s %s", e1.Data, e2.Data)
+	}
+	if _, err := b.Publish(TypeLog, "x", func() {}); err == nil {
+		t.Fatal("unencodable data accepted")
 	}
 	if got := recv(t, all); got.ID != 1 {
 		t.Fatalf("all got %d", got.ID)
