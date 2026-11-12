@@ -61,6 +61,52 @@ func (l *Limiter) Check(keys ...string) error {
 	return nil
 }
 
+// Reserve counts one attempt against every key as a failure before the
+// attempt is checked, so parallel attempts cannot all slip past the limit
+// while a slow password check runs. It refuses with *RateLimitError (and
+// counts nothing) when any key is already at the limit. Call release when
+// the attempt turns out to succeed or not to count; a failed attempt just
+// keeps its reservation.
+func (l *Limiter) Reserve(keys ...string) (release func(), err error) {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var wait time.Duration
+	for _, k := range keys {
+		ts := l.prune(k, now)
+		if len(ts) >= l.max {
+			wait = max(wait, ts[len(ts)-l.max].Add(l.window).Sub(now))
+		}
+	}
+	if wait > 0 {
+		return nil, &RateLimitError{RetryAfter: wait}
+	}
+	for _, k := range keys {
+		l.fails[k] = append(l.fails[k], now)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			for _, k := range keys {
+				ts := l.fails[k]
+				for i := len(ts) - 1; i >= 0; i-- {
+					if ts[i].Equal(now) {
+						ts = append(ts[:i], ts[i+1:]...)
+						break
+					}
+				}
+				if len(ts) == 0 {
+					delete(l.fails, k)
+				} else {
+					l.fails[k] = ts
+				}
+			}
+		})
+	}, nil
+}
+
 // Fail records one failure against every key.
 func (l *Limiter) Fail(keys ...string) {
 	now := l.now()

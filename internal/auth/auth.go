@@ -251,9 +251,18 @@ func normalizeSetupCode(c string) string {
 // in the rate limiter.
 func (m *Manager) Setup(clientIP, code, username, password string) (User, error) {
 	keys := []string{"ip:" + clientIP}
-	if err := m.limiter.Check(keys...); err != nil {
+	// The attempt counts as a failure from the start; only attempts that
+	// do not test the code (or succeed) give the reservation back.
+	release, err := m.limiter.Reserve(keys...)
+	if err != nil {
 		return User{}, err
 	}
+	failed := false
+	defer func() {
+		if !failed {
+			release()
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.hasAdminLocked() {
@@ -261,12 +270,12 @@ func (m *Manager) Setup(clientIP, code, username, password string) (User, error)
 	}
 	var rec setupRecord
 	if err := m.st.ReadJSON(setupFile, &rec); err != nil {
-		m.limiter.Fail(keys...)
+		failed = true
 		return User{}, ErrBadSetupCode
 	}
 	got := sha256Hex(normalizeSetupCode(code))
 	if subtle.ConstantTimeCompare([]byte(got), []byte(rec.SHA256)) != 1 || !m.now().Before(rec.Expires) {
-		m.limiter.Fail(keys...)
+		failed = true
 		return User{}, ErrBadSetupCode
 	}
 	u, err := m.addUserLocked(username, password, RoleAdmin)
@@ -339,10 +348,13 @@ func CheckPassword(pw string) error {
 // Login checks a username and password and opens a session. Failures count
 // against both the client IP and the username; once either has RateMax
 // failures inside the window, attempts are refused with *RateLimitError
-// before the password is even checked.
+// before the password is even checked. Each attempt is counted as a failure
+// before the (slow) check runs and given back only on success, so parallel
+// attempts cannot get past the limit.
 func (m *Manager) Login(clientIP, username, password string) (*Session, error) {
 	keys := []string{"ip:" + clientIP, "user:" + strings.ToLower(username)}
-	if err := m.limiter.Check(keys...); err != nil {
+	release, err := m.limiter.Reserve(keys...)
+	if err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
@@ -364,9 +376,9 @@ func (m *Manager) Login(clientIP, username, password string) (*Session, error) {
 		_ = VerifyPassword(dummyHash(m.opts.Iterations), password)
 	}
 	if !ok {
-		m.limiter.Fail(keys...)
-		return nil, ErrBadCredentials
+		return nil, ErrBadCredentials // the reservation stays as the failure
 	}
+	release()
 	m.limiter.Reset("user:" + strings.ToLower(username))
 	return m.newSession(found.Username, found.Role)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -476,5 +477,110 @@ func TestStatusCodes(t *testing.T) {
 		if got := StatusCode(err); got != want {
 			t.Errorf("StatusCode(%v) = %d, want %d", err, got, want)
 		}
+	}
+}
+
+// parallel runs n attempts at once and counts the outcomes.
+func parallel(n int, attempt func(i int) error) (checked, limited int, other []error) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			err := attempt(i)
+			var rl *RateLimitError
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case errors.As(err, &rl):
+				limited++
+			case errors.Is(err, ErrBadCredentials), errors.Is(err, ErrBadSetupCode):
+				checked++
+			default:
+				other = append(other, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return checked, limited, other
+}
+
+func TestParallelLoginsAreLimited(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "root"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Slow enough hashing that the attempts really overlap.
+	m, err := New(st, Options{Iterations: 20000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.CreateUser("admin", "correct horse battery", RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(i int) error{
+		"one client, one user": func(int) error {
+			_, err := m.Login("192.0.2.1", "admin", "wrong password!!")
+			return err
+		},
+		"many clients, one user": func(i int) error {
+			_, err := m.Login(fmt.Sprintf("198.51.100.%d", i), "Admin", "wrong password!!")
+			return err
+		},
+		"one client, many users": func(i int) error {
+			_, err := m.Login("203.0.113.9", fmt.Sprintf("user%d", i), "wrong password!!")
+			return err
+		},
+	}
+	for name, attempt := range cases {
+		m.Limiter().Reset("user:admin")
+		checked, limited, other := parallel(40, attempt)
+		if len(other) > 0 || checked > DefaultRateMax || checked+limited != 40 {
+			t.Errorf("%s: %d password checks, %d refused, other %v; want at most %d checks", name, checked, limited, other, DefaultRateMax)
+		}
+	}
+}
+
+func TestParallelSetupCodesAreLimited(t *testing.T) {
+	m, _, _ := newManager(t)
+	if _, err := m.EnsureSetupCode(); err != nil {
+		t.Fatal(err)
+	}
+	checked, limited, other := parallel(40, func(int) error {
+		_, err := m.Setup("192.0.2.7", "AAAAAAAAAAAAAAAAAAAAAAAA", "admin", "correct horse battery")
+		return err
+	})
+	if len(other) > 0 || checked > DefaultRateMax || checked+limited != 40 {
+		t.Fatalf("%d code checks, %d refused, other %v; want at most %d checks", checked, limited, other, DefaultRateMax)
+	}
+}
+
+func TestSuccessGivesTheAttemptBack(t *testing.T) {
+	m, _, _ := newManager(t)
+	if _, err := m.CreateUser("admin", "correct horse battery", RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < DefaultRateMax-1; i++ {
+		if _, err := m.Login("192.0.2.3", "admin", "wrong password!!"); !errors.Is(err, ErrBadCredentials) {
+			t.Fatalf("failure %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := m.Login("192.0.2.3", "admin", "correct horse battery"); err != nil {
+			t.Fatalf("good login %d after %d failures: %v", i, DefaultRateMax-1, err)
+		}
+	}
+	// The client still has room for exactly one more failure.
+	if _, err := m.Login("192.0.2.3", "nobody", "wrong password!!"); !errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("fifth failure: %v", err)
+	}
+	var rl *RateLimitError
+	if _, err := m.Login("192.0.2.3", "admin", "correct horse battery"); !errors.As(err, &rl) {
+		t.Fatalf("after five failures: %v", err)
 	}
 }
