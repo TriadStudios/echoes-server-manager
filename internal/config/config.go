@@ -92,10 +92,16 @@ type Backoff struct {
 
 // Config is the content of esm.json.
 type Config struct {
-	Listen             string   `json:"listen"`
-	Socket             string   `json:"socket,omitempty"` // empty means <root>/esm.sock
-	TLSCert            string   `json:"tls_cert,omitempty"`
-	TLSKey             string   `json:"tls_key,omitempty"`
+	Listen  string `json:"listen"`
+	Socket  string `json:"socket,omitempty"` // empty means <root>/esm.sock
+	TLSCert string `json:"tls_cert,omitempty"`
+	TLSKey  string `json:"tls_key,omitempty"`
+	// BehindTLSProxy says that browsers reach ESM only through a reverse
+	// proxy that speaks TLS to them (ESM itself listens on loopback without
+	// TLS). The session cookie is then marked Secure, as with tls_cert and
+	// tls_key. Off by default: a Secure cookie is never sent over plain
+	// http, so turning this on without such a proxy breaks browser logins.
+	BehindTLSProxy     bool     `json:"behind_tls_proxy"`
 	GamePorts          string   `json:"game_ports"`
 	QueryPorts         string   `json:"query_ports"`
 	Supervisor         string   `json:"supervisor"` // auto | systemd | process

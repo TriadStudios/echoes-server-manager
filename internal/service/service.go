@@ -166,8 +166,8 @@ func Start(o Options) (_ *Service, err error) {
 	}
 	srv := api.New(api.Options{
 		Version: o.Version, Config: cfg, Auth: s.auth, Audit: s.audit, Bus: s.bus, Instances: s.inst,
-		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, Started: time.Now(),
-		KeepAlive: o.KeepAlive, PortHost: o.PortHost,
+		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, SecureCookies: useTLS || cfg.BehindTLSProxy,
+		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
 	s.web = &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, ErrorLog: errLog}

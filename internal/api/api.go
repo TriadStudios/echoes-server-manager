@@ -48,8 +48,11 @@ type Options struct {
 	Builds     *builds.Manager
 	Supervisor supervisor.Supervisor
 	Logger     *slog.Logger
-	// TLS marks the TCP listener as TLS (session cookies get Secure).
+	// TLS marks the TCP listener as TLS.
 	TLS bool
+	// SecureCookies marks the session cookie Secure: browsers reach ESM
+	// over TLS, its own or a TLS proxy's (behind_tls_proxy).
+	SecureCookies bool
 	// Started is when the service started.
 	Started time.Time
 	// KeepAlive is the SSE keep-alive interval (default 15s).
@@ -390,6 +393,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusForbidden, "csrf", err.Error()
 	case errors.Is(err, auth.ErrOrigin):
 		return http.StatusForbidden, "origin", err.Error()
+	case errors.Is(err, auth.ErrNotJSON):
+		return http.StatusUnsupportedMediaType, "unsupported_media_type", err.Error()
 	case errors.Is(err, auth.ErrForbidden):
 		return http.StatusForbidden, "forbidden", err.Error()
 	case errors.Is(err, auth.ErrSetupDone):

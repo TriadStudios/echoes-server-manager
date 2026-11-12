@@ -2,10 +2,12 @@ package auth
 
 import (
 	"crypto/subtle"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ClientIP returns the IP of the direct peer. Forwarding headers are not
@@ -18,22 +20,25 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
-// SessionCookie builds the esm_session cookie: HttpOnly, SameSite=Strict,
-// Path=/, and Secure when the listener uses TLS.
-func SessionCookie(id string, secure bool) *http.Cookie {
+// SessionCookie builds the esm_session cookie: HttpOnly (scripts cannot
+// read it), SameSite=Strict, Path=/, Max-Age equal to life (the lifetime of
+// the session), and Secure when browsers reach ESM over TLS (its own, or a
+// TLS proxy in front of it).
+func SessionCookie(id string, life time.Duration, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    id,
 		Path:     "/",
+		MaxAge:   max(int(life/time.Second), 1),
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 	}
 }
 
-// ClearSessionCookie builds a cookie that removes esm_session.
+// ClearSessionCookie builds a cookie that removes esm_session (Max-Age=0).
 func ClearSessionCookie(secure bool) *http.Cookie {
-	c := SessionCookie("", secure)
+	c := SessionCookie("", 0, secure)
 	c.MaxAge = -1
 	return c
 }
@@ -98,6 +103,24 @@ func CheckCookieRequest(r *http.Request, s *Session) error {
 		return nil
 	}
 	return CheckCSRF(s, r.Header.Get(CSRFHeader))
+}
+
+// CheckLoginRequest applies the rules for the calls that take a password
+// without a session, login and setup. The body must be declared as JSON
+// (Content-Type: application/json), which a plain form on another site
+// cannot send. An Origin header, when present, must match the host, so a
+// page of another origin cannot log a browser in. A request without Origin
+// (the command line, curl, scripts) is accepted: browsers send Origin with
+// every POST.
+func CheckLoginRequest(r *http.Request) error {
+	if err := CheckOrigin(r.Header.Get("Origin"), r.Host); err != nil {
+		return err
+	}
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mt != "application/json" {
+		return ErrNotJSON
+	}
+	return nil
 }
 
 // BearerToken returns the token from "Authorization: Bearer <token>".

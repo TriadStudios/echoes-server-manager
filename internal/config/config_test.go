@@ -33,7 +33,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:8740" || cfg.GamePorts != "7777-7786" || cfg.QueryPorts != "27015-27024" ||
 		cfg.Supervisor != "auto" || cfg.StopTimeout.D() != 30*time.Second || cfg.ReadyTimeout.D() != 120*time.Second ||
 		cfg.KeepPreviousBuilds != 2 || cfg.Backoff.Window.D() != 10*time.Minute || cfg.Backoff.MaxCrashes != 5 ||
-		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute {
+		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute || cfg.BehindTLSProxy {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.SocketPath() != filepath.Join(st.Path(), "esm.sock") {
@@ -42,6 +42,9 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 	b, err := st.ReadFile(FileName)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"behind_tls_proxy": false`) {
+		t.Fatalf("behind_tls_proxy should be written, off:\n%s", b)
 	}
 	if !strings.Contains(string(b), `"stop_timeout": "30s"`) {
 		t.Fatalf("durations should be written as strings:\n%s", b)
@@ -54,7 +57,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 
 func TestLoadKeepsDefaultsForMissingFields(t *testing.T) {
 	st := openStore(t)
-	if err := st.WriteFile(FileName, []byte(`{"listen":"127.0.0.1:9000","backoff":{"base":"1s"},"stop_timeout":5}`), 0o600); err != nil {
+	if err := st.WriteFile(FileName, []byte(`{"listen":"127.0.0.1:9000","backoff":{"base":"1s"},"stop_timeout":5,"behind_tls_proxy":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _, err := Load(st)
@@ -62,7 +65,7 @@ func TestLoadKeepsDefaultsForMissingFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Listen != "127.0.0.1:9000" || cfg.Backoff.Base.D() != time.Second || cfg.Backoff.Max.D() != 5*time.Minute ||
-		cfg.StopTimeout.D() != 5*time.Second || cfg.GamePorts != DefaultGamePorts {
+		cfg.StopTimeout.D() != 5*time.Second || cfg.GamePorts != DefaultGamePorts || !cfg.BehindTLSProxy {
 		t.Fatalf("merge wrong: %+v", cfg)
 	}
 }

@@ -62,6 +62,9 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request, c *call) er
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
+	if err := auth.CheckLoginRequest(r); err != nil {
+		return err
+	}
 	var req SetupRequest
 	if err := decode(r, &req); err != nil {
 		return err
@@ -77,6 +80,9 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
+	if err := auth.CheckLoginRequest(r); err != nil {
+		return err
+	}
 	var req LoginRequest
 	if err := decode(r, &req); err != nil {
 		return err
@@ -87,7 +93,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
-	http.SetCookie(w, auth.SessionCookie(sess.ID, s.o.TLS))
+	// The session id goes only into the HttpOnly cookie, never into a
+	// body; the CSRF token is a separate random value.
+	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), s.o.SecureCookies))
 	return writeJSON(w, http.StatusOK, LoginResult{Username: sess.Username, Role: string(sess.Role), CSRFToken: sess.CSRF})
 }
 
@@ -95,7 +103,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, c *call) error {
 	if ck, err := r.Cookie(auth.SessionCookieName); err == nil && ck.Value != "" {
 		s.o.Auth.Logout(ck.Value)
 	}
-	http.SetCookie(w, auth.ClearSessionCookie(s.o.TLS))
+	http.SetCookie(w, auth.ClearSessionCookie(s.o.SecureCookies))
 	return writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
 }
 
@@ -111,15 +119,18 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request, c *call) error 
 
 // Box answers GET /box.
 type Box struct {
-	Version        string    `json:"version"`
-	Root           string    `json:"root"`
-	OS             string    `json:"os"`
-	Supervisor     string    `json:"supervisor"`
-	LimitsEnforced bool      `json:"limits_enforced"`
-	GamePorts      string    `json:"game_ports"`
-	QueryPorts     string    `json:"query_ports"`
-	Listen         string    `json:"listen"`
-	TLS            bool      `json:"tls"`
+	Version        string `json:"version"`
+	Root           string `json:"root"`
+	OS             string `json:"os"`
+	Supervisor     string `json:"supervisor"`
+	LimitsEnforced bool   `json:"limits_enforced"`
+	GamePorts      string `json:"game_ports"`
+	QueryPorts     string `json:"query_ports"`
+	Listen         string `json:"listen"`
+	TLS            bool   `json:"tls"`
+	// BehindTLSProxy echoes the behind_tls_proxy setting: browsers reach
+	// ESM through a TLS proxy, so the session cookie is Secure.
+	BehindTLSProxy bool      `json:"behind_tls_proxy"`
 	Started        time.Time `json:"started"`
 	UptimeSeconds  int64     `json:"uptime_seconds"`
 	Instances      int       `json:"instances"`
@@ -154,7 +165,8 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		Version: s.o.Version, Root: cfg.Root, OS: runtime.GOOS,
 		Supervisor: s.o.Supervisor.Kind(), LimitsEnforced: s.o.Supervisor.LimitsEnforced(),
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,
-		Started: s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
+		BehindTLSProxy: cfg.BehindTLSProxy,
+		Started:        s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
 		Instances: len(list), Running: running, Builds: len(bl),
 		DefaultSecretDelivery: gameserver.SecretDelivery, SecretsOnCommandLine: unsafe,
 	})

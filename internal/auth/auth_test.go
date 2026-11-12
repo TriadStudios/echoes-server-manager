@@ -183,7 +183,9 @@ func TestUsersFileHasNoPlainPassword(t *testing.T) {
 	}
 }
 
-func TestLoginSessionsAndIdleExpiry(t *testing.T) {
+// A session lasts 12 hours from login, however much it is used. Its CSRF
+// token is a random value of its own.
+func TestLoginSessionsAndLifetime(t *testing.T) {
 	m, _, c := newManager(t)
 	if _, err := m.CreateUser("admin", goodPassword, RoleAdmin); err != nil {
 		t.Fatal(err)
@@ -198,22 +200,45 @@ func TestLoginSessionsAndIdleExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Role != RoleAdmin || s.ID == "" || s.CSRF == "" || s.ID == s.CSRF {
+	if s.Role != RoleAdmin || s.ID == "" || s.CSRF == "" || s.ID == s.CSRF ||
+		strings.Contains(s.CSRF, s.ID) || strings.Contains(s.ID, s.CSRF) || len(s.CSRF) < 43 {
 		t.Fatalf("session %+v", s)
 	}
-	c.Add(11 * time.Hour)
+	if s.Life() != DefaultSessionLife || s.Life() != 12*time.Hour {
+		t.Fatalf("session life %s", s.Life())
+	}
+	// Two logins of the same user share nothing.
+	other, _ := m.Login("192.0.2.1", "admin", goodPassword)
+	if other.ID == s.ID || other.CSRF == s.CSRF {
+		t.Fatalf("two sessions share a value: %+v %+v", s, other)
+	}
+	c.Add(6 * time.Hour)
 	if _, err := m.Session(s.ID); err != nil {
 		t.Fatalf("session expired early: %v", err)
 	}
-	c.Add(11 * time.Hour) // 11h after last use: still fine
+	c.Add(6*time.Hour - time.Second) // used all along: still ends 12h after login
 	if _, err := m.Session(s.ID); err != nil {
-		t.Fatalf("idle timer not refreshed: %v", err)
+		t.Fatalf("session expired early: %v", err)
 	}
-	c.Add(12*time.Hour + time.Second)
+	c.Add(time.Second)
 	if _, err := m.Session(s.ID); !errors.Is(err, ErrNoSession) {
-		t.Fatalf("idle session still valid: %v", err)
+		t.Fatalf("session valid 12h after login: %v", err)
+	}
+	// An expired session that nobody asks for again is dropped at the next
+	// login.
+	m.mu.Lock()
+	n := len(m.sessions)
+	m.mu.Unlock()
+	if n != 1 { // other, expired as well, but not looked up yet
+		t.Fatalf("%d sessions kept, want 1", n)
 	}
 	s2, _ := m.Login("192.0.2.1", "admin", goodPassword)
+	m.mu.Lock()
+	n = len(m.sessions)
+	m.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("expired sessions kept after a login: %d sessions", n)
+	}
 	m.Logout(s2.ID)
 	if _, err := m.Session(s2.ID); !errors.Is(err, ErrNoSession) {
 		t.Fatal("session valid after logout")
@@ -365,7 +390,7 @@ func TestSetupCodeAttemptsAreLimited(t *testing.T) {
 func TestCSRFRequiredForCookiePost(t *testing.T) {
 	s := &Session{ID: "sid", CSRF: "csrf-value-123"}
 	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8740/api/v1/instances/a/start", nil)
-	post.AddCookie(SessionCookie(s.ID, false))
+	post.AddCookie(SessionCookie(s.ID, time.Hour, false))
 	err := CheckCookieRequest(post, s)
 	if !errors.Is(err, ErrCSRF) || StatusCode(err) != http.StatusForbidden {
 		t.Fatalf("POST without CSRF: %v (status %d)", err, StatusCode(err))
@@ -425,16 +450,59 @@ func TestOriginMismatchRefused(t *testing.T) {
 	}
 }
 
+// Login and setup take a JSON body only, and refuse a browser request from
+// another origin; without Origin (the command line, curl) they are fine.
+func TestCheckLoginRequest(t *testing.T) {
+	cases := []struct {
+		name, contentType, origin string
+		want                      error
+	}{
+		{"json", "application/json", "", nil},
+		{"json with charset", "application/json; charset=utf-8", "", nil},
+		{"json in capitals", "Application/JSON", "", nil},
+		{"same origin", "application/json", "http://127.0.0.1:8740", nil},
+		{"no content type", "", "", ErrNotJSON},
+		{"form", "application/x-www-form-urlencoded", "", ErrNotJSON},
+		{"multipart", "multipart/form-data; boundary=x", "", ErrNotJSON},
+		{"text", "text/plain", "", ErrNotJSON},
+		{"json-like", "application/jsonx", "", ErrNotJSON},
+		{"broken", "application/json; ;", "", ErrNotJSON},
+		{"other origin", "application/json", "http://evil.example", ErrOrigin},
+		{"other port", "application/json", "http://127.0.0.1:8741", ErrOrigin},
+		{"null origin", "application/json", "null", ErrOrigin},
+		{"form from another origin", "text/plain", "http://evil.example", ErrOrigin},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8740/api/v1/login", strings.NewReader("{}"))
+		if c.contentType != "" {
+			r.Header.Set("Content-Type", c.contentType)
+		}
+		if c.origin != "" {
+			r.Header.Set("Origin", c.origin)
+		}
+		if err := CheckLoginRequest(r); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+			t.Errorf("%s: %v, want %v", c.name, err, c.want)
+		}
+	}
+}
+
 func TestCookieAndHeaderHelpers(t *testing.T) {
-	c := SessionCookie("abc", true)
-	if c.Name != "esm_session" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
+	c := SessionCookie("abc", 12*time.Hour, true)
+	if c.Name != "esm_session" || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.MaxAge != 43200 {
 		t.Fatalf("cookie %+v", c)
 	}
-	if SessionCookie("abc", false).Secure {
+	if want := "esm_session=abc; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict"; c.String() != want {
+		t.Fatalf("Set-Cookie %q, want %q", c.String(), want)
+	}
+	if SessionCookie("abc", time.Hour, false).Secure {
 		t.Fatal("Secure set without TLS")
 	}
-	if ClearSessionCookie(false).MaxAge >= 0 {
-		t.Fatal("clear cookie does not expire")
+	clear := ClearSessionCookie(true)
+	if clear.MaxAge >= 0 || clear.Value != "" || !clear.Secure || !clear.HttpOnly {
+		t.Fatalf("clear cookie %+v", clear)
+	}
+	if want := "esm_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"; clear.String() != want {
+		t.Fatalf("Set-Cookie %q, want %q", clear.String(), want)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "192.0.2.7:5555"
@@ -470,6 +538,7 @@ func TestStatusCodes(t *testing.T) {
 		ErrNoSession:         401,
 		ErrOrigin:            403,
 		ErrBadUsername:       422,
+		ErrNotJSON:           415,
 		errors.Join(ErrCSRF): 403,
 		&RateLimitError{1e9}: 429,
 	}

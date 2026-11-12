@@ -46,6 +46,7 @@ var (
 	ErrForbidden      = errors.New("forbidden")
 	ErrCSRF           = errors.New("missing or wrong X-CSRF-Token header")
 	ErrOrigin         = errors.New("origin header does not match the host")
+	ErrNotJSON        = errors.New("the body must be JSON, sent with Content-Type: application/json")
 )
 
 // RateLimitError is returned when a client or username has failed too often.
@@ -60,7 +61,7 @@ const (
 	DefaultIterations   = 600000
 	MinPasswordLength   = 12
 	MaxPasswordLength   = 1024
-	DefaultSessionIdle  = 12 * time.Hour
+	DefaultSessionLife  = 12 * time.Hour
 	DefaultSetupTTL     = 24 * time.Hour
 	DefaultRateWindow   = 5 * time.Minute
 	DefaultRateMax      = 5
@@ -77,7 +78,7 @@ const (
 // Options tune a Manager. Zero values mean the defaults above.
 type Options struct {
 	Iterations  int           // PBKDF2 iterations for new hashes
-	SessionIdle time.Duration // idle expiry of sessions
+	SessionLife time.Duration // how long a session lasts after login
 	SetupTTL    time.Duration // lifetime of a setup code
 	RateWindow  time.Duration // login failure window
 	RateMax     int           // failures allowed per window
@@ -88,8 +89,8 @@ func (o *Options) fill() {
 	if o.Iterations <= 0 {
 		o.Iterations = DefaultIterations
 	}
-	if o.SessionIdle <= 0 {
-		o.SessionIdle = DefaultSessionIdle
+	if o.SessionLife <= 0 {
+		o.SessionLife = DefaultSessionLife
 	}
 	if o.SetupTTL <= 0 {
 		o.SetupTTL = DefaultSetupTTL
@@ -123,15 +124,24 @@ type Token struct {
 	LastUsed time.Time `json:"last_used,omitzero"`
 }
 
-// Session is a logged-in browser session.
+// Session is a logged-in browser session. It lasts a fixed time after
+// login (Options.SessionLife), however much it is used; the session cookie
+// carries the same lifetime as its Max-Age.
 type Session struct {
-	ID       string // value of the esm_session cookie
+	ID       string // value of the esm_session cookie; never in a reply body
 	Username string
 	Role     Role
-	CSRF     string // value the client must send in X-CSRF-Token
+	// CSRF is the value the client must send in X-CSRF-Token: a random
+	// value of its own, not derived from the session id.
+	CSRF     string
 	Created  time.Time
+	Expires  time.Time
 	LastSeen time.Time
 }
+
+// Life is how long the session lasts from its login: the Max-Age of its
+// cookie.
+func (s *Session) Life() time.Duration { return s.Expires.Sub(s.Created) }
 
 type setupRecord struct {
 	SHA256  string    `json:"sha256"`
@@ -405,7 +415,9 @@ func (m *Manager) newSession(username string, role Role) (*Session, error) {
 		return nil, err
 	}
 	now := m.now()
-	s := &Session{ID: id, Username: username, Role: role, CSRF: csrf, Created: now, LastSeen: now}
+	s := &Session{ID: id, Username: username, Role: role, CSRF: csrf, Created: now,
+		Expires: now.Add(m.opts.SessionLife), LastSeen: now}
+	m.PruneSessions()
 	m.mu.Lock()
 	m.sessions[sha256Hex(id)] = s
 	m.mu.Unlock()
@@ -413,7 +425,8 @@ func (m *Manager) newSession(username string, role Role) (*Session, error) {
 	return &cp, nil
 }
 
-// Session looks up a session by cookie value and refreshes its idle timer.
+// Session looks up a session by cookie value. A session past its expiry
+// is dropped.
 func (m *Manager) Session(id string) (*Session, error) {
 	if id == "" {
 		return nil, ErrNoSession
@@ -426,7 +439,7 @@ func (m *Manager) Session(id string) (*Session, error) {
 	if !ok {
 		return nil, ErrNoSession
 	}
-	if now.Sub(s.LastSeen) > m.opts.SessionIdle {
+	if !now.Before(s.Expires) {
 		delete(m.sessions, key)
 		return nil, ErrNoSession
 	}
@@ -442,13 +455,14 @@ func (m *Manager) Logout(id string) {
 	m.mu.Unlock()
 }
 
-// PruneSessions drops sessions idle for longer than the idle expiry.
+// PruneSessions drops expired sessions. Every login does it first, so
+// sessions that are never used again do not pile up.
 func (m *Manager) PruneSessions() {
 	now := m.now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for k, s := range m.sessions {
-		if now.Sub(s.LastSeen) > m.opts.SessionIdle {
+		if !now.Before(s.Expires) {
 			delete(m.sessions, k)
 		}
 	}
@@ -575,6 +589,8 @@ func StatusCode(err error) int {
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, ErrNotJSON):
+		return http.StatusUnsupportedMediaType
 	default:
 		return http.StatusInternalServerError
 	}
