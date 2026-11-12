@@ -197,8 +197,8 @@ func (m *Manager) ListBackups(name string) ([]Backup, error) {
 	return out, nil
 }
 
-// pruneBackups removes the oldest backups beyond keep, never the ids in
-// protect.
+// pruneBackups removes the oldest backups beyond keep. The ids in protect
+// are never removed; they are kept on top of the newest keep backups.
 func (m *Manager) pruneBackups(name string, keep int, protect ...string) error {
 	if keep < 1 {
 		keep = DefaultBackupKeep

@@ -301,3 +301,57 @@ func TestSchedulerTick(t *testing.T) {
 		t.Fatalf("a stopped instance was backed up: %v", list)
 	}
 }
+
+func TestScheduledWorkAndBackupPruning(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	ctx := context.Background()
+	if _, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{
+		Schedule: &Schedule{RestartAt: []string{"04:00"}},
+		Backup:   &BackupPolicy{Every: config.Duration(time.Hour), Keep: 2}}}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.m.Start(ctx, "alpha", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := st.PID
+	now := time.Date(2026, 5, 1, 3, 59, 0, 0, time.Local)
+	r.m.schedTick(now) // plans 04:00 and a backup an hour from now
+	r.m.schedTick(now.Add(time.Hour + time.Second))
+	testkit.Eventually(t, 15*time.Second, func() bool {
+		st, _ = r.m.Status("alpha")
+		list, _ := r.m.ListBackups("alpha")
+		return st.State == Running && st.PID != pid && len(list) == 1 && list[0].Reason == ReasonScheduled
+	}, "scheduled restart and backup did not both happen")
+	if st.Reason != "ready ("+st.ReadySource+")" {
+		t.Fatalf("status after the scheduled restart: %+v", st)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := r.m.Backup(ctx, "alpha", ReasonManual); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := r.m.ListBackups("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Reason != ReasonManual || list[1].Reason != ReasonManual || list[0].Created.Before(list[1].Created) {
+		t.Fatalf("after pruning to 2: %+v", list)
+	}
+	// Restoring prunes too, but never the backup being restored: it is
+	// kept on top of the newest two.
+	oldest := list[1].ID
+	if _, err := r.m.Restore(ctx, "alpha", oldest); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = r.m.ListBackups("alpha")
+	ids := []string{}
+	for _, b := range list {
+		ids = append(ids, b.ID)
+	}
+	if len(list) != 3 || list[0].Reason != ReasonPreRestore || list[2].ID != oldest {
+		t.Fatalf("after restore with keep 2: %v", ids)
+	}
+}
