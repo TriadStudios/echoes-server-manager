@@ -34,7 +34,7 @@ func TestRunReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer busy.Close()
-	cfg := `{"listen":"0.0.0.0:8740","game_ports":"26000-26002","query_ports":"26010-26012"}`
+	cfg := `{"listen":"192.0.2.1:8740","game_ports":"26000-26002","query_ports":"26010-26012"}`
 	if err := os.WriteFile(filepath.Join(root, "esm.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

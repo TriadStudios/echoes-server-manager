@@ -652,7 +652,7 @@ func TestListenRuleRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(root)
-	if err := os.WriteFile(filepath.Join(root, "esm.json"), []byte(`{"listen":"0.0.0.0:0"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "esm.json"), []byte(`{"listen":"192.0.2.1:0"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err = service.Start(service.Options{Root: root, Stderr: &lockedBuffer{}})
