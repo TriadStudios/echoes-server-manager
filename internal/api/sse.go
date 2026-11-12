@@ -1,0 +1,100 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/auth"
+	"github.com/TriadStudios/echoes-server-manager/internal/events"
+	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+)
+
+var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeAudit}
+
+// events streams events as Server-Sent Events. Each event has an id, a
+// type (state, log, build or audit) and the event as JSON data. A client
+// that reconnects with Last-Event-ID gets the events it missed while they
+// are still in memory. Audit events are only sent to admins.
+func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
+	q := r.URL.Query()
+	f := events.Filter{Instance: q.Get("instance")}
+	if t := q.Get("types"); t != "" {
+		for _, typ := range strings.Split(t, ",") {
+			typ = strings.TrimSpace(typ)
+			if !slices.Contains(eventTypes, typ) {
+				return fault.Invalidf("types: %q is not one of %s", typ, strings.Join(eventTypes, ", "))
+			}
+			f.Types = append(f.Types, typ)
+		}
+	}
+	if !c.role.Allows(auth.RoleAdmin) {
+		if len(f.Types) == 0 {
+			f.Types = []string{events.TypeState, events.TypeLog, events.TypeBuild}
+		} else if f.Types = slices.DeleteFunc(f.Types, func(t string) bool { return t == events.TypeAudit }); len(f.Types) == 0 {
+			return errStatus(http.StatusForbidden, "forbidden", "audit events need the admin role")
+		}
+	}
+	after := s.o.Bus.LastID()
+	if h := r.Header.Get("Last-Event-ID"); h != "" {
+		n, err := strconv.ParseUint(strings.TrimSpace(h), 10, 64)
+		if err != nil {
+			return fault.BadRequestf("Last-Event-ID must be an event id")
+		}
+		after = n
+	}
+	backlog, sub, complete := s.o.Bus.SubscribeFrom(after, f, 1024)
+	defer sub.Close()
+	rc := http.NewResponseController(w)
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return nil
+	}
+	if !complete {
+		fmt.Fprint(w, ": some events were missed\n\n")
+	}
+	for _, e := range backlog {
+		if writeEvent(w, e) != nil {
+			return nil
+		}
+	}
+	if rc.Flush() != nil {
+		return nil
+	}
+	tick := time.NewTicker(s.o.KeepAlive)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return nil
+		case e, ok := <-sub.C:
+			if !ok {
+				return nil // shutting down, or too far behind: the client reconnects
+			}
+			if writeEvent(w, e) != nil || rc.Flush() != nil {
+				return nil
+			}
+		case <-tick.C:
+			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil || rc.Flush() != nil {
+				return nil
+			}
+		}
+	}
+}
+
+func writeEvent(w http.ResponseWriter, e events.Event) error {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, e.Type, b)
+	return err
+}

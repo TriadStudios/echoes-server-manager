@@ -28,6 +28,8 @@ const (
 	ActorToken  = "token"
 	ActorSocket = "socket"
 	ActorSystem = "system"
+	// ActorAnonymous is a caller that sent no valid credentials.
+	ActorAnonymous = "anonymous"
 )
 
 // Actor is who performed an action.
