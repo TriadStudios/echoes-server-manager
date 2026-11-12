@@ -150,6 +150,16 @@ and nowhere else, stored in `secrets.json` (0600) and never returned: the
 API only says whether each is set. A change reaches the server with its
 next start.
 
+A password has at least 8 characters (422 `password_too_short`; a choice
+made for now, it can only be raised later). A password may not occur, in
+any case, in a setting of its instance that every role sees and the server
+may print: the name, display name, world, map, cluster, a rule key or value,
+or an extra argument. Setting such a password, or changing a setting so
+that it holds one, is refused with 422 `password_in_settings`, which names
+the password (server or admin) and the setting, never the value. The output
+filter (below) masks passwords, so such a setting would show as a mask and
+give the password away.
+
 ### In a file (the default)
 
 Before each start ESM writes the passwords to
@@ -278,7 +288,7 @@ its message.
 
 This is a second line of defence, for a server that prints a password
 itself. It is not the guarantee, and it has limits: a value shorter than 4
-characters is not masked as text; a value the server prints in another
+characters is not masked as text (passwords set now have at least 8); a value the server prints in another
 shape (in upper case, split up) is not recognised; and a mask shows where a
 value was, so a password that is an ordinary word of the output can be
 guessed from the masks. What ESM says itself (state reasons, errors) holds
@@ -489,7 +499,10 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
   JSON body only (`Content-Type: application/json`, else 415), which a form
   on another site cannot send, and refuse a request whose `Origin` header
-  names another origin (403). A request without `Origin` is accepted, so
+  names another origin (403). The origin must match in scheme too: `http`
+  on a plain listener, `https` when ESM has TLS or `behind_tls_proxy` is
+  set; so an `https` page is another origin to a plain-http ESM on the same
+  host, and a plain-http page is another origin behind a TLS proxy. A request without `Origin` is accepted, so
   the command line, curl and scripts work; browsers send `Origin` with
   every POST. A login sets the `esm_session` cookie: HttpOnly (scripts
   cannot read it), SameSite=Strict, Path=/, Max-Age 43200, and Secure when
@@ -500,12 +513,13 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   body, a log or the audit log. Every non-GET call with the cookie must
   send `X-CSRF-Token` with the session's CSRF token, a random value of its
   own (given at login and by `GET /api/v1/session`), and an `Origin` header,
-  when present, must match the host. Failed logins are limited to 5 per 5
+  when present, must match the scheme and the host. Failed logins are limited to 5 per 5
   minutes per client address and per user name.
 - **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
   on loopback. It must pass the `Host` header through unchanged (the
   `Origin` checks compare against it), and `behind_tls_proxy` should be set
-  so the session cookie is Secure. Do not set it without such a proxy: a
+  so the session cookie is Secure and an `Origin` must say `https` (with it
+  set, browser logins work only through the proxy). Do not set it without such a proxy: a
   Secure cookie is never sent over plain http, so browser logins would
   stop working. ESM takes the client address from the connection, never
   from forwarding headers, so behind a proxy the login rate limit per
