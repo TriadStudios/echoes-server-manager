@@ -79,19 +79,28 @@ func TestSessionCookieRules(t *testing.T) {
 				t.Fatal("no setup code printed")
 			}
 			setup := fmt.Sprintf(`{"code":%q,"username":"admin","password":%q}`, m[1], adminPassword)
+			// Browsers reach ESM over https behind the proxy: the page's
+			// origin is https there and http without it, and the other
+			// scheme is another origin.
+			hostPort := strings.TrimPrefix(h.base, "http://")
+			origin, otherScheme := "http://"+hostPort, "https://"+hostPort
+			if proxy {
+				origin, otherScheme = otherScheme, origin
+			}
 			for _, c := range []struct{ ctype, origin, code string }{
 				{"application/x-www-form-urlencoded", "", "unsupported_media_type"},
 				{"text/plain", "", "unsupported_media_type"},
 				{"", "", "unsupported_media_type"},
 				{"application/json", "http://evil.example", "origin"},
 				{"text/plain", "http://evil.example", "origin"},
+				{"application/json", otherScheme, "origin"},
 			} {
 				if _, b := h.rawPost("/api/v1/setup", c.ctype, c.origin, setup, nil, ""); errorCode(b) != c.code {
 					t.Fatalf("setup with %q from %q: %s, want %s", c.ctype, c.origin, b, c.code)
 				}
 			}
 			// The refusals did not use up the setup code or the attempts.
-			if resp, b := h.rawPost("/api/v1/setup", "application/json", h.base, setup, nil, ""); resp.StatusCode != http.StatusCreated {
+			if resp, b := h.rawPost("/api/v1/setup", "application/json", origin, setup, nil, ""); resp.StatusCode != http.StatusCreated {
 				t.Fatalf("setup from the same origin: %d %s", resp.StatusCode, b)
 			}
 
@@ -102,6 +111,7 @@ func TestSessionCookieRules(t *testing.T) {
 				{"multipart/form-data; boundary=x", "", "unsupported_media_type"},
 				{"application/json", "http://evil.example", "origin"},
 				{"application/json", "null", "origin"},
+				{"application/json", otherScheme, "origin"},
 			} {
 				resp, b := h.rawPost("/api/v1/login", c.ctype, c.origin, login, nil, "")
 				if errorCode(b) != c.code || setCookie(resp) != "" {
@@ -112,7 +122,7 @@ func TestSessionCookieRules(t *testing.T) {
 			if resp, b := h.rawPost("/api/v1/login", "application/json; charset=utf-8", "", login, nil, ""); resp.StatusCode != http.StatusOK {
 				t.Fatalf("login without Origin: %d %s", resp.StatusCode, b)
 			}
-			resp, body := h.rawPost("/api/v1/login", "application/json", h.base, login, nil, "")
+			resp, body := h.rawPost("/api/v1/login", "application/json", origin, login, nil, "")
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("login: %d %s", resp.StatusCode, body)
 			}
@@ -161,7 +171,7 @@ func TestSessionCookieRules(t *testing.T) {
 			}
 
 			// Logout clears the cookie and ends the session.
-			resp, body = h.rawPost("/api/v1/logout", "application/json", h.base, "{}", cookie, lr.CSRFToken)
+			resp, body = h.rawPost("/api/v1/logout", "application/json", origin, "{}", cookie, lr.CSRFToken)
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("logout: %d %s", resp.StatusCode, body)
 			}
@@ -190,8 +200,8 @@ func TestSessionCookieRules(t *testing.T) {
 					refused++
 				}
 			}
-			if refused != 5 {
-				t.Fatalf("%d refused logins in the audit log, want 5", refused)
+			if refused != 6 {
+				t.Fatalf("%d refused logins in the audit log, want 6", refused)
 			}
 		})
 	}

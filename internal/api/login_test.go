@@ -26,6 +26,7 @@ func TestLoginAndSetupNeedJSONFromTheSameOrigin(t *testing.T) {
 			{"application/json", "http://evil.example", http.StatusForbidden, "origin"},
 			{"application/json", "http://example.com:8741", http.StatusForbidden, "origin"},
 			{"application/json", "null", http.StatusForbidden, "origin"},
+			{"application/json", "https://example.com:8740", http.StatusForbidden, "origin"},
 			{"text/plain", "http://evil.example", http.StatusForbidden, "origin"},
 		}
 		for _, c := range cases {

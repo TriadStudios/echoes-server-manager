@@ -63,19 +63,29 @@ func CheckCSRF(s *Session, header string) error {
 }
 
 // CheckOrigin accepts a missing Origin header; when present it must name
-// the same host (and port) as the Host header.
-func CheckOrigin(origin, host string) error {
+// the scheme browsers reach ESM with ("http", or "https" behind TLS, ESM's
+// own or a TLS proxy's) and the same host (and port) as the Host header.
+func CheckOrigin(origin, host, scheme string) error {
 	if origin == "" {
 		return nil
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || u.Host == "" || u.Scheme != scheme {
 		return ErrOrigin
 	}
-	if !strings.EqualFold(stripDefaultPort(u.Host, u.Scheme), stripDefaultPort(host, u.Scheme)) {
+	if !strings.EqualFold(stripDefaultPort(u.Host, scheme), stripDefaultPort(host, scheme)) {
 		return ErrOrigin
 	}
 	return nil
+}
+
+// Scheme is the scheme browsers reach ESM with: "https" when https is true
+// (ESM's own TLS, or a TLS proxy in front of it), else "http".
+func Scheme(https bool) string {
+	if https {
+		return "https"
+	}
+	return "http"
 }
 
 func stripDefaultPort(hostport, scheme string) string {
@@ -93,10 +103,11 @@ func stripDefaultPort(hostport, scheme string) string {
 }
 
 // CheckCookieRequest applies the rules for a request authenticated by the
-// session cookie: an Origin header, when present, must match Host; and every
-// state-changing method must carry X-CSRF-Token equal to the session's.
-func CheckCookieRequest(r *http.Request, s *Session) error {
-	if err := CheckOrigin(r.Header.Get("Origin"), r.Host); err != nil {
+// session cookie: an Origin header, when present, must match scheme and
+// Host; and every state-changing method must carry X-CSRF-Token equal to
+// the session's.
+func CheckCookieRequest(r *http.Request, s *Session, scheme string) error {
+	if err := CheckOrigin(r.Header.Get("Origin"), r.Host, scheme); err != nil {
 		return err
 	}
 	if SafeMethod(r.Method) {
@@ -108,12 +119,12 @@ func CheckCookieRequest(r *http.Request, s *Session) error {
 // CheckLoginRequest applies the rules for the calls that take a password
 // without a session, login and setup. The body must be declared as JSON
 // (Content-Type: application/json), which a plain form on another site
-// cannot send. An Origin header, when present, must match the host, so a
-// page of another origin cannot log a browser in. A request without Origin
-// (the command line, curl, scripts) is accepted: browsers send Origin with
-// every POST.
-func CheckLoginRequest(r *http.Request) error {
-	if err := CheckOrigin(r.Header.Get("Origin"), r.Host); err != nil {
+// cannot send. An Origin header, when present, must match scheme and host,
+// so a page of another origin cannot log a browser in. A request without
+// Origin (the command line, curl, scripts) is accepted: browsers send
+// Origin with every POST.
+func CheckLoginRequest(r *http.Request, scheme string) error {
+	if err := CheckOrigin(r.Header.Get("Origin"), r.Host, scheme); err != nil {
 		return err
 	}
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

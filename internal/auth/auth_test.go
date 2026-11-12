@@ -391,26 +391,26 @@ func TestCSRFRequiredForCookiePost(t *testing.T) {
 	s := &Session{ID: "sid", CSRF: "csrf-value-123"}
 	post := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8740/api/v1/instances/a/start", nil)
 	post.AddCookie(SessionCookie(s.ID, time.Hour, false))
-	err := CheckCookieRequest(post, s)
+	err := CheckCookieRequest(post, s, "http")
 	if !errors.Is(err, ErrCSRF) || StatusCode(err) != http.StatusForbidden {
 		t.Fatalf("POST without CSRF: %v (status %d)", err, StatusCode(err))
 	}
 	post.Header.Set(CSRFHeader, "wrong")
-	if err := CheckCookieRequest(post, s); !errors.Is(err, ErrCSRF) {
+	if err := CheckCookieRequest(post, s, "http"); !errors.Is(err, ErrCSRF) {
 		t.Fatalf("POST with wrong CSRF: %v", err)
 	}
 	post.Header.Set(CSRFHeader, s.CSRF)
-	if err := CheckCookieRequest(post, s); err != nil {
+	if err := CheckCookieRequest(post, s, "http"); err != nil {
 		t.Fatalf("POST with CSRF: %v", err)
 	}
 	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		r := httptest.NewRequest(method, "http://127.0.0.1:8740/api/v1/x", nil)
-		if err := CheckCookieRequest(r, s); !errors.Is(err, ErrCSRF) {
+		if err := CheckCookieRequest(r, s, "http"); !errors.Is(err, ErrCSRF) {
 			t.Errorf("%s without CSRF accepted", method)
 		}
 	}
 	get := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8740/api/v1/instances", nil)
-	if err := CheckCookieRequest(get, s); err != nil {
+	if err := CheckCookieRequest(get, s, "http"); err != nil {
 		t.Fatalf("GET refused: %v", err)
 	}
 	if err := CheckCSRF(&Session{}, ""); !errors.Is(err, ErrCSRF) {
@@ -423,30 +423,40 @@ func TestOriginMismatchRefused(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8740/api/v1/logout", nil)
 	r.Header.Set(CSRFHeader, "c")
 	r.Header.Set("Origin", "http://evil.example")
-	if err := CheckCookieRequest(r, s); !errors.Is(err, ErrOrigin) || StatusCode(err) != http.StatusForbidden {
+	if err := CheckCookieRequest(r, s, "http"); !errors.Is(err, ErrOrigin) || StatusCode(err) != http.StatusForbidden {
 		t.Fatalf("mismatched origin: %v", err)
 	}
 	r.Header.Set("Origin", "http://127.0.0.1:8740")
-	if err := CheckCookieRequest(r, s); err != nil {
+	if err := CheckCookieRequest(r, s, "http"); err != nil {
 		t.Fatalf("matching origin refused: %v", err)
 	}
+	// The scheme counts: plain http unless ESM is behind TLS (its own or a
+	// proxy's), then https.
 	cases := []struct {
-		origin, host string
-		ok           bool
+		origin, host, scheme string
+		ok                   bool
 	}{
-		{"", "127.0.0.1:8740", true},
-		{"https://esm.example:443", "esm.example", true},
-		{"https://esm.example", "esm.example:443", true},
-		{"http://ESM.example:8080", "esm.example:8080", true},
-		{"http://127.0.0.1:8741", "127.0.0.1:8740", false},
-		{"null", "127.0.0.1:8740", false},
-		{"file://x", "x", false},
-		{"http://[::1]:8740", "[::1]:8740", true},
+		{"", "127.0.0.1:8740", "http", true},
+		{"", "esm.example", "https", true},
+		{"https://esm.example:443", "esm.example", "https", true},
+		{"https://esm.example", "esm.example:443", "https", true},
+		{"http://ESM.example:8080", "esm.example:8080", "http", true},
+		{"http://127.0.0.1:8741", "127.0.0.1:8740", "http", false},
+		{"null", "127.0.0.1:8740", "http", false},
+		{"file://x", "x", "http", false},
+		{"http://[::1]:8740", "[::1]:8740", "http", true},
+		{"https://127.0.0.1:8740", "127.0.0.1:8740", "http", false}, // https page, plain listener
+		{"http://esm.example", "esm.example", "https", false},       // plain page behind TLS
+		{"http://esm.example:443", "esm.example:443", "https", false},
+		{"HTTPS://esm.example", "esm.example", "https", true},
 	}
 	for _, c := range cases {
-		if err := CheckOrigin(c.origin, c.host); (err == nil) != c.ok {
-			t.Errorf("CheckOrigin(%q, %q) = %v, want ok=%v", c.origin, c.host, err, c.ok)
+		if err := CheckOrigin(c.origin, c.host, c.scheme); (err == nil) != c.ok {
+			t.Errorf("CheckOrigin(%q, %q, %q) = %v, want ok=%v", c.origin, c.host, c.scheme, err, c.ok)
 		}
+	}
+	if Scheme(true) != "https" || Scheme(false) != "http" {
+		t.Fatal("Scheme")
 	}
 }
 
@@ -471,6 +481,7 @@ func TestCheckLoginRequest(t *testing.T) {
 		{"other port", "application/json", "http://127.0.0.1:8741", ErrOrigin},
 		{"null origin", "application/json", "null", ErrOrigin},
 		{"form from another origin", "text/plain", "http://evil.example", ErrOrigin},
+		{"https page on plain http", "application/json", "https://127.0.0.1:8740", ErrOrigin},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8740/api/v1/login", strings.NewReader("{}"))
@@ -480,7 +491,7 @@ func TestCheckLoginRequest(t *testing.T) {
 		if c.origin != "" {
 			r.Header.Set("Origin", c.origin)
 		}
-		if err := CheckLoginRequest(r); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+		if err := CheckLoginRequest(r, "http"); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
 			t.Errorf("%s: %v, want %v", c.name, err, c.want)
 		}
 	}

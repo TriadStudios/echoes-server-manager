@@ -63,9 +63,10 @@ type Options struct {
 	Logger     *slog.Logger
 	// TLS marks the TCP listener as TLS.
 	TLS bool
-	// SecureCookies marks the session cookie Secure: browsers reach ESM
-	// over TLS, its own or a TLS proxy's (behind_tls_proxy).
-	SecureCookies bool
+	// HTTPS says that browsers reach ESM over https, its own TLS or a TLS
+	// proxy's (behind_tls_proxy): the session cookie is Secure, and an
+	// Origin header must say https.
+	HTTPS bool
 	// BodyTimeout and WriteTimeout are the read deadline of a request body
 	// and the write deadline of a reply (defaults DefaultBodyTimeout and
 	// DefaultWriteTimeout).
@@ -438,7 +439,7 @@ func (s *Server) identify(r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
-	if err := auth.CheckCookieRequest(r, sess); err != nil {
+	if err := auth.CheckCookieRequest(r, sess, auth.Scheme(s.o.HTTPS)); err != nil {
 		return err
 	}
 	c.role = sess.Role

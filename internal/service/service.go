@@ -172,7 +172,7 @@ func Start(o Options) (_ *Service, err error) {
 	}
 	srv := api.New(api.Options{
 		Version: o.Version, Config: cfg, Auth: s.auth, Audit: s.audit, Bus: s.bus, Instances: s.inst,
-		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, SecureCookies: useTLS || cfg.BehindTLSProxy,
+		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout,
 	})

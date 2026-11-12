@@ -62,7 +62,7 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request, c *call) er
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
-	if err := auth.CheckLoginRequest(r); err != nil {
+	if err := auth.CheckLoginRequest(r, auth.Scheme(s.o.HTTPS)); err != nil {
 		return err
 	}
 	var req SetupRequest
@@ -80,7 +80,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
-	if err := auth.CheckLoginRequest(r); err != nil {
+	if err := auth.CheckLoginRequest(r, auth.Scheme(s.o.HTTPS)); err != nil {
 		return err
 	}
 	var req LoginRequest
@@ -95,7 +95,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
 	// The session id goes only into the HttpOnly cookie, never into a
 	// body; the CSRF token is a separate random value.
-	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), s.o.SecureCookies))
+	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), s.o.HTTPS))
 	return writeJSON(w, http.StatusOK, LoginResult{Username: sess.Username, Role: string(sess.Role), CSRFToken: sess.CSRF})
 }
 
@@ -103,7 +103,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, c *call) error {
 	if ck, err := r.Cookie(auth.SessionCookieName); err == nil && ck.Value != "" {
 		s.o.Auth.Logout(ck.Value)
 	}
-	http.SetCookie(w, auth.ClearSessionCookie(s.o.SecureCookies))
+	http.SetCookie(w, auth.ClearSessionCookie(s.o.HTTPS))
 	return writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
 }
 

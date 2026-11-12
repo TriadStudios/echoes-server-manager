@@ -435,6 +435,10 @@ func TestSetupAndLogin(t *testing.T) {
 	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, "http://192.0.2.1:8740", &eb); st != http.StatusForbidden || eb.Error.Code != "origin" {
 		t.Fatalf("cookie POST from another origin: %d %+v", st, eb)
 	}
+	// The same host from an https page is another origin on plain http.
+	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, "https://"+strings.TrimPrefix(h.base, "http://"), &eb); st != http.StatusForbidden || eb.Error.Code != "origin" {
+		t.Fatalf("cookie POST from the https origin of a plain listener: %d %+v", st, eb)
+	}
 	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, h.base, nil); st != http.StatusCreated {
 		t.Fatalf("cookie POST with CSRF: %d", st)
 	}
