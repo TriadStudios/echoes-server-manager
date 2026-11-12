@@ -62,8 +62,18 @@ For scripts and other machines, make an API token:
 esm token create --role operator --name deploy
 ```
 
-The token is shown once. Send it as `Authorization: Bearer <token>`, or use
-it with the command line: `esm --url https://<your-host> --token <token> list`.
+The token is shown once. Send it as `Authorization: Bearer <token>`. For
+the command line, put it in the `ESM_TOKEN` environment variable, for
+example from a file only you can read, and give the address with `--url`:
+
+```sh
+export ESM_TOKEN="$(cat ~/.esm-token)"
+esm --url https://<your-host> list
+```
+
+(`--token` works too, but other accounts on the machine can read command
+lines in the process list.) `--url` must be https unless it points to this
+machine: over plain http the token would cross the network in clear.
 
 ### Linux: keep servers running
 

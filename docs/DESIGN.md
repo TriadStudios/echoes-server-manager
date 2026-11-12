@@ -603,7 +603,7 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 ## Command line
 
 ```
-esm [--root DIR] [--json] [--url URL --token TOKEN] <command> [arguments]
+esm [--root DIR] [--json] [--url URL [--token TOKEN]] <command> [arguments]
 
 serve | doctor [--bind IP] | version
 list | status [name]
@@ -618,6 +618,12 @@ backup <name>
 restore <name> <backup-id>
 token create --role read|operator|admin [--name NAME]
 ```
+
+With `--url` the command line talks to an ESM elsewhere with an API token,
+best given in `ESM_TOKEN` (a `--token` argument shows in the process
+list). `--url` must be https, except to this machine (`localhost`,
+127.0.0.1, `[::1]`): over plain http the token would cross the network in
+clear.
 
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
