@@ -40,6 +40,8 @@ const (
 	ControlStop  = "stop"
 	ControlCrash = "crash"
 	ControlHang  = "hang"
+	// ControlUnready keeps the fake running but stops it reporting ready.
+	ControlUnready = "unready"
 )
 
 var (
@@ -221,7 +223,7 @@ func copyFile(t testing.TB, src, dst string, mode fs.FileMode) {
 }
 
 // WriteControl drops a request file (ControlStop, ControlCrash or
-// ControlHang) into <dataDir>/control/.
+// ControlHang, ControlUnready) into <dataDir>/control/.
 func WriteControl(dataDir, name string) error {
 	dir := filepath.Join(dataDir, "control")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

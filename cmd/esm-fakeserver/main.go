@@ -18,7 +18,8 @@
 // Command-line values win over fake.json.
 //
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
-// the crash code now), "hang" (ignore stop requests from now on).
+// the crash code now), "hang" (ignore stop requests from now on),
+// "unready" (keep running but stop reporting ready).
 //
 // The query port answers PING with PONG only once the server is ready.
 package main
@@ -48,6 +49,9 @@ import (
 const (
 	controlCrash = "crash"
 	controlHang  = "hang"
+	// controlUnready makes the server stop reporting ready (status file
+	// back to starting, no query answers) while it keeps running.
+	controlUnready = "unready"
 )
 
 type options struct {
@@ -317,6 +321,13 @@ func run(args []string) int {
 			if s.takeControl(controlCrash) {
 				s.logf("Crash requested (exit %d)", o.exitCode)
 				return o.exitCode
+			}
+			if s.takeControl(controlUnready) {
+				ready = nil
+				s.ready.Store(false)
+				s.status.State = gameserver.StateStarting
+				s.writeStatus()
+				s.logf("Unready requested: no longer reporting ready")
 			}
 			if s.takeControl(controlHang) {
 				ignoreStop = true

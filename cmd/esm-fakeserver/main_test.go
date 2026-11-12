@@ -221,3 +221,27 @@ func TestFakeSIGTERM(t *testing.T) {
 		t.Fatalf("exit %d after SIGTERM", code)
 	}
 }
+
+func TestFakeUnready(t *testing.T) {
+	r := startFake(t, testkit.FakeServer(t))
+	st := waitReady(t, r.data)
+	testkit.WriteControl(r.data, testkit.ControlUnready)
+	testkit.Eventually(t, 5*time.Second, func() bool {
+		s, err := gameserver.ReadStatus(r.data)
+		return err == nil && s.State == gameserver.StateStarting
+	}, "status file still says ready")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query) == nil {
+		t.Fatal("query port still answers after unready")
+	}
+	select {
+	case <-r.done:
+		t.Fatal("fake exited after unready")
+	case <-time.After(300 * time.Millisecond):
+	}
+	testkit.WriteControl(r.data, testkit.ControlStop)
+	if code := r.wait(t, 10*time.Second); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
