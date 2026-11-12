@@ -5,6 +5,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,9 @@ const (
 	DefaultBackoffMax         = 5 * time.Minute
 	DefaultBackoffWindow      = 10 * time.Minute
 	DefaultBackoffMaxCrashes  = 5
+	// DefaultBackupSaveWait is how long a backup of a running server waits
+	// for the next world save before copying the save files anyway.
+	DefaultBackupSaveWait = 2 * time.Minute
 	// DefaultRootName is the folder under the user's home used when neither
 	// --root nor ESM_ROOT is given. A service install would pass
 	// --root /opt/durinn instead.
@@ -99,6 +103,7 @@ type Config struct {
 	StopTimeout        Duration `json:"stop_timeout"`
 	ReadyTimeout       Duration `json:"ready_timeout"`
 	KeepPreviousBuilds int      `json:"keep_previous_builds"`
+	BackupSaveWait     Duration `json:"backup_save_wait"`
 	LogLevel           string   `json:"log_level"`
 
 	// Root is the ESM root this config was loaded from. Not stored.
@@ -121,6 +126,7 @@ func Defaults(root string) *Config {
 		StopTimeout:        Duration(DefaultStopTimeout),
 		ReadyTimeout:       Duration(DefaultReadyTimeout),
 		KeepPreviousBuilds: DefaultKeepPreviousBuilds,
+		BackupSaveWait:     Duration(DefaultBackupSaveWait),
 		LogLevel:           DefaultLogLevel,
 		Root:               root,
 	}
@@ -149,6 +155,30 @@ func Load(st *store.Store) (cfg *Config, created bool, err error) {
 		return nil, false, err
 	}
 	return cfg, false, nil
+}
+
+// Peek reads <root>/esm.json without creating or writing anything (for
+// read-only callers such as doctor and the command line). A missing file
+// gives the defaults and found=false.
+func Peek(root string) (cfg *Config, found bool, err error) {
+	cfg = Defaults(root)
+	b, err := os.ReadFile(filepath.Join(root, FileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return cfg, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("config: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(cfg); err != nil {
+		return nil, true, fmt.Errorf("config: decode %s: %w", FileName, err)
+	}
+	cfg.Root = root
+	if err := cfg.Validate(); err != nil {
+		return nil, true, err
+	}
+	return cfg, true, nil
 }
 
 // Save writes cfg to esm.json.
@@ -204,6 +234,9 @@ func (c *Config) Validate() error {
 	}
 	if c.KeepPreviousBuilds < 0 {
 		return errors.New("config: keep_previous_builds must not be negative")
+	}
+	if c.BackupSaveWait < 0 {
+		return errors.New("config: backup_save_wait must not be negative")
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

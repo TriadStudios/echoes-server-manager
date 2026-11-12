@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -32,7 +33,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:8740" || cfg.GamePorts != "7777-7786" || cfg.QueryPorts != "27015-27024" ||
 		cfg.Supervisor != "auto" || cfg.StopTimeout.D() != 30*time.Second || cfg.ReadyTimeout.D() != 120*time.Second ||
 		cfg.KeepPreviousBuilds != 2 || cfg.Backoff.Window.D() != 10*time.Minute || cfg.Backoff.MaxCrashes != 5 ||
-		cfg.LogLevel != "info" {
+		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.SocketPath() != filepath.Join(st.Path(), "esm.sock") {
@@ -178,5 +179,32 @@ func TestRefuseSuperuser(t *testing.T) {
 	}
 	if err := checkUID(1000); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPeekWritesNothing(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	cfg, found, err := Peek(root)
+	if err != nil || found || cfg.Listen != DefaultListen {
+		t.Fatalf("peek missing: %+v %v %v", cfg, found, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("peek created the root: %v", err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, FileName), []byte(`{"listen":"127.0.0.1:9001"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, found, err = Peek(root)
+	if err != nil || !found || cfg.Listen != "127.0.0.1:9001" || cfg.GamePorts != DefaultGamePorts {
+		t.Fatalf("peek: %+v %v %v", cfg, found, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, FileName), []byte(`{"lisen":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Peek(root); err == nil {
+		t.Fatal("unknown field accepted")
 	}
 }
