@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -474,5 +475,87 @@ func TestRestoreRefusesDamagedBackups(t *testing.T) {
 	}
 	if list, _ := r.m.ListBackups("alpha"); len(list) != 1 {
 		t.Fatalf("a refused restore made backups: %+v", list)
+	}
+}
+
+// secrets.json keeps the earlier values of both passwords, newest first and
+// at most maxSecretHistory of each, and the values the last started server
+// was given. A new manager on the same root masks all of them.
+func TestSecretHistory(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	m := r.newManager(leakySup{})
+	defer m.Close()
+	set := func(server, admin *string) {
+		t.Helper()
+		if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: server, AdminPassword: admin}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() Secrets {
+		t.Helper()
+		s, err := m.readSecrets("alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	set(ptr("first server"), ptr("first admin"))
+	// A start records what the server is given (the leaky supervisor then
+	// fails it).
+	if _, err := m.Start(context.Background(), "alpha", false); fault.CodeOf(err) != "start_failed" {
+		t.Fatalf("start: %v", err)
+	}
+	if s := read(); !slices.Equal(s.StartedWith, []string{"first server", "first admin"}) {
+		t.Fatalf("started with %q", s.StartedWith)
+	}
+	set(ptr("second server"), nil)
+	set(ptr("third server"), ptr(""))
+	set(ptr("second server"), nil) // used again: current, not earlier
+	s := read()
+	if s.ServerPassword != "second server" || s.AdminPassword != "" ||
+		!slices.Equal(s.PreviousServerPasswords, []string{"third server", "first server"}) ||
+		!slices.Equal(s.PreviousAdminPasswords, []string{"first admin"}) {
+		t.Fatalf("secrets after changes: %+v", s)
+	}
+	for i := range maxSecretHistory + 5 {
+		set(ptr(fmt.Sprintf("server %02d", i)), nil)
+	}
+	s = read()
+	if len(s.PreviousServerPasswords) != maxSecretHistory || s.PreviousServerPasswords[0] != fmt.Sprintf("server %02d", maxSecretHistory+3) {
+		t.Fatalf("history not capped at %d, newest first: %q", maxSecretHistory, s.PreviousServerPasswords)
+	}
+	// Dropped from the earlier values, but the last started server was
+	// given it: still masked, also by a new manager on the same root.
+	m2 := r.newManager(leakySup{})
+	defer m2.Close()
+	text := "-ServerPassword=first server -AdminPassword=first admin -log; again: first server, first admin, server 24, server 05"
+	for what, mm := range map[string]*Manager{"this manager": m, "a new manager": m2} {
+		got := mm.Scrub("alpha", text)
+		for _, v := range []string{"first server", "first admin", "server 24", "server 05"} {
+			if strings.Contains(got, v) {
+				t.Errorf("%s shows %q: %s", what, v, got)
+			}
+		}
+	}
+}
+
+func TestRemember(t *testing.T) {
+	for _, c := range []struct {
+		prev     []string
+		old, now string
+		want     []string
+	}{
+		{nil, "", "a", nil},
+		{nil, "a", "b", []string{"a"}},
+		{[]string{"a"}, "b", "b", []string{"a"}},
+		{[]string{"b", "a"}, "c", "a", []string{"c", "b"}},
+		{[]string{"b", "a"}, "a", "c", []string{"a", "b"}},
+		{[]string{"a"}, "b", "", []string{"b", "a"}},
+	} {
+		if got := remember(c.prev, c.old, c.now); !slices.Equal(got, c.want) {
+			t.Errorf("remember(%q, %q, %q) = %q, want %q", c.prev, c.old, c.now, got, c.want)
+		}
 	}
 }

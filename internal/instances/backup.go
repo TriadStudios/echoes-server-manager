@@ -56,11 +56,12 @@ func (m *Manager) alive(name string) bool {
 // Backup copies the instance's save files into a new backup. If the server
 // is running it first waits (up to backup_save_wait) for its next world
 // save.
-func (m *Manager) Backup(ctx context.Context, name, reason string) (Backup, error) {
+func (m *Manager) Backup(ctx context.Context, name, reason string) (_ Backup, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Backup{}, err
 	}
+	defer func() { err = in.scrubErr(err) }()
 	if reason == "" {
 		reason = ReasonManual
 	}
@@ -226,11 +227,12 @@ func (m *Manager) pruneBackups(name string, keep int, protect ...string) error {
 // Restore replaces the instance's save files with those of a backup. A
 // running server is stopped first and started again afterwards; the
 // current save files are backed up first (reason pre-restore).
-func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) {
+func (m *Manager) Restore(ctx context.Context, name, id string) (_ Status, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
+	defer func() { err = in.scrubErr(err) }()
 	if !ValidBackupID(id) {
 		return Status{}, fault.NotFoundf("backup %q of instance %s not found", id, name)
 	}
@@ -321,11 +323,12 @@ func (m *Manager) checkBackupFiles(name, id string, files []string) error {
 // started and must become ready; if it does not, the old build is put back
 // and started, and the error says so. An instance that was stopped is
 // stopped again after the new build proved ready.
-func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
+func (m *Manager) Update(ctx context.Context, name, to string) (_ Status, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
+	defer func() { err = in.scrubErr(err) }()
 	nb, err := m.builds.Get(to)
 	if err != nil {
 		if fault.Is(err, fault.NotFound) {
@@ -383,7 +386,7 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 		return m.mustStatus(name), nil
 	}
 	cause := err
-	m.log.Warn("update failed; rolling back", "instance", name, "from", old, "to", to, "err", cause)
+	m.log.Warn("update failed; rolling back", "instance", name, "from", old, "to", to, "err", in.scrub(cause.Error()))
 	if err := m.stopLocked(ctx, in, "stopped after a failed update"); err != nil {
 		return m.mustStatus(name), fault.Wrap(fault.Failed, "update_failed", err, "update to %s failed (%v) and the new build could not be stopped", to, cause)
 	}

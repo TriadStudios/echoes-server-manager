@@ -6,7 +6,7 @@
 // Layout under the ESM root:
 //
 //	instances/<name>/instance.json  settings
-//	instances/<name>/secrets.json   server and admin passwords (0600)
+//	instances/<name>/secrets.json   server and admin passwords and their earlier values (0600)
 //	instances/<name>/data/          the server's data folder
 //	instances/<name>/console.log    the server's stdout and stderr
 //	instances/<name>/run/           pid file and state.json
@@ -357,10 +357,71 @@ func ParseMemory(s string) (int64, error) {
 	return n << shift, nil
 }
 
-// Secrets is the content of secrets.json.
+// maxSecretHistory is how many earlier values of each password are kept.
+const maxSecretHistory = 20
+
+// Secrets is the content of secrets.json (0600). Besides the current
+// passwords it keeps their earlier values and the values the last started
+// server was given, so that text which still carries an old value (older
+// log lines, a server started before a change) is masked as well. The file
+// already holds the current values, so the history adds no new exposure.
 type Secrets struct {
 	ServerPassword string `json:"server_password,omitempty"`
 	AdminPassword  string `json:"admin_password,omitempty"`
+	// PreviousServerPasswords and PreviousAdminPasswords are earlier
+	// values, newest first, at most maxSecretHistory each.
+	PreviousServerPasswords []string `json:"previous_server_passwords,omitempty"`
+	PreviousAdminPasswords  []string `json:"previous_admin_passwords,omitempty"`
+	// StartedWith are the values the last started server was given. They
+	// stay masked however many changes follow.
+	StartedWith []string `json:"started_with,omitempty"`
+}
+
+// current returns the passwords that are set.
+func (s Secrets) current() []string {
+	var out []string
+	for _, v := range []string{s.ServerPassword, s.AdminPassword} {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// known returns every value to mask: the current passwords, their earlier
+// values and the values the last started server was given.
+func (s Secrets) known() []string {
+	out := s.current()
+	out = append(out, s.PreviousServerPasswords...)
+	out = append(out, s.PreviousAdminPasswords...)
+	return append(out, s.StartedWith...)
+}
+
+// change sets the passwords given in req and keeps the values they
+// replace.
+func (s *Secrets) change(req SecretsRequest) {
+	if req.ServerPassword != nil {
+		s.PreviousServerPasswords = remember(s.PreviousServerPasswords, s.ServerPassword, *req.ServerPassword)
+		s.ServerPassword = *req.ServerPassword
+	}
+	if req.AdminPassword != nil {
+		s.PreviousAdminPasswords = remember(s.PreviousAdminPasswords, s.AdminPassword, *req.AdminPassword)
+		s.AdminPassword = *req.AdminPassword
+	}
+}
+
+// remember puts old in front of the earlier values when it is replaced by
+// now, drops now from them (it is current again) and keeps at most
+// maxSecretHistory.
+func remember(prev []string, old, now string) []string {
+	out := slices.DeleteFunc(slices.Clone(prev), func(v string) bool { return v == old || v == now })
+	if old != "" && old != now {
+		out = append([]string{old}, out...)
+	}
+	if len(out) > maxSecretHistory {
+		out = out[:maxSecretHistory]
+	}
+	return out
 }
 
 // SecretsRequest changes secrets: nil leaves a value, "" clears it.

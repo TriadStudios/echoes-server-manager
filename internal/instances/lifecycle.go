@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -55,6 +56,14 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if err != nil {
 		return nil, err
 	}
+	if cur := sec.current(); !slices.Equal(sec.StartedWith, cur) {
+		// Record what this server is given, so it stays masked for as long
+		// as the server runs, however many changes follow.
+		sec.StartedWith = cur
+		if err := m.st.WriteJSON(secretsFile(cfg.Name), sec, 0o600); err != nil {
+			return nil, err
+		}
+	}
 	if err := m.st.MkdirAll(dataDir(cfg.Name), 0o700); err != nil {
 		return nil, err
 	}
@@ -95,7 +104,7 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		if errors.Is(err, supervisor.ErrAlreadyRunning) {
 			return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
 		}
-		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, scrub(err.Error(), sec.values()))
+		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, in.scrub(err.Error()))
 	}
 	if !m.track() {
 		// ESM is shutting down: the server keeps running and the next
@@ -186,7 +195,7 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 		m.followLogs(in, w)
 		pr, err := m.sup.Status(in.name)
 		if err != nil && !errors.Is(err, supervisor.ErrNotFound) {
-			m.log.Warn("cannot read server status", "instance", in.name, "err", err)
+			m.log.Warn("cannot read server status", "instance", in.name, "err", in.scrub(err.Error()))
 			continue
 		}
 		if err != nil || !pr.Running {
@@ -263,7 +272,7 @@ func (m *Manager) noteAdopted(in *rt, r *run, note string) {
 	if in.gen != r.gen || in.status.State != Running {
 		return
 	}
-	in.status.Reason = scrub(adoptedReason+"; "+note, in.hidden)
+	in.status.Reason = adoptedReason + "; " + note
 	m.emitLocked(in) // the state and its since time stay as they are
 }
 
@@ -386,11 +395,12 @@ func (in *rt) clearCrashesLocked() {
 
 // Start starts a stopped instance. With wait it returns once the server is
 // ready (or failed); otherwise once it is launched.
-func (m *Manager) Start(ctx context.Context, name string, wait bool) (Status, error) {
+func (m *Manager) Start(ctx context.Context, name string, wait bool) (_ Status, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
+	defer func() { err = in.scrubErr(err) }()
 	in.op.Lock()
 	in.mu.Lock()
 	if in.status.State.active() {
@@ -429,7 +439,7 @@ func (m *Manager) Stop(ctx context.Context, name string) (Status, error) {
 	in.op.Lock()
 	defer in.op.Unlock()
 	err = m.stopLocked(context.WithoutCancel(ctx), in, "stopped")
-	return m.mustStatus(name), err
+	return m.mustStatus(name), in.scrubErr(err)
 }
 
 // stopLocked stops the server of in, if any, and leaves the instance
@@ -472,11 +482,12 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 }
 
 // Restart stops and starts an instance. why is recorded as the reason.
-func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Status, error) {
+func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (_ Status, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
+	defer func() { err = in.scrubErr(err) }()
 	if why == "" {
 		why = "restarted"
 	}
@@ -504,18 +515,15 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Sta
 // followLogs publishes new lines of the server log and console output.
 func (m *Manager) followLogs(in *rt, w *watchState) {
 	name := in.name
-	in.mu.Lock()
-	hidden := in.hidden
-	in.mu.Unlock()
 	for _, line := range m.follow(&w.server) {
-		line = scrub(line, hidden)
+		line = in.scrub(line)
 		if !w.logReady && gameserver.ReadyLine.MatchString(line) {
 			w.logReady = true
 		}
 		m.bus.Publish(events.TypeLog, name, LogLine{Source: "server", Line: line})
 	}
 	for _, line := range m.follow(&w.console) {
-		line = scrub(line, hidden)
+		line = in.scrub(line)
 		m.bus.Publish(events.TypeLog, name, LogLine{Source: "console", Line: line})
 	}
 }

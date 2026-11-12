@@ -209,6 +209,9 @@ type call struct {
 	session *auth.Session
 	target  string
 	errMsg  string
+	// instance is the instance the route acts on ({name} in its path); its
+	// secrets are hidden from the error message and the audit entry.
+	instance string
 }
 
 // apiError is an error with an explicit HTTP status and code.
@@ -258,6 +261,9 @@ func (s *Server) wrap(rt route) http.Handler {
 		sw.Header().Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(sw, r.Body, MaxBody)
 		c := &call{actor: audit.Actor{Kind: audit.ActorAnonymous, ID: auth.ClientIP(r)}}
+		if strings.Contains(rt.path, "{name}") {
+			c.instance = r.PathValue("name")
+		}
 		if r.Context().Value(socketKey) == true {
 			c.actor.ID = "socket"
 		}
@@ -358,10 +364,13 @@ func (s *Server) fail(w http.ResponseWriter, err error, c *call) {
 	if errors.As(err, &rl) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter.Seconds())+1))
 	}
-	if status == http.StatusInternalServerError {
-		s.log.Error("request failed", "err", err)
-	}
 	msg = audit.Scrub(msg)
+	if c.instance != "" && s.o.Instances != nil {
+		msg = s.o.Instances.Scrub(c.instance, msg)
+	}
+	if status == http.StatusInternalServerError {
+		s.log.Error("request failed", "err", msg)
+	}
 	c.errMsg = msg
 	writeError(w, status, code, msg)
 }
