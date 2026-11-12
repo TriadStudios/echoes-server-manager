@@ -19,6 +19,8 @@
 //
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
 // the crash code now), "hang" (ignore stop requests from now on).
+//
+// The query port answers PING with PONG only once the server is ready.
 package main
 
 import (
@@ -35,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -193,6 +196,7 @@ type server struct {
 	queryLn net.PacketConn
 	counter int
 	status  gameserver.Status
+	ready   atomic.Bool // the query port answers only once ready
 }
 
 func (s *server) logf(format string, args ...any) {
@@ -302,6 +306,7 @@ func run(args []string) int {
 			ready = nil
 			s.status.State = gameserver.StateReady
 			s.writeStatus()
+			s.ready.Store(true)
 			s.logf("Server is ready (players 0/%d, map %s, world %s)", o.maxPlayers, o.mapName, o.worldName)
 		case <-saveTick.C:
 			s.save()
@@ -347,7 +352,7 @@ func (s *server) answerQueries() {
 			}
 			continue // Windows reports ICMP errors here; keep serving
 		}
-		if string(buf[:n]) == "PING" {
+		if string(buf[:n]) == "PING" && s.ready.Load() {
 			s.queryLn.WriteTo([]byte("PONG"), addr)
 		}
 	}
