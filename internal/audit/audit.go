@@ -2,7 +2,7 @@
 //
 // Entries name who did what to which target and whether it worked. They never
 // carry secrets: free-text fields are scrubbed of anything that looks like an
-// ESM token before they are written.
+// ESM token or a password switch value before they are written.
 package audit
 
 import (
@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -75,17 +76,16 @@ func (l *Log) SetNotify(fn func(Entry)) {
 	l.mu.Unlock()
 }
 
-var (
-	secretLike   = regexp.MustCompile(`esm_[A-Za-z0-9_-]{16,}`)
-	passwordLike = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*password[A-Za-z0-9_]*=)[^\s"'&,;]+`)
-)
+var secretLike = regexp.MustCompile(`esm_[A-Za-z0-9_-]{16,}`)
 
-// Scrub replaces anything that looks like an ESM token, or the value of a
-// password switch or key=value pair (such as -ServerPassword=...), with a
-// mask.
+// Scrub replaces anything that looks like an ESM token with a mask, and
+// masks the value of every password switch or key=value pair with the same
+// rule the instance scrubbers use (gameserver.ScrubLine): a switch such as
+// -ServerPassword=... is masked up to the next switch or the end of the
+// line, spaces and punctuation included.
 func Scrub(s string) string {
 	s = secretLike.ReplaceAllString(s, "esm_********")
-	return passwordLike.ReplaceAllString(s, "${1}********")
+	return gameserver.ScrubLine(s, nil)
 }
 
 // Append writes e as one line. A zero Time is set to now.

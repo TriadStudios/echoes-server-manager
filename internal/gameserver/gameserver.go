@@ -37,7 +37,8 @@ const DataDirSwitch = "-SavedDir"
 // UNCONFIRMED: yes.
 const PasswordsOnCommandLine = true
 
-// Mask replaces secret values in logged command lines.
+// Mask replaces secret values in logged command lines and in any text that
+// leaves ESM.
 const Mask = "********"
 
 // Launch is everything needed to build a server command line.
@@ -134,21 +135,6 @@ func SecretValues(argv []string) []string {
 		}
 	}
 	return out
-}
-
-// MinHiddenLength is the shortest secret HideValues replaces; shorter
-// values would garble ordinary text.
-const MinHiddenLength = 4
-
-// HideValues replaces every occurrence of each value (of at least
-// MinHiddenLength bytes) in s with Mask.
-func HideValues(s string, values []string) string {
-	for _, v := range values {
-		if len(v) >= MinHiddenLength {
-			s = strings.ReplaceAll(s, v, Mask)
-		}
-	}
-	return s
 }
 
 // reserved are the switches ESM sets itself; rules and extra args must not

@@ -123,11 +123,26 @@ func TestRecentLimitAndConcurrency(t *testing.T) {
 func TestScrubPasswordSwitches(t *testing.T) {
 	cases := map[string]string{
 		"systemd-run failed: -ServerPassword=hunter22 -Port=7777":  "systemd-run failed: -ServerPassword=******** -Port=7777",
-		`argv ["-AdminPassword=s3cret!" "-log"]`:                   `argv ["-AdminPassword=********" "-log"]`,
+		`argv ["-AdminPassword=s3cret!" "-log"]`:                   `argv ["-AdminPassword=******** "-log"]`,
 		"url?password=abc&x=1":                                     "url?password=********&x=1",
 		"rules: value of AdminPassword must be printable":          "rules: value of AdminPassword must be printable",
-		"-serverpassword=lower, -ServerName=keep":                  "-serverpassword=********, -ServerName=keep",
+		"-serverpassword=lower, -ServerName=keep":                  "-serverpassword=******** -ServerName=keep",
 		"token esm_" + strings.Repeat("Ab3_-", 4) + " and nothing": "token esm_******** and nothing",
+	}
+	for in, want := range cases {
+		if got := Scrub(in); got != want {
+			t.Errorf("Scrub(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A password switch is masked up to the next switch, not just to the first
+// space or punctuation mark: the same rule as the instance scrubbers.
+func TestScrubMasksWholeSwitchValues(t *testing.T) {
+	cases := map[string]string{
+		"-ServerPassword=a b c -Port=1":                         "-ServerPassword=******** -Port=1",
+		`start failed: -AdminPassword=x $&"';%,=<> y -log`:      "start failed: -AdminPassword=******** -log",
+		"-ServerPassword=a, b -AdminPassword=c;d -MaxPlayers=4": "-ServerPassword=******** -AdminPassword=******** -MaxPlayers=4",
 	}
 	for in, want := range cases {
 		if got := Scrub(in); got != want {
