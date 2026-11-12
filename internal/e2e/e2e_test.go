@@ -432,7 +432,7 @@ func TestSetupAndLogin(t *testing.T) {
 	if st := withCookie("POST", "/api/v1/tokens", body, "", "", &eb); st != http.StatusForbidden || eb.Error.Code != "csrf" {
 		t.Fatalf("cookie POST without CSRF: %d %+v", st, eb)
 	}
-	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, "http://evil.example", &eb); st != http.StatusForbidden || eb.Error.Code != "origin" {
+	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, "http://192.0.2.1:8740", &eb); st != http.StatusForbidden || eb.Error.Code != "origin" {
 		t.Fatalf("cookie POST from another origin: %d %+v", st, eb)
 	}
 	if st := withCookie("POST", "/api/v1/tokens", body, lr.CSRFToken, h.base, nil); st != http.StatusCreated {
@@ -492,7 +492,7 @@ func TestBuilds(t *testing.T) {
 	if len(got) != 2 || !slices.Equal(got["1.0"], []string{"alpha"}) || !slices.Equal(got["2.0"], []string{"alpha"}) {
 		t.Fatalf("builds after prune: %v", got)
 	}
-	if st := h.call("POST", "/api/v1/builds", h.admin, api.InstallRequest{Source: "http://example.invalid/b.zip"}, &eb); st != http.StatusUnprocessableEntity {
+	if st := h.call("POST", "/api/v1/builds", h.admin, api.InstallRequest{Source: "http://192.0.2.1/b.zip"}, &eb); st != http.StatusUnprocessableEntity {
 		t.Fatalf("plain http source: %d %+v", st, eb)
 	}
 }
