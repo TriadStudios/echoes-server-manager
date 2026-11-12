@@ -2,6 +2,7 @@ package instances
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -433,21 +434,44 @@ func (m *Manager) view(in *rt) View {
 	v := View{Instance: in.cfg.clone(), Status: in.status}
 	in.mu.Unlock()
 	v.Secrets = m.secretFlags(in.name)
-	v.Warnings = m.warnings(v.Instance)
+	v.Warnings = m.warnings(v)
 	return v
 }
 
 // warnings lists, as codes, what an operator should know about an instance
 // on this box. It is never nil.
-func (m *Manager) warnings(cfg Instance) []string {
+func (m *Manager) warnings(v View) []string {
 	w := []string{}
-	if cfg.OutputHidden() {
+	switch {
+	case v.OutputHidden():
 		w = append(w, WarnSecretsOnCommandLine)
+	case v.Status.State == Running && (v.Secrets.ServerPasswordSet || v.Secrets.AdminPasswordSet) && !m.serverConfirms(v):
+		w = append(w, WarnSecretsUnconfirmed)
 	}
-	if !m.sup.LimitsEnforced() && (cfg.Limits.MemoryMax != "" || cfg.Limits.CPUQuotaPercent > 0) {
+	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
 		w = append(w, WarnLimitsNotEnforced)
 	}
 	return w
+}
+
+// serverConfirms reports whether the running server of v says, in its
+// status file, that it took every password that is set. No status file, or
+// one of another process, is no confirmation. A file that cannot be read
+// right now says nothing, and counts as confirmation rather than raise a
+// false alarm.
+func (m *Manager) serverConfirms(v View) bool {
+	b, err := m.st.ReadFile(dataDir(v.Name) + "/" + gameserver.StatusFileRel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	var s gameserver.Status
+	if err != nil || json.Unmarshal(b, &s) != nil {
+		return true
+	}
+	if s.PID != 0 && v.Status.PID != 0 && s.PID != v.Status.PID {
+		return false
+	}
+	return (!v.Secrets.ServerPasswordSet || s.ServerPasswordSet) && (!v.Secrets.AdminPasswordSet || s.AdminPasswordSet)
 }
 
 // List returns every instance, sorted by name.

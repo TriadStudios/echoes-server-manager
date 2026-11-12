@@ -238,6 +238,17 @@ func TestFakeWithoutPasswords(t *testing.T) {
 	checkPasswords(t, st.Ports.Query, gameserver.Secrets{})
 }
 
+// Told to behave like a build from before the secrets file, the fake
+// ignores the file and runs without passwords.
+func TestFakeIgnoresSecretsFileOnRequest(t *testing.T) {
+	r := startFake(t, testkit.FakeServer(t), "-FakeIgnoreSecretsFile")
+	st := waitReady(t, r.data)
+	if st.ServerPasswordSet || st.AdminPasswordSet {
+		t.Fatalf("status %+v", st)
+	}
+	checkPasswords(t, st.Ports.Query, gameserver.Secrets{})
+}
+
 // With the secrets file switch the fake accepts no password switch, and a
 // secrets file it cannot read stops it. Its messages never repeat a value.
 func TestFakeRefusesBadSecrets(t *testing.T) {

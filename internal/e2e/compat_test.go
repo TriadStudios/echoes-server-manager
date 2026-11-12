@@ -347,3 +347,36 @@ func commandLineStartFailure(t *testing.T, h *harness, dir, name, serverPW, admi
 		t.Fatalf("the secrets file is still there after the start failed: %v", err)
 	}
 }
+
+// A build that cannot read the secrets file runs without the passwords of
+// its instance. The API and the command line say so while it runs.
+func TestUnconfirmedSecretsAreFlagged(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	// 0.9 stands for a server build from before the secrets file.
+	h.install(testkit.BuildOptions{Version: "0.9", Fake: map[string]any{"FakeIgnoreSecretsFile": true}})
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	read := h.token("read")
+	secrets := gameserver.Secrets{ServerPassword: leakServerPW, AdminPassword: leakAdminPW}
+	for name, build := range map[string]string{"old": "0.9", "new": "1.0"} {
+		h.create(name, build, nil)
+		h.setPasswords(name, secrets.ServerPassword, secrets.AdminPassword)
+		h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, nil)
+	}
+	var old, now instances.View
+	if code := h.call("GET", "/api/v1/instances/old", read, nil, &old); code != http.StatusOK ||
+		!slices.Equal(old.Warnings, []string{instances.WarnSecretsUnconfirmed}) || !h.serverHas(old, gameserver.Secrets{}) {
+		t.Fatalf("the build that ignores the secrets file: %d, warnings %q", code, old.Warnings)
+	}
+	if code := h.call("GET", "/api/v1/instances/new", read, nil, &now); code != http.StatusOK || len(now.Warnings) != 0 || !h.serverHas(now, secrets) {
+		t.Fatalf("the build that reads the secrets file: %d, warnings %q", code, now.Warnings)
+	}
+	code, out, _ := h.runCLI("status", "old")
+	if code != 0 || !strings.Contains(oneLine(t, "status", out), "; warning: the running server has not confirmed that it took its passwords") {
+		t.Fatalf("status of the instance on the old build: %d %q", code, out)
+	}
+	code, out, _ = h.runCLI("status", "new")
+	if code != 0 || strings.Contains(out, "warning") {
+		t.Fatalf("status of the instance on the new build: %d %q", code, out)
+	}
+}

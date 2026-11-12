@@ -12,6 +12,8 @@
 //	-FakeNoReady           never report ready
 //	-FakeNoStatusFile      write no status file
 //	-FakeNoQuery           never answer the query port
+//	-FakeIgnoreSecretsFile behave like a server build that does not know the
+//	                       secrets file: ignore its switch
 //	-FakeFailStart         exit with code 3 at once
 //	-FakeExitCode=N        exit code used for crashes (default 1)
 //
@@ -232,6 +234,9 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
 	key := func(name string) string { return strings.TrimLeft(name, "-") }
 	path, fromFile := kv[key(gameserver.SecretsFileSwitch)]
+	if ignore, _ := strconv.ParseBool(kv["FakeIgnoreSecretsFile"]); ignore {
+		fromFile = false
+	}
 	if !fromFile {
 		return gameserver.Secrets{
 			ServerPassword: kv[key(gameserver.ServerPasswordSwitch)],

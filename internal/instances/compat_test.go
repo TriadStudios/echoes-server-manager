@@ -329,3 +329,69 @@ func TestDeliveryAcrossRestart(t *testing.T) {
 		}
 	}
 }
+
+// A server build that cannot read the secrets file starts without the
+// passwords of its instance. ESM cannot stop that, but it shows: the
+// running server does not confirm the passwords, and the instance carries a
+// warning until it runs a build that does, or is set to the command line.
+func TestUnconfirmedSecretsAreFlagged(t *testing.T) {
+	r := newRig(t, nil)
+	// 0.9 stands for a server build from before the secrets file.
+	r.install(testkit.BuildOptions{Version: "0.9", Fake: map[string]any{"FakeIgnoreSecretsFile": true}})
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	ctx := context.Background()
+	secrets := gameserver.Secrets{ServerPassword: "join-pw-4711", AdminPassword: "adm-pw-0815"}
+	for _, name := range []string{"old", "new"} {
+		build := map[string]string{"old": "0.9", "new": "1.0"}[name]
+		v, err := r.m.Create(CreateRequest{Name: name, Build: build, Settings: Settings{BindIP: ptr("127.0.0.1"), Rules: fastRules(nil)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Without passwords there is nothing to confirm.
+		if _, err := r.m.Start(ctx, name, true); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := r.m.Get(name); len(got.Warnings) != 0 || !r.has(v, gameserver.Secrets{}) {
+			t.Fatalf("%s without passwords: warnings %q", name, got.Warnings)
+		}
+		// Set while it runs, they are not confirmed before the restart.
+		if _, _, err := r.m.SetSecrets(name, SecretsRequest{ServerPassword: &secrets.ServerPassword, AdminPassword: &secrets.AdminPassword}); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := r.m.Get(name); !slices.Equal(got.Warnings, []string{WarnSecretsUnconfirmed}) || !got.Status.RestartRequired {
+			t.Fatalf("%s with passwords set while running: warnings %q, status %+v", name, got.Warnings, got.Status)
+		}
+		if _, err := r.m.Restart(ctx, name, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The build that reads the file confirms; the other one runs open.
+	if got, _ := r.m.Get("new"); len(got.Warnings) != 0 || !r.has(got, secrets) {
+		t.Fatalf("the build that reads the secrets file: warnings %q", got.Warnings)
+	}
+	old, _ := r.m.Get("old")
+	if !slices.Equal(old.Warnings, []string{WarnSecretsUnconfirmed}) || !r.has(old, gameserver.Secrets{}) || r.has(old, secrets) {
+		t.Fatalf("the build that ignores the secrets file: warnings %q", old.Warnings)
+	}
+	if !strings.Contains(WarningText(WarnSecretsUnconfirmed), "WITHOUT passwords") || WarningText("something_else") != "something_else" {
+		t.Fatal("warning texts")
+	}
+	// Stopped, there is no server to confirm anything.
+	if _, err := r.m.Stop(ctx, "old"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.m.Get("old"); len(got.Warnings) != 0 {
+		t.Fatalf("stopped: warnings %q", got.Warnings)
+	}
+	// The way out for such a build is the command line, with its own
+	// warning.
+	if _, _, err := r.m.Patch("old", PatchRequest{Settings: Settings{SecretDelivery: ptr(gameserver.DeliveryCommandLine)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.m.Start(ctx, "old", true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.m.Get("old"); !slices.Equal(got.Warnings, []string{WarnSecretsOnCommandLine}) || !r.has(got, secrets) {
+		t.Fatalf("the old build with command-line delivery: warnings %q", got.Warnings)
+	}
+}

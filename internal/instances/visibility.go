@@ -52,6 +52,11 @@ const (
 	// WarnLimitsNotEnforced: the instance has resource limits, and the
 	// supervisor in use does not apply them.
 	WarnLimitsNotEnforced = "limits_not_enforced"
+	// WarnSecretsUnconfirmed: the instance has passwords and hands them
+	// over in the secrets file, and its running server has not said, in its
+	// status file, that it took them. A server build that cannot read the
+	// secrets file runs without passwords; this is how that shows.
+	WarnSecretsUnconfirmed = "secrets_unconfirmed"
 )
 
 // WarningText says in words what a warning of an instance view means.
@@ -61,6 +66,8 @@ func WarningText(code string) string {
 		return "UNSAFE on a shared box: passwords are on the server command line (secret_delivery command_line), where every account on this box can read them from the process list, and the server writes them into its log"
 	case WarnLimitsNotEnforced:
 		return "memory and CPU limits are not enforced by the process supervisor"
+	case WarnSecretsUnconfirmed:
+		return "the running server has not confirmed that it took its passwords from the secrets file; a server build that cannot read that file runs WITHOUT passwords"
 	}
 	return code
 }
