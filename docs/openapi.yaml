@@ -628,7 +628,7 @@ components:
                 not_found, method_not_allowed, conflict, already_running,
                 instance_exists, instance_running, port_in_use, no_free_ports,
                 build_exists, build_in_use, hash_mismatch, unsafe_archive,
-                bad_manifest, too_large, no_build, update_failed,
+                bad_manifest, too_large, no_build, update_failed, backup_damaged,
                 start_failed, not_ready, rate_limited, internal.
             message: { type: string }
     Duration:

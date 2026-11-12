@@ -433,3 +433,46 @@ func TestSecretsNeverLeak(t *testing.T) {
 	state, _ := r.st.ReadFile(stateFile("alpha"))
 	leaks("state.json", string(state))
 }
+
+func TestRestoreRefusesDamagedBackups(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	ctx := context.Background()
+	if _, err := r.m.Start(ctx, "alpha", true); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.m.Backup(ctx, "alpha", ReasonManual)
+	if err != nil || len(b.Files) != 1 {
+		t.Fatalf("backup %+v %v", b, err)
+	}
+	if err := r.st.WriteFile("outside.sav", []byte("not a save"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.WriteFile(backupDir("alpha", b.ID)+"/notes.txt", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, files := range [][]string{
+		{"../../../outside.sav"},
+		{"SaveGames/../../../outside.sav"},
+		{"/SaveGames/alpha.sav"},
+		{`SaveGames\alpha.sav`},
+		{"notes.txt"},
+		{"SaveGames/missing.sav"},
+	} {
+		meta := b
+		meta.Files = files
+		if err := r.st.WriteJSON(backupDir("alpha", b.ID)+"/meta.json", meta, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.m.Restore(ctx, "alpha", b.ID); fault.CodeOf(err) != "backup_damaged" {
+			t.Fatalf("restore with files %q: %v", files, err)
+		}
+		if st, _ := r.m.Status("alpha"); st.State != Running {
+			t.Fatalf("a refused restore stopped the server: %+v", st)
+		}
+	}
+	if list, _ := r.m.ListBackups("alpha"); len(list) != 1 {
+		t.Fatalf("a refused restore made backups: %+v", list)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -239,6 +241,9 @@ func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) 
 		}
 		return Status{}, err
 	}
+	if err := m.checkBackupFiles(name, id, b.Files); err != nil {
+		return Status{}, err
+	}
 	ctx = context.WithoutCancel(ctx)
 	in.op.Lock()
 	defer in.op.Unlock()
@@ -287,6 +292,28 @@ func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) 
 		return m.mustStatus(name), err
 	}
 	return m.mustStatus(name), nil
+}
+
+// checkBackupFiles makes sure every file a backup's meta.json names is a
+// clean relative path that matches the save file pattern and is a regular
+// file inside that backup, before anything is stopped or replaced.
+func (m *Manager) checkBackupFiles(name, id string, files []string) error {
+	damaged := func(format string, args ...any) error {
+		return fault.New(fault.Invalid, "backup_damaged", "backup %s of instance %s cannot be restored: "+format, append([]any{id, name}, args...)...)
+	}
+	for _, f := range files {
+		if f == "" || strings.ContainsAny(f, `\:`) || path.Clean(f) != f || !filepath.IsLocal(filepath.FromSlash(f)) {
+			return damaged("%q is not a clean relative path", f)
+		}
+		if ok, err := path.Match(gameserver.SaveGlob, f); err != nil || !ok {
+			return damaged("%q is not a save file (%s)", f, gameserver.SaveGlob)
+		}
+		fi, err := m.st.Lstat(backupDir(name, id) + "/" + f)
+		if err != nil || !fi.Mode().IsRegular() {
+			return damaged("%q is missing from the backup", f)
+		}
+	}
+	return nil
 }
 
 // Update switches an instance to another build of its channel. The save
