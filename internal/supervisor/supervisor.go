@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
@@ -217,11 +218,46 @@ func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
 
 // startError reports a failed start of spec. A supervisor never puts the
 // server's command line into an error itself. The tools it calls may still
-// repeat it in their messages, so the secrets that are on it
-// (spec.SecretValues, none unless the server takes its passwords on the
-// command line) are masked in what they printed, in every form the values
-// take on the way (systemd's doubled dollars, quoting), like anything that
-// follows a password switch.
+// repeat it in their messages. A command line repeated whole is cut out
+// (see cutCommandLine). And the secrets that are on it (spec.SecretValues,
+// none unless the server takes its passwords on the command line) are
+// masked wherever else they printed them, in every form the values take on
+// the way (systemd's doubled dollars, quoting), like anything that follows
+// a password switch.
 func startError(spec Spec, err error) error {
-	return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.ScrubLine(err.Error(), spec.SecretValues))
+	return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.ScrubLine(cutCommandLine(err.Error(), spec), spec.SecretValues))
 }
+
+// cutCommandLine removes the server's command line from text where a tool
+// repeated it: wherever the executable is followed by the first argument,
+// as given or with systemd's doubled dollars, what follows the executable
+// goes, up to the end of that line. The executable itself stays; it is no
+// secret and says what failed.
+func cutCommandLine(text string, spec Spec) string {
+	if spec.Executable == "" || len(spec.Args) == 0 {
+		return text
+	}
+	for _, form := range []func(string) string{func(s string) string { return s }, gameserver.EscapeForSystemd} {
+		exe := form(spec.Executable)
+		for _, sep := range []string{" ", `" "`, `' '`} {
+			head := exe + sep + form(spec.Args[0])
+			for from := 0; ; {
+				i := strings.Index(text[from:], head)
+				if i < 0 {
+					break
+				}
+				i += from
+				end := strings.IndexByte(text[i:], '\n')
+				if end < 0 {
+					end = len(text) - i
+				}
+				text = text[:i+len(exe)] + cutMark + text[i+end:]
+				from = i + len(exe) + len(cutMark)
+			}
+		}
+	}
+	return text
+}
+
+// cutMark stands where cutCommandLine removed the server's arguments.
+const cutMark = " <server arguments>"

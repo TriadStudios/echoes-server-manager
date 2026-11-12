@@ -332,6 +332,7 @@ func commandLineStartFailure(t *testing.T, h *harness, dir, name, serverPW, admi
 		"audit log": string(auditLog), "service log": h.stderr.String(), "state.json": string(state),
 	} {
 		noPieces(t, what, []byte(text), pieces)
+		noLaunchLine(t, what, text)
 	}
 	var st instances.Status
 	if c := h.call("GET", "/api/v1/instances/"+name+"/status", read, nil, &st); c != http.StatusOK || st.Reason != instances.HiddenNotice {

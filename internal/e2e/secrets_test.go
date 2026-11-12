@@ -258,12 +258,26 @@ collect:
 		"audit log": string(auditLog), "service log": h.stderr.String(),
 	} {
 		noPieces(t, what, []byte(text), pieces)
+		noLaunchLine(t, what, text)
 	}
 	if !strings.Contains(string(auditLog), `"action":"instance.start"`) {
 		t.Fatalf("the failed start was not audited:\n%s", auditLog)
 	}
 	if _, err := os.Stat(h.runSecretsPath(name)); !os.IsNotExist(err) {
 		t.Fatalf("the secrets file is still there after the start failed: %v", err)
+	}
+}
+
+// noLaunchLine fails if text has a piece of a server command line. ESM
+// never writes one itself, and cuts it out of what a supervisor's tool
+// printed.
+func noLaunchLine(t *testing.T, what, text string) {
+	t.Helper()
+	for _, part := range []string{"-Port=", "-QueryPort=", "-ServerName=", "-WorldName=", gameserver.SecretsFileSwitch + "=",
+		gameserver.DataDirSwitch + "=", gameserver.ServerPasswordSwitch, gameserver.AdminPasswordSwitch} {
+		if strings.Contains(text, part) {
+			t.Errorf("the %s has %q of a server command line:\n%s", what, part, text)
+		}
 	}
 }
 
