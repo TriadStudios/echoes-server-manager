@@ -3,6 +3,7 @@ package instances
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -25,6 +26,10 @@ const (
 	maxTailBytes   = 8 << 20   // a tail reads at most this much from the end
 	// MaxTailLines is the most lines one log request returns.
 	MaxTailLines = 5000
+	// MaxLogReplyBytes bounds what one log request returns: its lines,
+	// each counted as the JSON string it is sent as, take at most this
+	// many bytes together. The oldest lines are left out first.
+	MaxLogReplyBytes = 4 << 20
 )
 
 // tail follows a growing file through the store, one whole line at a time.
@@ -224,7 +229,21 @@ func (m *Manager) Logs(name, source string, lines int, full bool) ([]string, err
 	for i := range out {
 		out[i] = showOutput(filter, out[i])
 	}
-	return out, nil
+	return capReply(out), nil
+}
+
+// capReply keeps the newest lines that fit into MaxLogReplyBytes, each
+// line counted as the JSON string it is sent as (plus a separator).
+func capReply(lines []string) []string {
+	total := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		b, _ := json.Marshal(lines[i])
+		total += len(b) + 1
+		if total > MaxLogReplyBytes {
+			return lines[i+1:]
+		}
+	}
+	return lines
 }
 
 // waitWorldSaved waits until the server log gets a new world-saved line,

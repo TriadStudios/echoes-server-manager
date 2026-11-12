@@ -1,6 +1,8 @@
 package instances
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
+	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
 // logRig is a manager that only has a store: enough to follow files.
@@ -123,6 +126,56 @@ func TestShowLine(t *testing.T) {
 	}
 	if got := showLine("bad \xff byte"); got != "bad � byte" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// A log request returns at most MaxTailLines lines, and its answer stays
+// within MaxLogReplyBytes however long the lines are and however much
+// JSON escaping blows them up; the newest lines are the ones kept.
+func TestLogRepliesAreBounded(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	if err := r.st.MkdirAll(dataDir("alpha")+"/Logs", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(n int, line func(i int) string) {
+		t.Helper()
+		var b strings.Builder
+		for i := range n {
+			b.WriteString(line(i))
+			b.WriteByte('\n')
+		}
+		if err := r.st.WriteFile(serverLog("alpha"), []byte(b.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Many short lines: the line cap.
+	write(MaxTailLines+1000, func(i int) string { return fmt.Sprintf("line %d", i) })
+	lines, err := r.m.Logs("alpha", SourceServer, MaxTailLines+500, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != MaxTailLines || lines[len(lines)-1] != fmt.Sprintf("line %d", MaxTailLines+999) {
+		t.Fatalf("%d lines ending with %q, want the newest %d", len(lines), lines[len(lines)-1], MaxTailLines)
+	}
+	// Long lines of characters that JSON escapes six times over: the size
+	// cap. Unbounded, the tail would be several times MaxLogReplyBytes.
+	const total = 3000
+	write(total, func(i int) string { return fmt.Sprintf("%05d", i) + strings.Repeat("<", 4000) })
+	lines, err = r.m.Logs("alpha", SourceServer, MaxTailLines, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(lines)
+	if len(lines) == 0 || len(b) > MaxLogReplyBytes+2 {
+		t.Fatalf("%d lines in %d bytes of JSON, want at most %d bytes", len(lines), len(b), MaxLogReplyBytes)
+	}
+	if !strings.HasPrefix(lines[len(lines)-1], fmt.Sprintf("%05d", total-1)) {
+		t.Fatalf("the newest line is not kept: %.20q", lines[len(lines)-1])
+	}
+	if one, _ := json.Marshal(lines[0]); len(b)+len(one)+1 <= MaxLogReplyBytes {
+		t.Fatalf("%d lines in %d bytes: one more would have fitted", len(lines), len(b))
 	}
 }
 
