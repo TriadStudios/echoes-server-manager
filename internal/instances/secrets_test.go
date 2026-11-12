@@ -379,21 +379,29 @@ func TestSecretsFileLifecycle(t *testing.T) {
 
 // What ESM says itself is never matched against a password: a password
 // that is one of ESM's own words leaves those words as they are, and the
-// server still becomes ready.
+// server still becomes ready. (Words shorter than 8 characters, like
+// "ready", cannot be passwords at all.)
 func TestOwnWordsAreNeverMasked(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
 	r.create("alpha", nil)
 	ctx := context.Background()
-	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr("ready"), AdminPassword: ptr("stopped")}); err != nil {
+	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr("ready")}); fault.CodeOf(err) != "password_too_short" {
+		t.Fatalf("the password \"ready\": %v", err)
+	}
+	const restarted, stopping = "restarted", "stopped for a restart"
+	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(restarted), AdminPassword: ptr(stopping)}); err != nil {
 		t.Fatal(err)
 	}
-	st, err := r.m.Start(ctx, "alpha", true)
+	if _, err := r.m.Start(ctx, "alpha", true); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.m.Restart(ctx, "alpha", "", true)
 	if err != nil || st.State != Running || st.Reason != "ready ("+st.ReadySource+")" {
-		t.Fatalf("start with the password \"ready\": %+v %v", st, err)
+		t.Fatalf("restart: %+v %v", st, err)
 	}
 	if st, err = r.m.Stop(ctx, "alpha"); err != nil || st.Reason != "stopped" {
-		t.Fatalf("stop with the password \"stopped\": %+v %v", st, err)
+		t.Fatalf("stop: %+v %v", st, err)
 	}
 	_, err = r.m.Start(ctx, "ghost", false)
 	if err == nil || strings.Contains(err.Error(), gameserver.Mask) {
@@ -401,8 +409,72 @@ func TestOwnWordsAreNeverMasked(t *testing.T) {
 	}
 	evs, _ := r.bus.Since(0, events.Filter{Types: []string{events.TypeState}})
 	raw, _ := json.Marshal(evs)
-	if strings.Contains(string(raw), gameserver.Mask) || !strings.Contains(string(raw), `"reason":"stopped"`) {
+	if strings.Contains(string(raw), gameserver.Mask) || !strings.Contains(string(raw), `"reason":"`+restarted+`"`) ||
+		!strings.Contains(string(raw), `"reason":"`+stopping+`"`) {
 		t.Fatalf("state events: %s", raw)
+	}
+}
+
+// Passwords have at least 8 characters, and a password may not occur, in
+// any case, in a setting every role sees and the server may print: the
+// output filter would mask that setting and so give the password away.
+// Neither refusal repeats the value.
+func TestPasswordRules(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	v, err := r.m.Create(CreateRequest{Name: "alpha", Settings: Settings{BindIP: ptr("127.0.0.1"), DisplayName: ptr("Alpha EU"),
+		World: ptr("north"), Cluster: ptr("eu-1"), Rules: &map[string]string{"Difficulty": "Hard-Mode-77", "Motd": "welcome"},
+		ExtraArgs: &[]string{"-Banner=OpenSesame-42"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := func(what string, err error, code, value string) {
+		t.Helper()
+		if fault.CodeOf(err) != code || !fault.Is(err, fault.Invalid) {
+			t.Errorf("%s: %v, want %s", what, err, code)
+		} else if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(value)) {
+			t.Errorf("%s: the refusal repeats the value: %v", what, err)
+		}
+	}
+	for _, short := range []string{"Zq7-abc", "密码密码密码密"} {
+		_, _, err := r.m.SetSecrets("alpha", SecretsRequest{AdminPassword: ptr(short)})
+		refused("short password", err, "password_too_short", short)
+	}
+	for pw, field := range map[string]string{
+		"hard-mode-77":      "rules",
+		"OPENSESAME-42":     "extra_args",
+		"Alpha EU":          "display_name",
+		"difficulty":        "rules",
+		"-Banner=OpenSesam": "extra_args",
+	} {
+		_, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(pw)})
+		refused("password in "+field, err, "password_in_settings", pw)
+		if err != nil && !strings.Contains(err.Error(), "occurs in "+field) {
+			t.Errorf("%q: the refusal does not name %s: %v", pw, field, err)
+		}
+	}
+	if fl := r.m.secretFlags("alpha"); fl.ServerPasswordSet || fl.AdminPasswordSet {
+		t.Fatalf("a refused password was stored: %+v", fl)
+	}
+	const pw = "Zq7-Gate-Keeper"
+	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(pw), AdminPassword: ptr("an-admin-pw-9")}); err != nil {
+		t.Fatal(err)
+	}
+	for field, s := range map[string]Settings{
+		"display_name": {DisplayName: ptr("The zq7-gate-keeper server")},
+		"world":        {World: ptr("zq7-gate-keeperx")},
+		"cluster":      {Cluster: ptr("zq7-gate-keeper")},
+		"rules":        {Rules: &map[string]string{"Motd": "say ZQ7-GATE-KEEPER"}},
+		"extra_args":   {ExtraArgs: &[]string{"-Banner=" + pw}},
+	} {
+		_, _, err := r.m.Patch("alpha", PatchRequest{Settings: s})
+		refused("change of "+field, err, "password_in_settings", pw)
+	}
+	if got, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr("Alpha West")}}); err != nil || got.DisplayName != "Alpha West" {
+		t.Fatalf("an ordinary change: %+v %v", got, err)
+	}
+	if v.Name != "alpha" {
+		t.Fatal(v.Name)
 	}
 }
 

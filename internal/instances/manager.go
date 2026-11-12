@@ -623,6 +623,13 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	if err := cfg.Validate(); err != nil {
 		return View{}, false, err
 	}
+	secrets, err := m.readSecrets(name)
+	if err != nil {
+		return View{}, false, err
+	}
+	if err := checkPasswordsInSettings(cfg, secrets); err != nil {
+		return View{}, false, err
+	}
 	toFile := old.OutputHidden() && !cfg.OutputHidden()
 	toCommandLine := !old.OutputHidden() && cfg.OutputHidden()
 	if toFile && (active || m.alive(name)) {
@@ -860,6 +867,12 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 		return SecretFlags{}, false, err
 	}
 	s.change(req)
+	in.mu.Lock()
+	cfg := in.cfg.clone()
+	in.mu.Unlock()
+	if err := checkPasswordsInSettings(cfg, s); err != nil {
+		return SecretFlags{}, false, err
+	}
 	if err := m.st.WriteJSON(secretsFile(name), s, 0o600); err != nil {
 		return SecretFlags{}, false, err
 	}

@@ -607,6 +607,18 @@ func TestSecretsAndChanges(t *testing.T) {
 	if st := h.call("PATCH", "/api/v1/instances/alpha", h.admin, map[string]any{"build": "2.0"}, &eb); st != http.StatusUnprocessableEntity {
 		t.Fatalf("build change by PATCH: %d %+v", st, eb)
 	}
+	// A password may not become part of a setting, nor be short; the
+	// refusals do not repeat it.
+	eb = api.ErrorBody{}
+	if st := h.call("PATCH", "/api/v1/instances/alpha", h.admin, map[string]any{"display_name": "x " + strings.ToUpper(pw)}, &eb); st != http.StatusUnprocessableEntity ||
+		eb.Error.Code != "password_in_settings" || strings.Contains(strings.ToLower(eb.Error.Message), pw) {
+		t.Fatalf("password into display_name: %d %+v", st, eb)
+	}
+	eb = api.ErrorBody{}
+	if st := h.call("PUT", "/api/v1/instances/alpha/secrets", h.admin, map[string]string{"admin_password": "Zq7-abc"}, &eb); st != http.StatusUnprocessableEntity ||
+		eb.Error.Code != "password_too_short" || strings.Contains(eb.Error.Message, "Zq7") {
+		t.Fatalf("short password: %d %+v", st, eb)
+	}
 	if st := h.call("PATCH", "/api/v1/instances/alpha", h.admin, map[string]any{"rules": map[string]string{"Port": "1"}}, &eb); st != http.StatusUnprocessableEntity {
 		t.Fatalf("reserved rule: %d %+v", st, eb)
 	}

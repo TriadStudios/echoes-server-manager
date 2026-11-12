@@ -295,7 +295,9 @@ paths:
         start (restart_required is true).
 
         A rule key or an extra argument that looks like a secret is refused
-        with 422 `looks_like_secret`. Changing `secret_delivery` from
+        with 422 `looks_like_secret`, and a change that would put one of the
+        instance's passwords (in any case) into a setting with 422
+        `password_in_settings`. Changing `secret_delivery` from
         `command_line` to `file` is refused with 409 `instance_running`
         while the server runs; with the server stopped it sets the output
         files of the instance aside (they hold the command line) and
@@ -341,7 +343,10 @@ paths:
       description: |
         A field left out stays as it is; an empty string clears it. Secrets
         are never returned. This is the only way to set a server password. A
-        change reaches the server with its next start.
+        change reaches the server with its next start. A password has at
+        least 8 characters (422 password_too_short) and may not occur, in
+        any case, in the instance's name, display name, world, map, cluster,
+        rule keys or values, or extra arguments (422 password_in_settings).
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -701,7 +706,9 @@ components:
                 hidden_unsafe_secrets (403: the read role asked for the output
                 of an instance with passwords on the command line),
                 looks_like_secret (422: a rule key or an extra argument names
-                a secret), unsupported_media_type (415: login or setup
+                a secret), password_too_short (422: under 8 characters),
+                password_in_settings (422: a password occurs in a setting of
+                its instance, on PUT .../secrets or PATCH), unsupported_media_type (415: login or setup
                 without a JSON body), request_timeout (408: the request body
                 did not arrive in time), not_found, method_not_allowed, conflict,
                 already_running, instance_exists, instance_running, busy,

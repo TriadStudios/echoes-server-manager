@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
@@ -41,6 +42,8 @@ const (
 	maxExtraArgs      = 32
 	maxRestartTimes   = 24
 	maxSecretLength   = 128
+	// MinSecretLength is the shortest password accepted, in characters.
+	MinSecretLength = 8
 )
 
 // Ports is the game and query port of an instance.
@@ -441,9 +444,45 @@ type SecretFlags struct {
 	AdminPasswordSet  bool `json:"admin_password_set"`
 }
 
+// checkSecret checks a new password ("" clears it). Its errors never
+// repeat the value.
 func checkSecret(field, v string) error {
 	if len(v) > maxSecretLength || hasControl(v) {
 		return invalid(field, "must be at most %d printable characters", maxSecretLength)
+	}
+	if v != "" && utf8.RuneCountInString(v) < MinSecretLength {
+		return fault.New(fault.Invalid, "password_too_short", "%s: must be at least %d characters", field, MinSecretLength)
+	}
+	return nil
+}
+
+// checkPasswordsInSettings refuses passwords that occur, without regard to
+// case, in a setting that is shown to every role or that the server may
+// print: the name, display name, world, map, cluster, the rule keys and
+// values, and the extra arguments. Output filters mask the passwords, so
+// such a setting would show as masked and give the password away. The
+// error names the password and the setting, never a value.
+func checkPasswordsInSettings(in Instance, s Secrets) error {
+	type text struct{ field, v string }
+	texts := []text{{"name", in.Name}, {"display_name", in.DisplayName}, {"world", in.World}, {"map", in.Map}, {"cluster", in.Cluster}}
+	for _, k := range slices.Sorted(maps.Keys(in.Rules)) {
+		texts = append(texts, text{"rules", k}, text{"rules", in.Rules[k]})
+	}
+	for _, a := range in.ExtraArgs {
+		texts = append(texts, text{"extra_args", a})
+	}
+	for _, pw := range []struct{ what, v string }{{"server password", s.ServerPassword}, {"admin password", s.AdminPassword}} {
+		if pw.v == "" {
+			continue
+		}
+		low := strings.ToLower(pw.v)
+		for _, t := range texts {
+			if strings.Contains(strings.ToLower(t.v), low) {
+				return fault.New(fault.Invalid, "password_in_settings",
+					"the %s occurs in %s: a password may not be part of a setting, which every role sees and the server may print; change the password or the setting",
+					pw.what, t.field)
+			}
+		}
 	}
 	return nil
 }

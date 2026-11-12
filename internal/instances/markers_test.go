@@ -39,7 +39,9 @@ func (r *rig) createWithMarker(marker, delivery string, extra map[string]string)
 	}}); err != nil {
 		r.t.Fatal(err)
 	}
-	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(marker), AdminPassword: ptr(marker)}); err != nil {
+	// The passwords hold the marker too; they may not occur in a setting,
+	// so they carry one more character.
+	if _, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(marker + "!"), AdminPassword: ptr(marker + "!")}); err != nil {
 		r.t.Fatal(err)
 	}
 }
