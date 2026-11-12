@@ -207,6 +207,55 @@ func (s *Store) OpenAppend(rel string, perm fs.FileMode) (*os.File, error) {
 	return s.root.OpenFile(p, os.O_WRONLY|os.O_APPEND|os.O_CREATE, perm)
 }
 
+// Create creates a new file for writing (it must not exist yet), creating
+// missing parent directories with mode 0700. A perm without write bits
+// still gives a writable handle: the file is read-only once closed.
+func (s *Store) Create(rel string, perm fs.FileMode) (*os.File, error) {
+	p, err := clean(rel)
+	if err != nil {
+		return nil, err
+	}
+	if p == "." {
+		return nil, fmt.Errorf("store: cannot create the root itself")
+	}
+	if err := s.mkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return nil, err
+	}
+	return s.root.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+}
+
+// Rename moves oldRel to newRel inside the root. A file at newRel is
+// replaced; a directory at newRel is refused. The parent of newRel is
+// created when missing.
+func (s *Store) Rename(oldRel, newRel string) error {
+	op, err := clean(oldRel)
+	if err != nil {
+		return err
+	}
+	np, err := clean(newRel)
+	if err != nil {
+		return err
+	}
+	if op == "." || np == "." {
+		return fmt.Errorf("store: cannot rename the root")
+	}
+	if _, err := s.root.Lstat(op); err != nil {
+		return err
+	}
+	if fi, err := s.root.Lstat(np); err == nil && fi.IsDir() {
+		return fmt.Errorf("store: rename %s: %s is a directory: %w", oldRel, newRel, fs.ErrExist)
+	}
+	if err := s.mkdirAll(filepath.Dir(np), 0o700); err != nil {
+		return err
+	}
+	oldDir, oldBase := filepath.Split(op)
+	newDir, newBase := filepath.Split(np)
+	if err := s.renameAt(filepath.Clean(oldDir), oldBase, filepath.Clean(newDir), newBase); err != nil {
+		return fmt.Errorf("store: rename %s to %s: %w", oldRel, newRel, err)
+	}
+	return nil
+}
+
 // Open opens rel for reading.
 func (s *Store) Open(rel string) (*os.File, error) {
 	p, err := clean(rel)

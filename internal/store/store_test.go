@@ -240,3 +240,54 @@ func TestAppendMkdirRemoveAll(t *testing.T) {
 		t.Fatal("MkdirAll through a file accepted")
 	}
 }
+
+func TestCreateAndRename(t *testing.T) {
+	s := open(t)
+	f, err := s.Create("tmp/x1/bin/tool", 0o500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("tool"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if _, err := s.Create("tmp/x1/bin/tool", 0o600); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("second create: %v, want exists", err)
+	}
+	if err := s.Rename("tmp/x1", "builds/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := s.ReadFile("builds/v1/bin/tool"); err != nil || string(b) != "tool" {
+		t.Fatalf("after rename: %q %v", b, err)
+	}
+	if s.Exists("tmp/x1") {
+		t.Fatal("source still exists")
+	}
+	if err := s.MkdirAll("builds/v2", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteFile("tmp/y", []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rename("tmp/y", "builds/v2"); err == nil {
+		t.Fatal("rename over a directory accepted")
+	}
+	if err := s.Rename("tmp/y", "../outside"); err == nil {
+		t.Fatal("rename outside the root accepted")
+	}
+	if err := s.WriteFile("tmp/z", []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WriteFile("data/z", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rename("tmp/z", "data/z"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := s.ReadFile("data/z"); string(b) != "new" {
+		t.Fatalf("replace: %q", b)
+	}
+	if err := s.RemoveAll("builds/v1"); err != nil {
+		t.Fatal(err)
+	}
+}
