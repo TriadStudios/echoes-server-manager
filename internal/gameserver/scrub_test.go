@@ -2,6 +2,7 @@ package gameserver
 
 import (
 	"encoding/json"
+	"math"
 	"math/rand/v2"
 	"strconv"
 	"strings"
@@ -119,21 +120,61 @@ func TestScrubberShortValues(t *testing.T) {
 // Masking a switch value takes time in proportion to the text, however
 // much white space it holds: a long run of spaces inside a value must not
 // be scanned again from every space.
+//
+// The test compares growth, not a fixed time, so a slow machine or the race
+// detector does not fail it: four times the text may take at most eight
+// times as long. Work in proportion to the text takes about four times as
+// long, work that grows with the square of its length sixteen times.
 func TestSwitchRuleTakesLinearTime(t *testing.T) {
-	for _, in := range []string{
-		"-password=" + strings.Repeat(" ", 400000) + "x",
-		"-ServerPassword=a" + strings.Repeat(" \t", 200000) + "b",
-		strings.Repeat("-AdminPassword= ", 50000),
+	const n = 32 << 10
+	for _, c := range []struct {
+		name string
+		text func(n int) string
+		want string // the masked text, when it is short
+	}{
+		{"spaces", func(n int) string { return "-password=" + strings.Repeat(" ", n) + "x" }, "-password=" + Mask},
+		{"spaces and tabs", func(n int) string { return "-ServerPassword=a" + strings.Repeat(" \t", n/2) + "b" }, "-ServerPassword=" + Mask},
+		{"many switches", func(n int) string { return strings.Repeat("-AdminPassword= ", n/16) }, ""},
 	} {
-		start := time.Now()
-		out := ScrubLine(in, nil)
-		if d := time.Since(start); d > time.Second {
-			t.Fatalf("masking %d bytes took %s", len(in), d)
+		small, large := c.text(n), c.text(4*n)
+		if c.want != "" {
+			if got := ScrubLine(large, nil); got != c.want {
+				t.Fatalf("%s: value not masked: %q...", c.name, got[:min(len(got), 40)])
+			}
 		}
-		if strings.Contains(out, "x") && strings.HasPrefix(in, "-password=") {
-			t.Fatalf("value not masked: %q...", out[:40])
+		var ratio float64
+		for range 2 { // once more if the machine was busy
+			ratio = float64(perCall(t, large)) / float64(perCall(t, small))
+			t.Logf("%s: %.1f times as long for four times the text", c.name, ratio)
+			if ratio <= 8 {
+				break
+			}
+		}
+		if ratio > 8 {
+			t.Errorf("%s: masking %d bytes took %.1f times as long as %d bytes, want about 4", c.name, len(large), ratio, len(small))
 		}
 	}
+}
+
+// perCall is the shortest time ScrubLine took on text, per call, over three
+// rounds of calls lasting at least 20 ms each. A call that takes about 10 s
+// fails the test at once.
+func perCall(t *testing.T, text string) time.Duration {
+	t.Helper()
+	best := time.Duration(math.MaxInt64)
+	for range 3 {
+		calls, start := 0, time.Now()
+		var d time.Duration
+		for d < 20*time.Millisecond {
+			ScrubLine(text, nil)
+			calls++
+			if d = time.Since(start); d > 10*time.Second {
+				t.Fatalf("masking %d bytes took %s", len(text), d)
+			}
+		}
+		best = min(best, d/time.Duration(calls))
+	}
+	return best
 }
 
 // The end of a switch value is found as the first version of the rule
