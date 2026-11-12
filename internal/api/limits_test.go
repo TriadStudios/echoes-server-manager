@@ -176,6 +176,33 @@ func (w *stallWriter) Write(b []byte) (int, error) {
 	}
 }
 
+// A reply whose client does not read it is cut off at the write deadline,
+// which starts with the reply's first byte: the handler does not hang.
+func TestUnreadReplyIsCut(t *testing.T) {
+	const writeTimeout = 200 * time.Millisecond
+	h := New(Options{WriteTimeout: writeTimeout}).Handler()
+	for _, target := range []string{"/", "/api/v1/nothing"} {
+		w := &stallWriter{header: http.Header{}} // the client reads nothing
+		done := make(chan struct{})
+		start := time.Now()
+		go func() {
+			defer close(done)
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+		}()
+		select {
+		case <-done:
+		case <-time.After(writeTimeout + 5*time.Second):
+			t.Fatalf("%s: a reply nobody reads held its handler", target)
+		}
+		w.mu.Lock()
+		dl := w.dl
+		w.mu.Unlock()
+		if dl.IsZero() || dl.Before(start) || dl.After(start.Add(writeTimeout+time.Second)) {
+			t.Fatalf("%s: write deadline %v, want about %s after the start", target, dl, writeTimeout)
+		}
+	}
+}
+
 // The write deadline is per write: a stream whose client keeps reading
 // runs for much longer than the write timeout.
 func TestLongEventStreamKeepsGoing(t *testing.T) {
