@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -93,9 +94,27 @@ func (s *Systemd) systemctl(ctx context.Context, bin string, args ...string) (st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s: %w: %s", bin, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), fmt.Errorf("%s: %w: %s", commandLabel(bin, args), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+// commandLabel names a command for error messages. It never includes the
+// server's own command line (everything after "--", which can hold
+// passwords) or environment values.
+func commandLabel(bin string, args []string) string {
+	keep := []string{bin}
+	for _, a := range args {
+		if a == "--" {
+			keep = append(keep, "-- <server command line>")
+			break
+		}
+		if strings.HasPrefix(a, "--setenv=") {
+			a = "--setenv=<hidden>"
+		}
+		keep = append(keep, a)
+	}
+	return strings.Join(gameserver.MaskArgs(keep), " ")
 }
 
 type unitInfo struct {
@@ -237,7 +256,9 @@ func (s *Systemd) Start(ctx context.Context, spec Spec) error {
 		args = append(args, s.escapeArg(a))
 	}
 	if _, err := s.systemctl(ctx, "systemd-run", args...); err != nil {
-		return fmt.Errorf("supervisor: start %s: %w", spec.Name, err)
+		// systemd-run may repeat parts of the command line in its own
+		// messages; hide the password values.
+		return fmt.Errorf("supervisor: start %s: %s", spec.Name, gameserver.HideValues(err.Error(), gameserver.SecretValues(spec.Args)))
 	}
 	s.mu.Lock()
 	s.seen[spec.Name] = time.Now()

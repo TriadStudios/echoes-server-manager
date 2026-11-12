@@ -150,12 +150,26 @@ func TestPoliteStopAndRequestFile(t *testing.T) {
 	if PoliteStop("linux") != StopSignal || PoliteStop("windows") != StopFile {
 		t.Fatal("stop methods wrong")
 	}
-	data := t.TempDir()
-	if err := RequestStop(data); err != nil {
-		t.Fatal(err)
+	if got := StopRequestPath("data"); got != filepath.Join("data", "control", "stop") {
+		t.Fatalf("stop request path %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(data, "control", "stop")); err != nil {
-		t.Fatal(err)
+}
+
+func TestSecretValuesAndHiding(t *testing.T) {
+	argv, _ := Launch{GamePort: 1, QueryPort: 2, MaxPlayers: 3, DataDir: "d",
+		ServerPassword: "open sesame", AdminPassword: "abc"}.Args()
+	argv = append(argv, "-OtherPassword=", "-Note=password")
+	got := SecretValues(argv)
+	if !slices.Equal(got, []string{"open sesame", "abc"}) {
+		t.Fatalf("secret values %q", got)
+	}
+	text := "systemd-run failed: -ServerPassword=open sesame -AdminPassword=abc"
+	hidden := HideValues(text, got)
+	if strings.Contains(hidden, "open sesame") {
+		t.Fatalf("value not hidden: %q", hidden)
+	}
+	if !strings.Contains(hidden, "=abc") {
+		t.Fatalf("a value shorter than %d bytes was replaced: %q", MinHiddenLength, hidden)
 	}
 }
 

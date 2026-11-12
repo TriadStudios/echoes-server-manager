@@ -104,15 +104,51 @@ func (l Launch) Args() (argv, masked []string) {
 func MaskArgs(argv []string) []string {
 	out := slices.Clone(argv)
 	for i, a := range out {
-		if !strings.HasPrefix(a, "-") {
-			continue
-		}
-		k, _, ok := strings.Cut(a, "=")
-		if ok && strings.Contains(strings.ToLower(k), "password") {
+		if k, _, ok := secretArg(a); ok {
 			out[i] = k + "=" + Mask
 		}
 	}
 	return out
+}
+
+// secretArg splits a -Key=Value argument whose key names a password.
+func secretArg(a string) (key, value string, ok bool) {
+	if !strings.HasPrefix(a, "-") {
+		return "", "", false
+	}
+	k, v, found := strings.Cut(a, "=")
+	if !found || !strings.Contains(strings.ToLower(k), "password") {
+		return "", "", false
+	}
+	return k, v, true
+}
+
+// SecretValues returns the values of the password switches in argv, so
+// they can be hidden from any text that might repeat them (an error
+// message that echoes the command line, for example).
+func SecretValues(argv []string) []string {
+	var out []string
+	for _, a := range argv {
+		if _, v, ok := secretArg(a); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// MinHiddenLength is the shortest secret HideValues replaces; shorter
+// values would garble ordinary text.
+const MinHiddenLength = 4
+
+// HideValues replaces every occurrence of each value (of at least
+// MinHiddenLength bytes) in s with Mask.
+func HideValues(s string, values []string) string {
+	for _, v := range values {
+		if len(v) >= MinHiddenLength {
+			s = strings.ReplaceAll(s, v, Mask)
+		}
+	}
+	return s
 }
 
 // reserved are the switches ESM sets itself; rules and extra args must not
@@ -255,15 +291,6 @@ func PoliteStop(goos string) StopMethod {
 // StopRequestPath returns the stop request file of a data folder.
 func StopRequestPath(dataDir string) string {
 	return filepath.Join(dataDir, ControlDirRel, ControlStop)
-}
-
-// RequestStop writes the stop request file.
-func RequestStop(dataDir string) error {
-	p := StopRequestPath(dataDir)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte("stop\n"), 0o600)
 }
 
 // Probe asks the query port whether the server answers: it sends "PING" over

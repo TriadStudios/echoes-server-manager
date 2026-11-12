@@ -116,7 +116,7 @@ func TestFakeLifecycle(t *testing.T) {
 	}
 	save := filepath.Join(r.data, filepath.FromSlash(gameserver.SaveFileRel("w")))
 	testkit.Eventually(t, 5*time.Second, func() bool { _, err := os.Stat(save); return err == nil }, "no save file")
-	if err := gameserver.RequestStop(r.data); err != nil {
+	if err := testkit.WriteControl(r.data, testkit.ControlStop); err != nil {
 		t.Fatal(err)
 	}
 	if code := r.wait(t, 10*time.Second); code != 0 {
@@ -152,7 +152,7 @@ func TestFakeCounterContinues(t *testing.T) {
 	}
 	r := startFakeIn(t, testkit.FakeServer(t), data, "-FakeSaveInterval=1h")
 	waitReady(t, r.data)
-	gameserver.RequestStop(r.data)
+	testkit.WriteControl(r.data, testkit.ControlStop)
 	r.wait(t, 10*time.Second)
 	b, _ := os.ReadFile(save)
 	if !strings.Contains(string(b), "counter=42") {
@@ -181,7 +181,7 @@ func TestFakeHangIgnoresStop(t *testing.T) {
 	waitReady(t, r.data)
 	testkit.WriteControl(r.data, testkit.ControlHang)
 	time.Sleep(300 * time.Millisecond)
-	gameserver.RequestStop(r.data)
+	testkit.WriteControl(r.data, testkit.ControlStop)
 	select {
 	case <-r.done:
 		t.Fatal("fake stopped while hanging")

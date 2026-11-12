@@ -63,7 +63,7 @@ func TestSystemdLifecycle(t *testing.T) {
 	spec.Limits = Limits{MemoryMaxBytes: 512 << 20, CPUQuotaPercent: 50}
 	spec.Args = append(spec.Args, "-ServerName=$HOME and %h stay literal")
 	data := r.dataDir(name)
-	if err := gameserver.RequestStop(data); err != nil { // stale request from a killed run
+	if err := testkit.WriteControl(data, testkit.ControlStop); err != nil { // stale request from a killed run
 		t.Fatal(err)
 	}
 	if err := s.Start(context.Background(), spec); err != nil {
@@ -191,5 +191,35 @@ func TestSystemdLeavesForeignUnitsAlone(t *testing.T) {
 	// Units of instances that are not in the store are never touched either.
 	if err := s.Stop(context.Background(), "not-in-store", time.Second); !errors.Is(err, ErrUnknownInstance) {
 		t.Fatalf("Stop of unknown instance = %v", err)
+	}
+}
+
+// A systemd-run failure must not repeat the server's passwords, even when
+// systemd-run itself echoes the whole command line.
+func TestSystemdStartErrorHidesPasswords(t *testing.T) {
+	needSystemd(t)
+	dir := t.TempDir()
+	script := "#!/bin/sh\necho \"Failed to start transient service unit: $*\" >&2\nexit 1\n"
+	if err := os.WriteFile(dir+"/systemd-run", []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	r := newRig(t)
+	name := uniqueName("sdpw")
+	cleanupUnit(t, name)
+	s := newSystemd(t, r)
+	spec := r.spec(name)
+	spec.Args = append(spec.Args, "-ServerPassword=open sesame 42", "-AdminPassword=adm1n-secret")
+	err := s.Start(context.Background(), spec)
+	if err == nil {
+		t.Fatal("start with a failing systemd-run succeeded")
+	}
+	for _, secret := range []string{"open sesame 42", "sesame", "adm1n-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("start error shows a password: %v", err)
+		}
+	}
+	if !strings.Contains(err.Error(), "<server command line>") || !strings.Contains(err.Error(), "Failed to start transient service unit") {
+		t.Fatalf("start error lost its detail: %v", err)
 	}
 }

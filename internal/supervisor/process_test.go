@@ -108,7 +108,7 @@ func TestProcessLifecycle(t *testing.T) {
 	data := r.dataDir("alpha")
 	// A stop request left from an earlier killed run must not stop the
 	// new server.
-	if err := gameserver.RequestStop(data); err != nil {
+	if err := testkit.WriteControl(data, testkit.ControlStop); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Start(context.Background(), spec); err != nil {
