@@ -190,3 +190,22 @@ func TestBackupDownload(t *testing.T) {
 		}
 	}
 }
+
+// Under systemd a server's memory is its unit's: the server and everything
+// it started.
+func TestInstanceMemorySystemd(t *testing.T) {
+	h := newSystemdESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	name := unitSafeName("sdm")
+	h.create(name, "", nil)
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, nil)
+	var v instances.View
+	testkit.Eventually(t, 10*time.Second, func() bool {
+		h.must(http.StatusOK, "GET", "/api/v1/instances/"+name, nil, &v)
+		return v.Live.MemoryBytes != nil
+	}, "no memory for a server under systemd: %+v", &v.Live)
+	if *v.Live.MemoryBytes <= 0 || v.Live.MemorySource != "cgroup" {
+		t.Fatalf("memory under systemd: %+v", v.Live)
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/stop", struct{}{}, nil)
+}
