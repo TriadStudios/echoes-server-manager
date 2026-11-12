@@ -4,8 +4,10 @@
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
 // change), or by arriving on the unix socket (admin). Tokens are never read
-// from URLs. Every call that changes something writes an audit entry, and
-// so does every refused call. Errors always have the shape
+// from URLs. Every call that changes something (or tries to) writes an
+// audit entry, and so does every call refused for lack of a role (403); a
+// read refused for a missing login (401) does not. Errors always have the
+// shape
 // {"error": {"code": "...", "message": "..."}}.
 package api
 

@@ -43,8 +43,14 @@ ESM is not:
   and a token.
 - **Standard library only.** No third-party Go modules.
 - **Plain files.** State is JSON files under the root, written atomically
-  (temporary file, sync, rename). Every file access goes through an
-  `os.Root` handle on the root, so a path can never resolve outside it.
+  (temporary file, sync, rename). Every file ESM writes in the root, and
+  most it reads, goes through an `os.Root` handle on the root, so such a
+  path can never resolve outside it; local build sources are read through
+  one on the import folder. Plain paths are used for the socket and for
+  creating the import folder, and for a few reads: the read-only checks of
+  `esm doctor` and the config read without a running service, a server's
+  status file, the save files a backup copies (each checked to be a
+  regular file), and the process checks under `/proc`.
 
 The web page comes in the next phase as plain server-rendered HTML (Go's
 `html/template`, one stylesheet, one small script, no build step), embedded
@@ -502,7 +508,10 @@ skipped.
   long (a start that waits for ready, a build download, an event stream);
   the API sets those deadlines per request instead.
 - Every change writes an audit entry (who, what, target, success, error).
-  Refused calls are audited too. Audit entries and logs never contain
+  Calls that try to change something are recorded whether they work, fail
+  or are refused, and so is every call refused for lack of a role (403); a
+  read refused for a missing login (401) or another host name (421) is
+  not. Audit entries and logs never contain
   passwords or tokens. Each text field of an entry is cut to 256 bytes, and
   reading the audit log skips a line it cannot read.
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
@@ -700,6 +709,21 @@ else.
   real server facts confirmed on a real host.
 - **Later:** player controls, Steam installs, Windows hosts (planned for
   the first public release).
+
+## Known limits
+
+- **Passwords can be confirmed by an admin.** A setting that contains an
+  instance's password is refused (422 `password_in_settings`), so an admin
+  can test a guess by putting it into, say, the display name. Admins set
+  the passwords anyway; the API still never shows them.
+- **Users and sessions.** There is no way yet to change or remove a user,
+  or to end other sessions; restarting ESM ends every session.
+- **The socket on Windows.** Windows has no mode 0600 for the socket file
+  and ESM sets no ACLs, so the socket is as private as its folder's ACL.
+- **Separate arguments are not a boundary for the real server.** ESM hands
+  a server each setting as its own argument, but an Unreal server joins its
+  command line back together and searches it for switches. A display name
+  or rule value such as `x -SecretsFile=...` could then act as a switch.
 
 ## Open items
 

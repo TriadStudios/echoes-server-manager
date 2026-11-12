@@ -46,7 +46,9 @@ info:
     has a minute to read a reply, counted from its first byte, and in an
     event stream a minute for each event. Calls that change something are
     POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
-    `{}`); each writes an audit entry, as does every refused call.
+    `{}`); each writes an audit entry, refused or not, as does every call
+    refused for lack of a role (403). A read refused for a missing login
+    (401) or another host name (421) is not recorded.
 
     Every reply, of the API and of the page, carries
     `Content-Security-Policy` (with `frame-ancestors 'none'`),

@@ -162,8 +162,10 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
 - Requests and replies are bounded: headers 64 KiB, bodies 1 MiB, slow
   clients are cut off, a client that stops reading an event stream is
   dropped without holding anything up, and log tails are capped.
-- Every change, and every refused request, is written to an append-only
-  audit log.
+- Every call that changes something or tries to (whether it works, fails
+  or is refused), and every call refused for lack of a role, is written to
+  an append-only audit log. A read refused for a missing login (401) or a
+  host name that is not ESM's (421) is not.
 - Builds are checked against their manifest (SHA-256 of every file) before
   they are installed, archives are unpacked with path checks, downloads must
   be https with a known SHA-256, and installed files are read-only. A local
@@ -179,6 +181,8 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   process start time and executable before touching a pid).
 - ESM never changes the firewall. It tells you which ports each instance
   uses; opening them is up to you.
+
+Known limits are listed in [docs/DESIGN.md](docs/DESIGN.md#known-limits).
 
 ## Documentation
 
