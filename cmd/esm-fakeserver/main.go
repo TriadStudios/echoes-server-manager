@@ -10,6 +10,8 @@
 //	-FakeCrashAfter=<dur>  exit with the crash code after this long
 //	-FakeIgnoreStop        ignore stop requests (only a kill ends it)
 //	-FakeNoReady           never report ready
+//	-FakeNoStatusFile      write no status file
+//	-FakeNoQuery           never answer the query port
 //	-FakeFailStart         exit with code 3 at once
 //	-FakeExitCode=N        exit code used for crashes (default 1)
 //
@@ -19,8 +21,8 @@
 //
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
 // the crash code now), "hang" (ignore stop requests from now on),
-// "unready" (keep running but stop reporting ready), "cmdline" (print the
-// command line again).
+// "ready" (report ready now), "unready" (keep running but stop reporting
+// ready), "cmdline" (print the command line again).
 //
 // Like a real server it prints its whole command line, passwords included,
 // to its log and its output when it starts; ESM has to mask them.
@@ -53,6 +55,9 @@ import (
 const (
 	controlCrash = "crash"
 	controlHang  = "hang"
+	// controlReady makes the server report ready now, whatever its ready
+	// delay.
+	controlReady = "ready"
 	// controlUnready makes the server stop reporting ready (status file
 	// back to starting, no query answers) while it keeps running.
 	controlUnready = "unready"
@@ -74,6 +79,8 @@ type options struct {
 	crashAfter   time.Duration
 	ignoreStop   bool
 	noReady      bool
+	noStatusFile bool
+	noQuery      bool
 	failStart    bool
 	exitCode     int
 }
@@ -180,6 +187,8 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	dur("FakeCrashAfter", &o.crashAfter)
 	flag("FakeIgnoreStop", &o.ignoreStop)
 	flag("FakeNoReady", &o.noReady)
+	flag("FakeNoStatusFile", &o.noStatusFile)
+	flag("FakeNoQuery", &o.noQuery)
 	flag("FakeFailStart", &o.failStart)
 	if err != nil {
 		return o, err
@@ -311,14 +320,18 @@ func run(args []string) int {
 		return true
 	}
 
+	becomeReady := func() {
+		ready = nil
+		s.status.State = gameserver.StateReady
+		s.writeStatus()
+		s.ready.Store(true)
+		s.logf("%s (players 0/%d, map %s, world %s)", gameserver.ReadyMarker, o.maxPlayers, o.mapName, o.worldName)
+	}
+
 	for {
 		select {
 		case <-ready:
-			ready = nil
-			s.status.State = gameserver.StateReady
-			s.writeStatus()
-			s.ready.Store(true)
-			s.logf("Server is ready (players 0/%d, map %s, world %s)", o.maxPlayers, o.mapName, o.worldName)
+			becomeReady()
 		case <-saveTick.C:
 			s.save()
 		case <-crash:
@@ -328,6 +341,9 @@ func run(args []string) int {
 			if s.takeControl(controlCrash) {
 				s.logf("Crash requested (exit %d)", o.exitCode)
 				return o.exitCode
+			}
+			if s.takeControl(controlReady) && s.status.State != gameserver.StateReady {
+				becomeReady()
 			}
 			if s.takeControl(controlUnready) {
 				ready = nil
@@ -379,6 +395,9 @@ func (s *server) answerQueries() {
 			}
 			continue // Windows reports ICMP errors here; keep serving
 		}
+		if s.o.noQuery {
+			continue
+		}
 		if string(buf[:n]) == "PING" && s.ready.Load() {
 			s.queryLn.WriteTo([]byte("PONG"), addr)
 		}
@@ -422,10 +441,13 @@ func (s *server) save() {
 	}
 	s.status.LastSave = time.Now().UTC()
 	s.writeStatus()
-	s.logf("World saved (%d)", s.counter)
+	s.logf("%s (%d)", gameserver.WorldSavedMarker, s.counter)
 }
 
 func (s *server) writeStatus() {
+	if s.o.noStatusFile {
+		return
+	}
 	b, _ := json.MarshalIndent(s.status, "", "  ")
 	if err := writeAtomic(gameserver.StatusFilePath(s.o.dataDir), append(b, '\n')); err != nil {
 		s.logf("Status write failed: %v", err)

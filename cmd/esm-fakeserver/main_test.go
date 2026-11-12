@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -138,7 +140,12 @@ func TestFakeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(log)
-	if !gameserver.ReadyLine.MatchString(text) || !gameserver.WorldSavedLine.MatchString(text) {
+	ready, saved := false, false
+	for _, line := range strings.Split(text, "\n") {
+		ready = ready || gameserver.IsReadyLine(line)
+		saved = saved || gameserver.IsWorldSavedLine(line)
+	}
+	if !ready || !saved {
 		t.Fatalf("log misses ready or saved lines:\n%s", text)
 	}
 	// Like a real server, the fake prints its whole command line; masking
@@ -228,6 +235,53 @@ func TestFakeSIGTERM(t *testing.T) {
 	}
 	if code := r.wait(t, 10*time.Second); code != 0 {
 		t.Fatalf("exit %d after SIGTERM", code)
+	}
+}
+
+// With no status file and no query answers, the only sign of ready is the
+// ready line in the log, and the "ready" request file makes the fake write
+// it.
+func TestFakeReadyOnRequest(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	pc.Close()
+	r := startFake(t, testkit.FakeServer(t), "-FakeReadyDelay=1h", "-FakeNoStatusFile", "-FakeNoQuery", "-QueryPort="+strconv.Itoa(port))
+	readyLines := func() int {
+		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
+		n := 0
+		for _, line := range strings.Split(string(b), "\n") {
+			if gameserver.IsReadyLine(line) {
+				n++
+			}
+		}
+		return n
+	}
+	testkit.Eventually(t, 10*time.Second, func() bool {
+		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
+		return strings.Contains(string(b), "Command line: ")
+	}, "the fake did not start")
+	time.Sleep(300 * time.Millisecond)
+	if readyLines() != 0 {
+		t.Fatal("ready before it was asked for")
+	}
+	if err := testkit.WriteControl(r.data, testkit.ControlReady); err != nil {
+		t.Fatal(err)
+	}
+	testkit.Eventually(t, 5*time.Second, func() bool { return readyLines() == 1 }, "no ready line after the request")
+	if _, err := os.Stat(gameserver.StatusFilePath(r.data)); !os.IsNotExist(err) {
+		t.Fatalf("a status file was written: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if gameserver.Probe(ctx, "127.0.0.1", port) == nil {
+		t.Fatal("the query port answers")
+	}
+	testkit.WriteControl(r.data, testkit.ControlStop)
+	if code := r.wait(t, 10*time.Second); code != 0 {
+		t.Fatalf("exit %d", code)
 	}
 }
 

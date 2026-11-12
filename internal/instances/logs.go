@@ -20,30 +20,51 @@ const (
 )
 
 const (
-	maxLineBytes   = 4096      // longer lines are cut
+	maxLineBytes   = 4096      // longer lines are cut when they are shown
 	maxFollowChunk = 256 << 10 // read at most this much per check
 	maxTailBytes   = 8 << 20   // a tail reads at most this much from the end
 	// MaxTailLines is the most lines one log request returns.
 	MaxTailLines = 5000
 )
 
-// tail follows a growing file through the store.
+// tail follows a growing file through the store, one whole line at a time.
 type tail struct {
 	rel     string
 	off     int64
 	partial []byte
+	// skip is set while the tail is inside a line whose start it did not
+	// see or has already handed out: everything up to the next line end is
+	// dropped, so the rest of a line is never taken for a line of its own.
+	skip bool
 }
 
-func (m *Manager) fileSize(rel string) int64 {
-	fi, err := m.st.Stat(rel)
+// tailAt returns a tail that follows rel from its current end. If the file
+// does not end with a line end, what follows first is the rest of an
+// unfinished line and is dropped.
+func (m *Manager) tailAt(rel string) tail {
+	t := tail{rel: rel}
+	f, err := m.st.Open(rel)
 	if err != nil {
-		return 0
+		return t
 	}
-	return fi.Size()
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return t
+	}
+	t.off = fi.Size()
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, t.off-1); err != nil || last[0] != '\n' {
+		t.skip = true
+	}
+	return t
 }
 
-// follow returns the complete lines added to the file since the last call.
-// A file that shrank (was replaced or truncated) is read from the start.
+// follow returns the whole lines added to the file since the last call, as
+// the file has them: not cut, not masked. A line that grows beyond
+// maxLineBytes without ending is handed out once, as far as it got, and
+// its rest is dropped. A file that shrank (was replaced or truncated) is
+// read from the start.
 func (m *Manager) follow(t *tail) []string {
 	f, err := m.st.Open(t.rel)
 	if err != nil {
@@ -56,7 +77,7 @@ func (m *Manager) follow(t *tail) []string {
 	}
 	size := fi.Size()
 	if size < t.off {
-		t.off, t.partial = 0, nil
+		t.off, t.partial, t.skip = 0, nil, false
 	}
 	if size == t.off {
 		return nil
@@ -75,27 +96,38 @@ func (m *Manager) follow(t *tail) []string {
 		if i < 0 {
 			break
 		}
-		lines = append(lines, cleanLine(data[:i]))
+		if t.skip {
+			t.skip = false
+		} else {
+			lines = append(lines, string(data[:i]))
+		}
 		data = data[i+1:]
 	}
-	if len(data) > maxLineBytes {
-		lines = append(lines, cleanLine(data))
+	switch {
+	case t.skip:
+		data = nil
+	case len(data) > maxLineBytes:
+		lines = append(lines, string(data))
+		t.skip = true
 		data = nil
 	}
 	t.partial = append([]byte(nil), data...)
 	return lines
 }
 
-func cleanLine(b []byte) string {
-	b = bytes.TrimRight(b, "\r")
-	if len(b) > maxLineBytes {
-		b = b[:maxLineBytes]
+// showLine prepares one line for showing: without a trailing carriage
+// return, cut to maxLineBytes and valid UTF-8. Mask a line before it is cut,
+// so a value is never cut in two.
+func showLine(line string) string {
+	line = strings.TrimRight(line, "\r")
+	if len(line) > maxLineBytes {
+		line = line[:maxLineBytes]
 	}
-	return strings.ToValidUTF8(string(b), "�")
+	return strings.ToValidUTF8(line, "�")
 }
 
-// tailLines returns the last n lines of a file (an empty list when the file
-// does not exist).
+// tailLines returns the last n lines of a file as the file has them (an
+// empty list when the file does not exist).
 func (m *Manager) tailLines(rel string, n int) ([]string, error) {
 	f, err := m.st.Open(rel)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -134,7 +166,7 @@ func (m *Manager) tailLines(rel string, n int) ([]string, error) {
 	}
 	out := make([]string, len(parts))
 	for i, p := range parts {
-		out[i] = cleanLine(p)
+		out[i] = string(p)
 	}
 	return out, nil
 }
@@ -170,7 +202,7 @@ func (m *Manager) Logs(name, source string, lines int) (_ []string, err error) {
 	sc := in.secrets
 	in.mu.Unlock()
 	for i := range out {
-		out[i] = scrubWith(sc, out[i])
+		out[i] = showLine(scrubWith(sc, out[i]))
 	}
 	return out, nil
 }
@@ -178,13 +210,13 @@ func (m *Manager) Logs(name, source string, lines int) (_ []string, err error) {
 // waitWorldSaved waits until the server log gets a new world-saved line,
 // up to d. It reports whether one was seen.
 func (m *Manager) waitWorldSaved(ctx context.Context, name string, d time.Duration) bool {
-	t := tail{rel: serverLog(name), off: m.fileSize(serverLog(name))}
+	t := m.tailAt(serverLog(name))
 	deadline := time.Now().Add(d)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		for _, line := range m.follow(&t) {
-			if gameserver.WorldSavedLine.MatchString(line) {
+			if gameserver.IsWorldSavedLine(line) {
 				return true
 			}
 		}

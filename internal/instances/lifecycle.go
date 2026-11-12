@@ -89,8 +89,8 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		return nil, err
 	}
 	w := &watchState{
-		server:  tail{rel: serverLog(cfg.Name), off: m.fileSize(serverLog(cfg.Name))},
-		console: tail{rel: consoleFile(cfg.Name), off: m.fileSize(consoleFile(cfg.Name))},
+		server:  m.tailAt(serverLog(cfg.Name)),
+		console: m.tailAt(consoleFile(cfg.Name)),
 		bindIP:  cfg.BindIP,
 		query:   cfg.Ports.Query,
 	}
@@ -143,8 +143,8 @@ func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 	}
 	now := m.now()
 	w := &watchState{
-		server:   tail{rel: serverLog(in.name), off: m.fileSize(serverLog(in.name))},
-		console:  tail{rel: consoleFile(in.name), off: m.fileSize(consoleFile(in.name))},
+		server:   m.tailAt(serverLog(in.name)),
+		console:  m.tailAt(consoleFile(in.name)),
 		deadline: now.Add(m.cfg.ReadyTimeout.D()),
 		adopted:  true,
 	}
@@ -513,17 +513,17 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (_ S
 }
 
 // followLogs publishes new lines of the server log and console output.
+// The ready line is looked for in the server log lines as the server wrote
+// them, before anything is masked or cut.
 func (m *Manager) followLogs(in *rt, w *watchState) {
 	name := in.name
 	for _, line := range m.follow(&w.server) {
-		line = in.scrub(line)
-		if !w.logReady && gameserver.ReadyLine.MatchString(line) {
+		if !w.logReady && gameserver.IsReadyLine(line) {
 			w.logReady = true
 		}
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: "server", Line: line})
+		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceServer, Line: showLine(in.scrub(line))})
 	}
 	for _, line := range m.follow(&w.console) {
-		line = in.scrub(line)
-		m.bus.Publish(events.TypeLog, name, LogLine{Source: "console", Line: line})
+		m.bus.Publish(events.TypeLog, name, LogLine{Source: SourceConsole, Line: showLine(in.scrub(line))})
 	}
 }

@@ -148,13 +148,36 @@ func IsReservedSwitch(key string) bool {
 	return slices.Contains(reserved, strings.ToLower(strings.TrimLeft(key, "-")))
 }
 
-// ReadyLine matches the server log line that says the server accepts
-// players. UNCONFIRMED.
-var ReadyLine = regexp.MustCompile(`\bServer is ready\b`)
+// ReadyMarker is the fixed text that starts the server log line saying the
+// server accepts players. UNCONFIRMED.
+const ReadyMarker = "Server is ready"
 
-// WorldSavedLine matches the server log line written after each world save.
+// WorldSavedMarker is the fixed text that starts the server log line
+// written after each world save. UNCONFIRMED.
+const WorldSavedMarker = "World saved"
+
+// logTimePrefix is the only thing that may stand in front of a marker: the
+// time the server puts at the start of its log lines, as UTC in square
+// brackets followed by one space, such as "[2026-01-02T03:04:05.678Z] ".
 // UNCONFIRMED.
-var WorldSavedLine = regexp.MustCompile(`\bWorld saved\b`)
+const logTimePrefix = `(?:\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z\] )?`
+
+var (
+	readyLine      = regexp.MustCompile(`^` + logTimePrefix + regexp.QuoteMeta(ReadyMarker) + `\b`)
+	worldSavedLine = regexp.MustCompile(`^` + logTimePrefix + regexp.QuoteMeta(WorldSavedMarker) + `\b`)
+)
+
+// IsReadyLine reports whether line, one whole line of the server log, is
+// the server saying it accepts players: ReadyMarker at the very start of the
+// line, after nothing but the optional time prefix. The marker anywhere
+// else in a line does not count, so text that the server only repeats (its
+// command line, a server name, a rule value) can never look like it.
+func IsReadyLine(line string) bool { return readyLine.MatchString(line) }
+
+// IsWorldSavedLine reports whether line, one whole line of the server log,
+// is the server saying it saved the world: WorldSavedMarker at the very
+// start of the line, after nothing but the optional time prefix.
+func IsWorldSavedLine(line string) bool { return worldSavedLine.MatchString(line) }
 
 // ServerLogRel is the server log path inside the data folder. UNCONFIRMED.
 const ServerLogRel = "Logs/server.log"

@@ -109,15 +109,63 @@ func TestReservedSwitches(t *testing.T) {
 	}
 }
 
-func TestLogPatterns(t *testing.T) {
-	if !ReadyLine.MatchString("[2026-01-01T00:00:00Z] Server is ready (players 0/40)") {
-		t.Fatal("ready line not matched")
+// The ready and world-saved lines count only when the marker starts the
+// line, after nothing but the server's own time prefix. The same words
+// anywhere else in a line (a repeated command line, a name, a chat message)
+// never count.
+func TestMarkerLinesAreAnchored(t *testing.T) {
+	for _, marker := range []struct {
+		name  string
+		text  string
+		match func(string) bool
+	}{
+		{"ready", ReadyMarker, IsReadyLine},
+		{"world saved", WorldSavedMarker, IsWorldSavedLine},
+	} {
+		yes := []string{
+			marker.text,
+			marker.text + " (players 0/40, map M, world w)",
+			marker.text + ".",
+			marker.text + "\r",
+			"[2026-01-01T00:00:00Z] " + marker.text,
+			"[2026-01-01T00:00:00.5Z] " + marker.text + " (3)",
+			"[2026-11-12T06:05:56.278390193Z] " + marker.text + " (players 0/10)",
+		}
+		no := []string{
+			"",
+			marker.text + "ing",
+			marker.text + "_now",
+			" " + marker.text,
+			"\t" + marker.text,
+			"x" + marker.text,
+			"[2026-01-01T00:00:00Z]  " + marker.text,
+			"[2026-01-01T00:00:00Z]" + marker.text,
+			"[2026-01-01 00:00:00] " + marker.text,
+			"[2026-01-01T00:00:00+01:00] " + marker.text,
+			"[x] " + marker.text,
+			"[] " + marker.text,
+			"[2026-01-01T00:00:00Z] [2026-01-01T00:00:00Z] " + marker.text,
+			"[2026-01-01T00:00:00Z] Command line: Default -ServerName=" + marker.text + " -log",
+			"[2026-01-01T00:00:00Z] Command line: Default -Motd=" + marker.text,
+			"Command line: -ServerPassword=" + marker.text,
+			"[2026-01-01T00:00:00Z] Chat: someone: " + marker.text,
+			"-Note=[2026-01-01T00:00:00Z] " + marker.text,
+			strings.ToLower(marker.text),
+			strings.ToUpper(marker.text),
+		}
+		for _, line := range yes {
+			if !marker.match(line) {
+				t.Errorf("%s: %q is not taken as the marker line", marker.name, line)
+			}
+		}
+		for _, line := range no {
+			if marker.match(line) {
+				t.Errorf("%s: %q is taken as the marker line", marker.name, line)
+			}
+		}
 	}
-	if ReadyLine.MatchString("Server is readying") {
-		t.Fatal("partial word matched")
-	}
-	if !WorldSavedLine.MatchString("[x] World saved (3)") {
-		t.Fatal("saved line not matched")
+	if IsReadyLine(WorldSavedMarker) || IsWorldSavedLine(ReadyMarker) {
+		t.Fatal("the two markers are mixed up")
 	}
 }
 
