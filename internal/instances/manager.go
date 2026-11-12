@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
@@ -106,7 +107,19 @@ type rt struct {
 	nextRestart  time.Time
 	nextBackup   time.Time
 	deleted      bool
+	hidden       []string // secret values to hide from reasons, errors and log lines
 }
+
+// scrub hides secrets in text that leaves ESM (state reasons, errors, log
+// lines): the given password values, and anything that looks like a
+// password switch or an API token.
+func scrub(s string, hidden []string) string {
+	// Whole known values first: the pattern below stops at a space, so
+	// running it first would split a value and leave its tail behind.
+	return audit.Scrub(gameserver.HideValues(s, hidden))
+}
+
+func (s Secrets) values() []string { return []string{s.ServerPassword, s.AdminPassword} }
 
 // run is one start of a server process.
 type run struct {
@@ -180,6 +193,9 @@ func New(opts Options) (*Manager, error) {
 			continue
 		}
 		r := &rt{name: in.Name, cfg: in}
+		if sec, err := m.readSecrets(in.Name); err == nil {
+			r.hidden = sec.values()
+		}
 		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build}
 		var last Status
 		if err := m.st.ReadJSON(stateFile(in.Name), &last); err == nil {
@@ -320,7 +336,7 @@ func (m *Manager) allLocked() []*rt {
 // be held.
 func (m *Manager) setLocked(in *rt, s State, reason string) {
 	in.status.State = s
-	in.status.Reason = reason
+	in.status.Reason = scrub(reason, in.hidden)
 	in.status.Since = m.now()
 	m.emitLocked(in)
 }
@@ -712,6 +728,7 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 		return SecretFlags{}, false, err
 	}
 	in.mu.Lock()
+	in.hidden = s.values()
 	active := in.status.State.active()
 	if active {
 		in.status.RestartRequired = true

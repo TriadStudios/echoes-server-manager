@@ -2,6 +2,8 @@ package instances
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -354,4 +356,80 @@ func TestScheduledWorkAndBackupPruning(t *testing.T) {
 	if len(list) != 3 || list[0].Reason != ReasonPreRestore || list[2].ID != oldest {
 		t.Fatalf("after restore with keep 2: %v", ids)
 	}
+}
+
+// leakySup is a supervisor whose start errors repeat the whole command
+// line, to prove the manager hides secrets even then.
+type leakySup struct{}
+
+func (leakySup) Start(_ context.Context, spec supervisor.Spec) error {
+	return fmt.Errorf("start failed: %s %s", spec.Executable, strings.Join(spec.Args, " "))
+}
+func (leakySup) Stop(context.Context, string, time.Duration) error { return nil }
+func (leakySup) Status(name string) (supervisor.Proc, error) {
+	return supervisor.Proc{Name: name}, supervisor.ErrNotFound
+}
+func (leakySup) Adopt() ([]supervisor.Proc, error) { return nil, nil }
+func (leakySup) Kind() string                      { return supervisor.KindProcess }
+func (leakySup) LimitsEnforced() bool              { return false }
+func (leakySup) Close() error                      { return nil }
+
+func TestSecretsNeverLeak(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	m := r.newManager(leakySup{})
+	defer m.Close()
+	const pw, admin = "open sesame 42", "adm1n-secret"
+	if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(pw), AdminPassword: ptr(admin)}); err != nil {
+		t.Fatal(err)
+	}
+	leaks := func(what, s string) {
+		t.Helper()
+		for _, secret := range []string{pw, admin, "sesame"} {
+			if strings.Contains(s, secret) {
+				t.Fatalf("%s shows a password: %q", what, s)
+			}
+		}
+	}
+	_, err := m.Start(context.Background(), "alpha", true)
+	if fault.CodeOf(err) != "start_failed" || !strings.Contains(err.Error(), "-ServerPassword=********") {
+		t.Fatalf("start error: %v", err)
+	}
+	leaks("start error", err.Error())
+
+	// A failing restart after a crash records the error as the reason.
+	in := m.lookup("alpha")
+	in.mu.Lock()
+	in.gen++
+	gen := in.gen
+	m.setLocked(in, Crashed, "test crash")
+	in.mu.Unlock()
+	m.restartAfterCrash(in, gen)
+	st, _ := m.Status("alpha")
+	if st.State != Failed || !strings.Contains(st.Reason, "restart after a crash failed") {
+		t.Fatalf("after a failed restart: %+v", st)
+	}
+	leaks("state reason", st.Reason)
+	in.mu.Lock()
+	m.setLocked(in, Failed, "raw text -AdminPassword="+admin+" and "+pw)
+	reason := in.status.Reason
+	in.mu.Unlock()
+	leaks("raw reason", reason)
+
+	// Lines the server prints are masked in log tails.
+	if err := r.st.WriteFile(consoleFile("alpha"), []byte("argv: -ServerPassword="+pw+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := m.Logs("alpha", SourceConsole, 10)
+	if err != nil || len(lines) != 1 {
+		t.Fatalf("logs %q %v", lines, err)
+	}
+	leaks("console tail", lines[0])
+
+	evs, _ := r.bus.Since(0, events.Filter{})
+	raw, _ := json.Marshal(evs)
+	leaks("events", string(raw))
+	state, _ := r.st.ReadFile(stateFile("alpha"))
+	leaks("state.json", string(state))
 }

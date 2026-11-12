@@ -141,21 +141,37 @@ func (m *Manager) tailLines(rel string, n int) ([]string, error) {
 
 // Logs returns the last lines of the server log (source "server") or the
 // console output (source "console").
+// Secret values of the instance, and anything that looks like a password
+// switch, are masked.
 func (m *Manager) Logs(name, source string, lines int) ([]string, error) {
-	if _, err := m.get(name); err != nil {
+	in, err := m.get(name)
+	if err != nil {
 		return nil, err
 	}
 	if lines <= 0 {
 		lines = 200
 	}
 	lines = min(lines, MaxTailLines)
+	var rel string
 	switch source {
 	case "", SourceServer:
-		return m.tailLines(serverLog(name), lines)
+		rel = serverLog(name)
 	case SourceConsole:
-		return m.tailLines(consoleFile(name), lines)
+		rel = consoleFile(name)
+	default:
+		return nil, fault.Invalidf("source must be server or console")
 	}
-	return nil, fault.Invalidf("source must be server or console")
+	out, err := m.tailLines(rel, lines)
+	if err != nil {
+		return nil, err
+	}
+	in.mu.Lock()
+	hidden := in.hidden
+	in.mu.Unlock()
+	for i := range out {
+		out[i] = scrub(out[i], hidden)
+	}
+	return out, nil
 }
 
 // waitWorldSaved waits until the server log gets a new world-saved line,

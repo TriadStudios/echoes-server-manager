@@ -94,7 +94,7 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		if errors.Is(err, supervisor.ErrAlreadyRunning) {
 			return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
 		}
-		return nil, fault.Wrap(fault.Failed, "start_failed", err, "cannot start instance %s", cfg.Name)
+		return nil, fault.New(fault.Failed, "start_failed", "cannot start instance %s: %s", cfg.Name, scrub(err.Error(), sec.values()))
 	}
 	if !m.track() {
 		// ESM is shutting down: the server keeps running and the next
@@ -174,14 +174,14 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 		if m.currentGen(in) != r.gen {
 			return
 		}
-		m.followLogs(in.name, w)
+		m.followLogs(in, w)
 		pr, err := m.sup.Status(in.name)
 		if err != nil && !errors.Is(err, supervisor.ErrNotFound) {
 			m.log.Warn("cannot read server status", "instance", in.name, "err", err)
 			continue
 		}
 		if err != nil || !pr.Running {
-			m.followLogs(in.name, w)
+			m.followLogs(in, w)
 			m.exited(in, r, pr)
 			return
 		}
@@ -469,14 +469,20 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Sta
 }
 
 // followLogs publishes new lines of the server log and console output.
-func (m *Manager) followLogs(name string, w *watchState) {
+func (m *Manager) followLogs(in *rt, w *watchState) {
+	name := in.name
+	in.mu.Lock()
+	hidden := in.hidden
+	in.mu.Unlock()
 	for _, line := range m.follow(&w.server) {
+		line = scrub(line, hidden)
 		if !w.logReady && gameserver.ReadyLine.MatchString(line) {
 			w.logReady = true
 		}
 		m.bus.Publish(events.TypeLog, name, LogLine{Source: "server", Line: line})
 	}
 	for _, line := range m.follow(&w.console) {
+		line = scrub(line, hidden)
 		m.bus.Publish(events.TypeLog, name, LogLine{Source: "console", Line: line})
 	}
 }
