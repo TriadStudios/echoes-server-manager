@@ -451,6 +451,12 @@ to its client a deadline (a minute). So a client that stops reading, or
 reads too slowly, can hold up neither a state change nor another client:
 its stream ends, and it reconnects with `Last-Event-ID`.
 
+A stream lasts only as long as the login it was opened with. Before every
+event and every keep-alive it checks that its token still exists, or that
+its session is still open (not logged out, not expired), with the same
+role; if not, the stream ends without sending the event, and a reconnect
+needs a valid login.
+
 ## Backups
 
 A backup copies the server's save files (the adapter's save glob) into

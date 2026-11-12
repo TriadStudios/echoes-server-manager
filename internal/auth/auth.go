@@ -580,6 +580,19 @@ func (m *Manager) DeleteToken(id string) error {
 	return nil
 }
 
+// TokenRole returns the role of the token with this id, or ErrBadToken
+// once the token is deleted.
+func (m *Manager) TokenRole(id string) (Role, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tokens {
+		if t.ID == id {
+			return t.Role, nil
+		}
+	}
+	return "", ErrBadToken
+}
+
 // AuthenticateToken checks a bearer token. Every stored hash is compared in
 // constant time; last_used is refreshed (and written at most once a minute).
 func (m *Manager) AuthenticateToken(plain string) (Token, error) {

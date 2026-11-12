@@ -557,6 +557,10 @@ paths:
         A client that stops reading holds up nothing: once 1024 events wait
         for it, or one write to it takes longer than a minute, its stream
         ends, and it reconnects with Last-Event-ID.
+
+        The stream ends, without sending the next event, once the login it
+        was opened with is gone: its token deleted, its session logged out or
+        expired. It checks before every event and every keep-alive.
       parameters:
         - name: instance
           in: query
