@@ -107,8 +107,9 @@
 <section class="panel stack" aria-labelledby="health-h">
 <div class="spread">
 <h2 class="label" id="health-h">Health check</h2>
-<a class="btn" href="/box#health-h">Run again</a>
+<a class="btn" href="/box?check=1#health-h">{{if $d.Checked}}Run again{{else}}Run the health check{{end}}</a>
 </div>
+{{if not $d.Checked}}<p class="note">The health check test-binds every free port of the ranges, among other things, so it runs only when asked.</p>{{end}}
 {{if $d.DoctorWhy}}<p class="alert">{{$d.DoctorWhy}}</p>{{end}}
 <div class="rows">
 {{range $d.Doctor.Checks}}<div class="row check">

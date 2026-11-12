@@ -385,6 +385,7 @@ func (p *Page) clusters(v *view) {
 }
 
 type boxData struct {
+	Checked   bool // the health check was asked for and run
 	Doctor    doctor.Report
 	DoctorWhy string
 	Firewall  api.Firewall
@@ -409,8 +410,13 @@ func (p *Page) box(v *view) {
 		p.fail(v.w, v.r, statusOf(err), err.Error())
 		return
 	}
-	if err := v.c.get("/api/v1/box/doctor", &d.Doctor); err != nil {
-		d.DoctorWhy = err.Error()
+	// The health check test-binds the free ports of the ranges: it runs
+	// only when asked for, not on every look at the box.
+	if v.r.URL.Query().Get("check") == "1" {
+		d.Checked = true
+		if err := v.c.get("/api/v1/box/doctor", &d.Doctor); err != nil {
+			d.DoctorWhy = err.Error()
+		}
 	}
 	d.Servers = il.Instances
 	for _, s := range il.Instances {

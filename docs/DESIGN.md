@@ -607,6 +607,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   description from the game yet, so no presets), the Steam runtime files,
   whether players can reach the box from outside, and a budget for all
   game servers together.
+- **Health check on demand.** The Box screen runs the health check
+  (`GET /api/v1/box/doctor`) only when asked, because it test-binds every
+  free port of the ranges.
 - **Fonts.** The system's own fonts: a narrow sans-serif for headings, a
   plain one for text, a monospace for numbers and logs. No font files are
   shipped. Fonts under an open licence can be added later as `.woff2`

@@ -366,7 +366,7 @@ func (s *site) checkPage(path, who, csrf string, secrets ...string) string {
 
 // screens are every screen of the page for two servers.
 func screens() []string {
-	out := []string{"/", "/servers", "/builds", "/clusters", "/box", "/audit"}
+	out := []string{"/", "/servers", "/builds", "/clusters", "/box", "/box?check=1", "/audit"}
 	for _, n := range []string{"alpha", "beta"} {
 		b := "/servers/" + n
 		out = append(out, b, b+"/settings", b+"/log", b+"/log?source=console", b+"/players", b+"/backups", b+"/schedule")
@@ -510,6 +510,11 @@ func TestEveryScreen(t *testing.T) {
 	}
 	if !strings.Contains(admin["/box"], "sudo ufw allow") {
 		t.Error("firewall commands")
+	}
+	// The health check, which test-binds ports, runs only when asked.
+	if strings.Contains(rd["/box"], "game_ports") || !strings.Contains(rd["/box"], "Run the health check") ||
+		!strings.Contains(rd["/box?check=1"], "game_ports") || !strings.Contains(rd["/box?check=1"], "Run again") {
+		t.Error("the health check")
 	}
 
 	// Live updates: the event streams each screen opens.
