@@ -1,21 +1,19 @@
 // Command esm is the Echoes Server Manager: it installs, runs, updates and
 // watches Echoes of Durinn dedicated servers on one box.
 //
-// Only the version verb exists so far; the service and the other verbs follow.
+// "esm serve" runs the service; every other verb is a thin client of its
+// HTTP API (see esm help).
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/cli"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] != "version" && os.Args[1] != "--version" {
-		fmt.Fprintf(os.Stderr, "esm: unknown command %q (only \"version\" is available so far)\n", os.Args[1])
-		os.Exit(1)
-	}
-	fmt.Println("esm", version)
+	os.Exit(cli.Main(os.Args[1:], os.Stdout, os.Stderr, version))
 }
