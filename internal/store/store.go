@@ -256,6 +256,21 @@ func (s *Store) Rename(oldRel, newRel string) error {
 	return nil
 }
 
+// Chmod changes the permission bits of a file (on Windows only the
+// read-only attribute follows the owner write bit).
+func (s *Store) Chmod(rel string, perm fs.FileMode) error {
+	p, err := clean(rel)
+	if err != nil {
+		return err
+	}
+	f, err := s.root.OpenFile(p, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Chmod(perm)
+}
+
 // Open opens rel for reading.
 func (s *Store) Open(rel string) (*os.File, error) {
 	p, err := clean(rel)

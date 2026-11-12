@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 )
 
 func TestMain(m *testing.M) { os.Exit(Run(m)) }
@@ -30,7 +32,7 @@ func TestMakeBuildManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var m Manifest
+	var m builds.Manifest
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,7 @@ func TestMakeBuildManifest(t *testing.T) {
 
 	only := MakeBuild(t, parent, BuildOptions{Version: "only", ThisOSOnly: true})
 	b, _ = os.ReadFile(filepath.Join(only, "manifest.json"))
-	m = Manifest{}
+	m = builds.Manifest{}
 	json.Unmarshal(b, &m)
 	if len(m.Executables) != 1 || m.Executables[runtime.GOOS] == "" {
 		t.Fatalf("ThisOSOnly executables %v", m.Executables)

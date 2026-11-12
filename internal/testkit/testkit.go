@@ -23,6 +23,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 )
 
 // FakeServerEnv names a prebuilt fake server binary to use instead of
@@ -100,15 +102,6 @@ func Run(m *testing.M) int {
 	return code
 }
 
-// Manifest is the manifest.json schema of a build folder.
-type Manifest struct {
-	Version     string            `json:"version"`
-	Commit      string            `json:"commit"`
-	Channel     string            `json:"channel"`
-	Executables map[string]string `json:"executables"`
-	Files       map[string]string `json:"files"`
-}
-
 // Executable paths inside a build made by MakeBuild.
 const (
 	LinuxExe   = "linux/esm-fakeserver"
@@ -146,7 +139,7 @@ func MakeBuild(t testing.TB, parent string, o BuildOptions) string {
 		t.Fatal(err)
 	}
 	fake := FakeServer(t)
-	m := Manifest{Version: o.Version, Commit: o.Commit, Channel: o.Channel,
+	m := builds.Manifest{Version: o.Version, Commit: o.Commit, Channel: o.Channel,
 		Executables: map[string]string{}, Files: map[string]string{}}
 	for goos, rel := range map[string]string{"linux": LinuxExe, "windows": WindowsExe} {
 		if goos != runtime.GOOS && o.ThisOSOnly {
