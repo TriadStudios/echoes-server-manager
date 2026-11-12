@@ -160,12 +160,16 @@ func (m *Manager) watch(in *rt, r *run, w *watchState) {
 	t := time.NewTicker(m.opts.WatchInterval)
 	defer t.Stop()
 	ready := false
-	for {
-		select {
-		case <-m.quit:
-			r.finish(ErrClosed)
-			return
-		case <-t.C:
+	for first := true; ; first = false {
+		// The first check runs at once, so an adopted server that is
+		// already ready shows as running without waiting a whole interval.
+		if !first {
+			select {
+			case <-m.quit:
+				r.finish(ErrClosed)
+				return
+			case <-t.C:
+			}
 		}
 		if m.currentGen(in) != r.gen {
 			return

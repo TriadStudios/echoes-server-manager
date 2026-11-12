@@ -122,7 +122,7 @@ func describeStatus(st instances.Status) string {
 	if extra != "" {
 		s += " (" + extra + ")"
 	}
-	if st.Reason != "" && st.State != instances.Running {
+	if st.Reason != "" && st.Reason != string(st.State) && st.State != instances.Running {
 		s += ": " + st.Reason
 	}
 	return s
