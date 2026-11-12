@@ -118,6 +118,8 @@ func waitReady(t *testing.T, data string) gameserver.Status {
 		st = s
 		return err == nil && s.State == gameserver.StateReady
 	}, "fake never reported ready")
+	// The server listens on loopback only, and so does this test.
+	testkit.CheckLoopback(t, st.PID, os.Getpid())
 	return st
 }
 
@@ -431,5 +433,38 @@ func TestFakeUnready(t *testing.T) {
 	testkit.WriteControl(r.data, testkit.ControlStop)
 	if code := r.wait(t, 10*time.Second); code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// The fake binds loopback only: 127.0.0.1 without -MULTIHOME, and any
+// address that is not loopback is refused before anything is bound.
+func TestFakeBindsLoopbackOnly(t *testing.T) {
+	for host, want := range map[string]string{"": "127.0.0.1", "127.0.0.1": "127.0.0.1", "::1": "::1", "127.0.0.2": "127.0.0.2"} {
+		o, err := buildOptions("", map[string]string{"MULTIHOME": host})
+		if err != nil || o.multihome != want {
+			t.Errorf("-MULTIHOME=%q: %q %v, want %q", host, o.multihome, err, want)
+		}
+	}
+	for _, host := range []string{"0.0.0.0", "::", "192.0.2.10", "example.com"} {
+		if _, err := buildOptions("", map[string]string{"MULTIHOME": host}); err == nil || !strings.Contains(err.Error(), "loopback addresses only") {
+			t.Errorf("-MULTIHOME=%q accepted: %v", host, err)
+		}
+	}
+	// Without -MULTIHOME it runs and answers on 127.0.0.1.
+	data := filepath.Join(t.TempDir(), "data")
+	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{MaxPlayers: 8, ServerName: "T", WorldName: "w", DataDir: data})
+	st := waitReady(t, r.data)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
+		t.Fatalf("query port on 127.0.0.1: %v", err)
+	}
+	// An address that is not loopback stops it with exit code 2. (Were the
+	// refusal gone, binding this documentation address would fail anyway.)
+	out, err := exec.Command(testkit.FakeServer(t), gameserver.Launch{BindIP: "192.0.2.10", MaxPlayers: 8, ServerName: "T", WorldName: "w",
+		DataDir: filepath.Join(t.TempDir(), "data")}.Args()...).CombinedOutput()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 2 || !strings.Contains(string(out), "-MULTIHOME=192.0.2.10: the fake server binds loopback addresses only") {
+		t.Fatalf("-MULTIHOME=192.0.2.10: %v\n%s", err, out)
 	}
 }

@@ -17,6 +17,11 @@
 //	-FakeFailStart         exit with code 3 at once
 //	-FakeExitCode=N        exit code used for crashes (default 1)
 //
+// Unlike a real server, the fake binds loopback addresses only: 127.0.0.1
+// without -MULTIHOME, and any -MULTIHOME that is not a loopback address is
+// refused (exit code 2), so no test ever opens a listener a desktop
+// firewall would ask about.
+//
 // The same switches may be set in fake.json next to the executable (for
 // example {"FakeFailStart": true}), so a whole build can be made broken.
 // Command-line values win over fake.json.
@@ -58,6 +63,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 )
 
 // Test-only request file names in <data>/control/.
@@ -215,6 +221,15 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	if o.secrets, err = readSecrets(kv); err != nil {
 		return o, err
 	}
+	// Unlike a real server, which binds all interfaces without -MULTIHOME,
+	// the fake binds loopback only: tests must never make a desktop
+	// firewall ask about a listener.
+	if o.multihome == "" {
+		o.multihome = "127.0.0.1"
+	}
+	if !netbind.IsLoopback(o.multihome) {
+		return o, fmt.Errorf("-MULTIHOME=%s: the fake server binds loopback addresses only", o.multihome)
+	}
 	if o.worldName == "" {
 		o.worldName = "world"
 	}
@@ -317,9 +332,6 @@ func run(args []string) int {
 	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion(),
 		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != ""}
 	host := o.multihome
-	if host == "" {
-		host = "0.0.0.0"
-	}
 	s.gameLn, err = net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(o.port)))
 	if err != nil {
 		s.logf("Cannot bind game port: %v", err)
