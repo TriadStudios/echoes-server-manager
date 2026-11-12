@@ -119,3 +119,19 @@ func TestRecentLimitAndConcurrency(t *testing.T) {
 		t.Fatal("limit 0 should return nothing")
 	}
 }
+
+func TestScrubPasswordSwitches(t *testing.T) {
+	cases := map[string]string{
+		"systemd-run failed: -ServerPassword=hunter22 -Port=7777":  "systemd-run failed: -ServerPassword=******** -Port=7777",
+		`argv ["-AdminPassword=s3cret!" "-log"]`:                   `argv ["-AdminPassword=********" "-log"]`,
+		"url?password=abc&x=1":                                     "url?password=********&x=1",
+		"rules: value of AdminPassword must be printable":          "rules: value of AdminPassword must be printable",
+		"-serverpassword=lower, -ServerName=keep":                  "-serverpassword=********, -ServerName=keep",
+		"token esm_" + strings.Repeat("Ab3_-", 4) + " and nothing": "token esm_******** and nothing",
+	}
+	for in, want := range cases {
+		if got := Scrub(in); got != want {
+			t.Errorf("Scrub(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

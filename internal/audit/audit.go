@@ -75,11 +75,17 @@ func (l *Log) SetNotify(fn func(Entry)) {
 	l.mu.Unlock()
 }
 
-var secretLike = regexp.MustCompile(`esm_[A-Za-z0-9_-]{16,}`)
+var (
+	secretLike   = regexp.MustCompile(`esm_[A-Za-z0-9_-]{16,}`)
+	passwordLike = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*password[A-Za-z0-9_]*=)[^\s"'&,;]+`)
+)
 
-// Scrub replaces anything that looks like an ESM token with a mask.
+// Scrub replaces anything that looks like an ESM token, or the value of a
+// password switch or key=value pair (such as -ServerPassword=...), with a
+// mask.
 func Scrub(s string) string {
-	return secretLike.ReplaceAllString(s, "esm_********")
+	s = secretLike.ReplaceAllString(s, "esm_********")
+	return passwordLike.ReplaceAllString(s, "${1}********")
 }
 
 // Append writes e as one line. A zero Time is set to now.
