@@ -1,10 +1,12 @@
 // Package doctor runs read-only checks of an ESM box: the root folder, the
 // config, the exposure rule, free ports, disk space, the supervisor, the
-// socket and the secrets folder. It changes nothing.
+// socket, the secrets folder and how instances hand their servers the
+// passwords. It changes nothing.
 package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
 
@@ -107,8 +110,45 @@ func Run(o Options) Report {
 	}
 	if rootOK {
 		checkSecrets(&r, o.Root)
+		checkSecretDelivery(&r, o.Root)
 	}
 	return r
+}
+
+// checkSecretDelivery warns about every instance that passes its passwords
+// on the server command line.
+func checkSecretDelivery(r *Report, root string) {
+	entries, err := os.ReadDir(filepath.Join(root, "instances"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		r.add("secret_delivery", Warn, "cannot read the instances folder: %v", err)
+		return
+	}
+	var unsafe []string
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(root, "instances", e.Name(), "instance.json"))
+		if err != nil {
+			continue
+		}
+		var in struct {
+			SecretDelivery string `json:"secret_delivery"`
+		}
+		if json.Unmarshal(b, &in) == nil && in.SecretDelivery == gameserver.DeliveryCommandLine {
+			unsafe = append(unsafe, e.Name())
+		}
+	}
+	if len(unsafe) == 0 {
+		r.add("secret_delivery", OK, "no instance passes passwords on the server command line")
+		return
+	}
+	r.add("secret_delivery", Warn, "UNSAFE on a shared box: %s (%s) with secret_delivery command_line: passwords are on the server command line, where every account on this box can read them from the process list, and the server writes them into its log",
+		plural(len(unsafe), "instance", "instances"), strings.Join(unsafe, ", "))
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }
 
 func checkRoot(r *Report, root string) bool {

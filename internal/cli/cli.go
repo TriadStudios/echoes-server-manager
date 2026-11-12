@@ -72,6 +72,7 @@ Instances:
   create <name> [--build V] [--channel live|test] [--map M] [--world W]
          [--display-name N] [--cluster C] [--game-port P] [--query-port P]
          [--bind IP] [--max-players N] [--set Key=Value ...] [--arg -X=Y ...]
+         [--secret-delivery file|command_line]
   start|stop|restart <name>
   logs <name> [-n N] [-f] [--console]
   update <name> --to <version>

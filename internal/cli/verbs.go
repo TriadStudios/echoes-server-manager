@@ -135,6 +135,18 @@ func cond(ok bool, s string) string {
 	return ""
 }
 
+// warn appends the warnings of an instance to a result line, in words.
+func warn(line string, warnings []string) string {
+	for _, w := range warnings {
+		line += "; warning: " + instances.WarningText(w)
+	}
+	return line
+}
+
+// unsafeNote is the short mark, in lists, of an instance that passes its
+// passwords on the server command line.
+const unsafeNote = "UNSAFE: passwords on the command line"
+
 func (e *env) list(args []string) error {
 	fs := e.flags("list")
 	pos, err := parse(fs, args)
@@ -157,7 +169,8 @@ func (e *env) list(args []string) error {
 	}
 	parts := make([]string, len(out.Instances))
 	for i, v := range out.Instances {
-		parts[i] = fmt.Sprintf("%s %s (%d/%d, build %s)", v.Name, v.Status.State, v.Ports.Game, v.Ports.Query, v.Build)
+		note := cond(v.OutputHidden(), ", "+unsafeNote)
+		parts[i] = fmt.Sprintf("%s %s (%d/%d, build %s%s)", v.Name, v.Status.State, v.Ports.Game, v.Ports.Query, v.Build, note)
 	}
 	return e.result(out, plural(len(out.Instances), "instance", "instances")+": "+strings.Join(parts, ", "))
 }
@@ -185,13 +198,17 @@ func (e *env) status(args []string) error {
 		line := fmt.Sprintf("esm %s at %s: %s supervisor (%s), %s (%d running), %s, listening on %s",
 			b.Version, b.Root, b.Supervisor, limits, plural(b.Instances, "instance", "instances"), b.Running,
 			plural(b.Builds, "build", "builds"), b.Listen)
+		if n := len(b.SecretsOnCommandLine); n > 0 {
+			line += fmt.Sprintf("; %s (%s)", unsafeNote, strings.Join(b.SecretsOnCommandLine, ", "))
+		}
 		return e.result(b, line)
 	case 1:
-		var st instances.Status
-		if err := c.do(e.ctx, "GET", "/api/v1/instances/"+url.PathEscape(pos[0])+"/status", nil, &st); err != nil {
+		// The instance, not only its status: the warnings belong to it.
+		var v instances.View
+		if err := c.do(e.ctx, "GET", "/api/v1/instances/"+url.PathEscape(pos[0]), nil, &v); err != nil {
 			return err
 		}
-		return e.result(st, describeStatus(st))
+		return e.result(v, warn(describeStatus(v.Status), v.Warnings))
 	}
 	return usageErr("status takes at most one instance name")
 }
@@ -208,6 +225,7 @@ func (e *env) create(args []string) error {
 		req                         instances.CreateRequest
 		channel, mapName, world     string
 		display, cluster, bind      string
+		delivery                    string
 		gamePort, queryPort, maxPly int
 		sets, extra                 multi
 	)
@@ -223,6 +241,7 @@ func (e *env) create(args []string) error {
 	fs.IntVar(&maxPly, "max-players", 0, "player limit")
 	fs.Var(&sets, "set", "rule Key=Value (repeatable)")
 	fs.Var(&extra, "arg", "extra server argument like -X=Y (repeatable)")
+	fs.StringVar(&delivery, "secret-delivery", "", "how the server gets its passwords: file (default) or command_line (unsafe on a shared box)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -245,6 +264,7 @@ func (e *env) create(args []string) error {
 	req.DisplayName = str("display-name", display)
 	req.Cluster = str("cluster", cluster)
 	req.BindIP = str("bind", bind)
+	req.SecretDelivery = str("secret-delivery", delivery)
 	if given["max-players"] {
 		req.MaxPlayers = &maxPly
 	}
@@ -275,10 +295,7 @@ func (e *env) create(args []string) error {
 		return err
 	}
 	line := fmt.Sprintf("created %s: build %s (%s), game port %d, query port %d", out.Name, out.Build, out.Channel, out.Ports.Game, out.Ports.Query)
-	for _, w := range out.Warnings {
-		line += "; warning: " + w
-	}
-	return e.result(out, line)
+	return e.result(out, warn(line, out.Warnings))
 }
 
 func (e *env) lifecycle(verb string, args []string) error {

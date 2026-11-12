@@ -122,3 +122,103 @@ func TestCLIOverSocket(t *testing.T) {
 		t.Fatalf("read token over TCP: %d", st)
 	}
 }
+
+// The command line says UNSAFE wherever it shows an instance that passes
+// its passwords on the server command line: create, list, status, the box
+// line and doctor. A read token gets no log of such an instance.
+func TestCLIShowsUnsafeDelivery(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	const long = "UNSAFE on a shared box: passwords are on the server command line"
+	const short = "UNSAFE: passwords on the command line"
+
+	code, out, errOut := h.runCLI("create", "safe", "--bind", "127.0.0.1", "--set", "FakeReadyDelay=100ms")
+	if code != 0 || strings.Contains(out, "UNSAFE") || strings.Contains(out, "warning") {
+		t.Fatalf("create with the default delivery: %d %q %q", code, out, errOut)
+	}
+	code, out, errOut = h.runCLI("create", "risky", "--bind", "127.0.0.1", "--set", "FakeReadyDelay=100ms", "--secret-delivery", "command_line")
+	if code != 0 || !strings.Contains(oneLine(t, "create", out), "; warning: "+long) {
+		t.Fatalf("create with command-line delivery: %d %q %q", code, out, errOut)
+	}
+	code, out, errOut = h.runCLI("create", "odd", "--bind", "127.0.0.1", "--secret-delivery", "environment")
+	if code != 1 || out != "" || !strings.Contains(errOut, "secret_delivery") {
+		t.Fatalf("create with an unknown delivery: %d %q %q", code, out, errOut)
+	}
+
+	code, out, _ = h.runCLI("list")
+	line := oneLine(t, "list", out)
+	if code != 0 || !strings.Contains(line, "risky stopped (") || strings.Count(line, short) != 1 ||
+		!strings.Contains(line[strings.Index(line, "risky"):strings.Index(line, "safe")], short) {
+		t.Fatalf("list: %d %q", code, out)
+	}
+	code, out, _ = h.runCLI("--json", "list")
+	var list api.InstanceList
+	if err := json.Unmarshal([]byte(oneLine(t, "list --json", out)), &list); code != 0 || err != nil || len(list.Instances) != 2 ||
+		len(list.Instances[0].Warnings) != 1 || list.Instances[0].Warnings[0] != "secrets_on_command_line" || len(list.Instances[1].Warnings) != 0 ||
+		list.Instances[0].SecretDelivery != "command_line" || list.Instances[1].SecretDelivery != "file" {
+		t.Fatalf("list --json: %d %v %q", code, err, out)
+	}
+	code, out, _ = h.runCLI("status", "risky")
+	if code != 0 || !strings.HasPrefix(oneLine(t, "status", out), "risky stopped") || !strings.Contains(out, "; warning: "+long) {
+		t.Fatalf("status of the unsafe instance: %d %q", code, out)
+	}
+	code, out, _ = h.runCLI("status", "safe")
+	if code != 0 || !strings.HasPrefix(oneLine(t, "status", out), "safe stopped") || strings.Contains(out, "UNSAFE") {
+		t.Fatalf("status of the other instance: %d %q", code, out)
+	}
+	code, out, _ = h.runCLI("--json", "status", "risky")
+	var view struct {
+		Name     string   `json:"name"`
+		Warnings []string `json:"warnings"`
+		Status   struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(oneLine(t, "status --json", out)), &view); code != 0 || err != nil || view.Name != "risky" ||
+		view.Status.State != "stopped" || len(view.Warnings) != 1 {
+		t.Fatalf("status --json: %d %v %q", code, err, out)
+	}
+	code, out, _ = h.runCLI("status")
+	if code != 0 || !strings.Contains(oneLine(t, "box status", out), "; "+short+" (risky)") {
+		t.Fatalf("box status: %d %q", code, out)
+	}
+	_, out, _ = h.runCLI("doctor")
+	if line := oneLine(t, "doctor", out); !strings.Contains(line, "; secret_delivery: UNSAFE on a shared box: 1 instance (risky)") ||
+		!strings.Contains(line, "; service secret_delivery: UNSAFE on a shared box: 1 instance (risky)") {
+		t.Fatalf("doctor: %q", out)
+	}
+
+	// Started, the unsafe instance shows the warning with its state, and a
+	// read token is refused its log.
+	code, out, errOut = h.runCLI("start", "risky")
+	if code != 0 || !strings.HasPrefix(oneLine(t, "start", out), "risky running") {
+		t.Fatalf("start: %d %q %q", code, out, errOut)
+	}
+	code, out, _ = h.runCLI("logs", "risky", "-n", "3")
+	if code != 0 || strings.Count(out, "\n") != 3 {
+		t.Fatalf("logs over the socket: %d %q", code, out)
+	}
+	code, out, _ = h.runCLI("token", "create", "--role", "read")
+	if code != 0 {
+		t.Fatalf("token create: %d %q", code, out)
+	}
+	tok := strings.Fields(out)[0]
+	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "logs", "risky")
+	if code != 1 || out != "" || !strings.Contains(errOut, "hidden from the read role") {
+		t.Fatalf("logs with a read token: %d %q %q", code, out, errOut)
+	}
+	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "--json", "logs", "risky", "--console")
+	var eb api.ErrorBody
+	if code != 1 || json.Unmarshal([]byte(oneLine(t, "--json error", out)), &eb) != nil || eb.Error.Code != "hidden_unsafe_secrets" {
+		t.Fatalf("logs --json with a read token: %d %q %q", code, out, errOut)
+	}
+	code, out, _ = h.runCLI("--url", h.base, "--token", tok, "logs", "safe")
+	if code != 0 {
+		t.Fatalf("logs of the other instance with a read token: %d %q", code, out)
+	}
+	code, out, errOut = h.runCLI("stop", "risky")
+	if code != 0 || !strings.HasPrefix(oneLine(t, "stop", out), "risky stopped") {
+		t.Fatalf("stop: %d %q %q", code, out, errOut)
+	}
+}

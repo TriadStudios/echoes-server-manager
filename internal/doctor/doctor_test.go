@@ -64,3 +64,45 @@ func TestRunReadOnly(t *testing.T) {
 		t.Fatalf("doctor changed the root: %v", entries)
 	}
 }
+
+// Instances that pass their passwords on the server command line are
+// reported, by name.
+func TestSecretDeliveryCheck(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if c := find(Run(Options{Root: root, PortHost: "127.0.0.1"}), "secret_delivery"); c.Status != OK {
+		t.Fatalf("a root without instances: %+v", c)
+	}
+	for name, body := range map[string]string{
+		"alpha": `{"name":"alpha","secret_delivery":"file"}`,
+		"beta":  `{"name":"beta","secret_delivery":"command_line"}`,
+		"gamma": `{"name":"gamma","secret_delivery":"command_line"}`,
+		"older": `{"name":"older"}`,
+		"odd":   `not json`,
+	} {
+		dir := filepath.Join(root, "instances", name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "instance.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "instances", "empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := Run(Options{Root: root, PortHost: "127.0.0.1"})
+	c := find(r, "secret_delivery")
+	if c.Status != Warn || !strings.Contains(c.Message, "UNSAFE on a shared box: 2 instances (beta, gamma)") ||
+		strings.Contains(c.Message, "alpha") || strings.Contains(c.Message, "older") || r.Warnings == 0 {
+		t.Fatalf("with two unsafe instances: %+v", c)
+	}
+	if err := os.WriteFile(filepath.Join(root, "instances", "gamma", "instance.json"), []byte(`{"secret_delivery":"file"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c := find(Run(Options{Root: root, PortHost: "127.0.0.1"}), "secret_delivery"); c.Status != Warn || !strings.Contains(c.Message, "1 instance (beta)") {
+		t.Fatalf("with one unsafe instance: %+v", c)
+	}
+}
