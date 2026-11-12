@@ -207,11 +207,15 @@ func (m *Manager) Logs(name, source string, lines int, full bool) ([]string, err
 		return nil, err
 	}
 	if !full {
-		// The instance may have been set to command-line delivery, and
-		// started that way, while the file was read.
+		// While the file was read the instance may have been set to
+		// command-line delivery and started that way, or deleted and made
+		// anew under the same name.
 		in.mu.Lock()
-		changed := in.cfg.OutputHidden() || in.hiddenGen != gen
+		gone, changed := in.deleted, in.cfg.OutputHidden() || in.hiddenGen != gen
 		in.mu.Unlock()
+		if gone {
+			return nil, fault.NotFoundf("instance %q not found", name)
+		}
 		if changed {
 			return nil, ErrOutputHidden
 		}
