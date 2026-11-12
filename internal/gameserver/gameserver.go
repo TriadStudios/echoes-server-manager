@@ -43,36 +43,45 @@ const Mask = "********"
 
 // Launch is everything needed to build a server command line.
 type Launch struct {
-	Map            string // empty means DefaultMap
-	GamePort       int
-	QueryPort      int
-	BindIP         string // empty means all interfaces (no -MULTIHOME)
-	MaxPlayers     int
-	ServerName     string
-	WorldName      string
-	Rules          map[string]string // each becomes -Key=Value, sorted by key
-	DataDir        string            // absolute path of the instance data folder
-	ServerPassword string            // optional
-	AdminPassword  string            // optional
-	ExtraArgs      []string          // appended as-is, one argv entry each
+	Map        string // empty means DefaultMap
+	GamePort   int
+	QueryPort  int
+	BindIP     string // empty means all interfaces (no -MULTIHOME)
+	MaxPlayers int
+	ServerName string
+	WorldName  string
+	Rules      map[string]string // each becomes -Key=Value, sorted by key
+	DataDir    string            // absolute path of the instance data folder
+	// Delivery is how the passwords reach the server: DeliveryFile or
+	// DeliveryCommandLine. Empty means SecretDelivery.
+	Delivery string
+	// SecretsFile is the absolute path of the secrets file. With
+	// DeliveryFile the server is pointed at it and gets no password on its
+	// command line.
+	SecretsFile string
+	// Secrets are the passwords. They are put on the command line with
+	// DeliveryCommandLine, and never otherwise.
+	Secrets   Secrets
+	ExtraArgs []string // appended as-is, one argv entry each
 }
 
 // Args builds the argument list (without the executable). It never builds a
-// shell string. masked is the same list with password values replaced, for
-// logs. Order: map, -Port, -QueryPort, -MULTIHOME (when BindIP is set),
-// -MaxPlayers, -ServerName, -WorldName, rules sorted by key, -ServerPassword
-// and -AdminPassword (when set), -log, the data folder switch, extra args.
+// shell string. Order: map, -Port, -QueryPort, -MULTIHOME (when BindIP is
+// set), -MaxPlayers, -ServerName, -WorldName, rules sorted by key, the
+// passwords (the secrets file switch; or, with DeliveryCommandLine,
+// -ServerPassword and -AdminPassword when set), -log, the data folder
+// switch, extra args.
 // UNCONFIRMED: every switch name and the positional map argument.
-func (l Launch) Args() (argv, masked []string) {
+func (l Launch) Args() []string {
 	m := l.Map
 	if m == "" {
 		m = DefaultMap
 	}
-	argv = append(argv,
+	argv := []string{
 		m,
-		"-Port="+strconv.Itoa(l.GamePort),
-		"-QueryPort="+strconv.Itoa(l.QueryPort),
-	)
+		"-Port=" + strconv.Itoa(l.GamePort),
+		"-QueryPort=" + strconv.Itoa(l.QueryPort),
+	}
 	if l.BindIP != "" {
 		argv = append(argv, "-MULTIHOME="+l.BindIP)
 	}
@@ -89,15 +98,18 @@ func (l Launch) Args() (argv, masked []string) {
 	for _, k := range keys {
 		argv = append(argv, "-"+k+"="+l.Rules[k])
 	}
-	if l.ServerPassword != "" {
-		argv = append(argv, "-ServerPassword="+l.ServerPassword)
-	}
-	if l.AdminPassword != "" {
-		argv = append(argv, "-AdminPassword="+l.AdminPassword)
+	if l.Delivery == DeliveryCommandLine {
+		if l.Secrets.ServerPassword != "" {
+			argv = append(argv, ServerPasswordSwitch+"="+l.Secrets.ServerPassword)
+		}
+		if l.Secrets.AdminPassword != "" {
+			argv = append(argv, AdminPasswordSwitch+"="+l.Secrets.AdminPassword)
+		}
+	} else if l.SecretsFile != "" {
+		argv = append(argv, SecretsFileSwitch+"="+l.SecretsFile)
 	}
 	argv = append(argv, "-log", DataDirSwitch+"="+l.DataDir)
-	argv = append(argv, l.ExtraArgs...)
-	return argv, MaskArgs(argv)
+	return append(argv, l.ExtraArgs...)
 }
 
 // MaskArgs returns a copy of argv with the value of every -Key=Value whose
@@ -139,13 +151,17 @@ func SecretValues(argv []string) []string {
 
 // reserved are the switches ESM sets itself; rules and extra args must not
 // repeat them.
-var reserved = []string{"port", "queryport", "multihome", "maxplayers", "servername",
-	"worldname", "serverpassword", "adminpassword", "log", strings.ToLower(strings.TrimPrefix(DataDirSwitch, "-"))}
+var reserved = []string{"port", "queryport", "multihome", "maxplayers", "servername", "worldname", "log",
+	switchName(ServerPasswordSwitch), switchName(AdminPasswordSwitch), switchName(SecretsFileSwitch), switchName(DataDirSwitch)}
+
+// switchName is a switch name as it is compared: lower case, no dashes in
+// front.
+func switchName(name string) string { return strings.ToLower(strings.TrimLeft(name, "-")) }
 
 // IsReservedSwitch reports whether key (without the leading "-") names a
 // switch ESM sets itself.
 func IsReservedSwitch(key string) bool {
-	return slices.Contains(reserved, strings.ToLower(strings.TrimLeft(key, "-")))
+	return slices.Contains(reserved, switchName(key))
 }
 
 // ReadyMarker is the fixed text that starts the server log line saying the
@@ -218,6 +234,10 @@ type Status struct {
 	Players  int       `json:"players"`
 	Version  string    `json:"version,omitempty"`
 	LastSave time.Time `json:"last_save,omitzero"`
+	// ServerPasswordSet and AdminPasswordSet say which passwords the server
+	// took, never what they are.
+	ServerPasswordSet bool `json:"server_password_set"`
+	AdminPasswordSet  bool `json:"admin_password_set"`
 }
 
 // ReadStatus reads the status file of a data folder.

@@ -46,7 +46,7 @@ func (r *rig) dataDir(name string) string {
 func (r *rig) spec(name string, extra ...string) Spec {
 	r.t.Helper()
 	data := r.dataDir(name)
-	argv, _ := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 4, ServerName: name, WorldName: "w", DataDir: data}.Args()
+	argv := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 4, ServerName: name, WorldName: "w", DataDir: data}.Args()
 	argv = append(argv, "-FakeReadyDelay=100ms", "-FakeSaveInterval=200ms")
 	argv = append(argv, extra...)
 	dir, _ := r.st.Abs("instances/" + name)
@@ -315,7 +315,7 @@ func TestProcessRefusesForeignPID(t *testing.T) {
 	r := newRig(t)
 	data := r.dataDir("foreign")
 	fake := testkit.FakeServer(t)
-	argv, _ := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 1, ServerName: "f", WorldName: "w", DataDir: data}.Args()
+	argv := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 1, ServerName: "f", WorldName: "w", DataDir: data}.Args()
 	cmd := exec.Command(fake, append(argv, "-FakeReadyDelay=50ms")...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

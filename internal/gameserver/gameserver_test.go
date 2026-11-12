@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-func TestLaunchArgsGolden(t *testing.T) {
-	l := Launch{
+func goldenLaunch() Launch {
+	return Launch{
 		Map:        "TestMap",
 		GamePort:   7777,
 		QueryPort:  27015,
@@ -24,16 +24,19 @@ func TestLaunchArgsGolden(t *testing.T) {
 			"PvP":            "true",
 			"DayLength":      "3600",
 			"BuildingDecay":  "false",
-			"RulePassword":   "hunter22",
 			"AnotherSetting": "a b c",
 		},
-		DataDir:        "/srv/durinn/instances/alpha/data",
-		ServerPassword: "join-secret",
-		AdminPassword:  "admin-secret",
-		ExtraArgs:      []string{"-NoSteam", "-Extra=1 2", "-ExtraPassword=x"},
+		DataDir:     "/srv/durinn/instances/alpha/data",
+		SecretsFile: "/srv/durinn/instances/alpha/run/server-secrets.json",
+		Secrets:     Secrets{ServerPassword: "join-secret", AdminPassword: "admin-secret"},
+		ExtraArgs:   []string{"-NoSteam", "-Extra=1 2"},
 	}
-	argv, masked := l.Args()
-	wantArgv := []string{
+}
+
+// By default the passwords are not on the command line at all: the server
+// is pointed at the secrets file with one switch.
+func TestLaunchArgsGolden(t *testing.T) {
+	want := []string{
 		"TestMap",
 		"-Port=7777",
 		"-QueryPort=27015",
@@ -45,59 +48,74 @@ func TestLaunchArgsGolden(t *testing.T) {
 		"-BuildingDecay=false",
 		"-DayLength=3600",
 		"-PvP=true",
-		"-RulePassword=hunter22",
+		"-SecretsFile=/srv/durinn/instances/alpha/run/server-secrets.json",
+		"-log",
+		"-SavedDir=/srv/durinn/instances/alpha/data",
+		"-NoSteam",
+		"-Extra=1 2",
+	}
+	for _, delivery := range []string{"", DeliveryFile} {
+		l := goldenLaunch()
+		l.Delivery = delivery
+		argv := l.Args()
+		if !slices.Equal(argv, want) {
+			t.Errorf("delivery %q: argv mismatch\n got: %q\nwant: %q", delivery, argv, want)
+		}
+		for _, a := range argv {
+			if strings.Contains(strings.ToLower(a), "password") || strings.Contains(a, "join-secret") || strings.Contains(a, "admin-secret") {
+				t.Errorf("delivery %q: a password or a password switch is on the command line: %q", delivery, a)
+			}
+		}
+	}
+	if SecretDelivery != DeliveryFile {
+		t.Fatalf("the default delivery is %q", SecretDelivery)
+	}
+}
+
+// With command-line delivery the passwords are switches, and the secrets
+// file switch is not given.
+func TestLaunchArgsCommandLine(t *testing.T) {
+	l := goldenLaunch()
+	l.Delivery = DeliveryCommandLine
+	want := []string{
+		"TestMap",
+		"-Port=7777",
+		"-QueryPort=27015",
+		"-MULTIHOME=192.0.2.10",
+		"-MaxPlayers=40",
+		"-ServerName=Echoes Test Server",
+		"-WorldName=main",
+		"-AnotherSetting=a b c",
+		"-BuildingDecay=false",
+		"-DayLength=3600",
+		"-PvP=true",
 		"-ServerPassword=join-secret",
 		"-AdminPassword=admin-secret",
 		"-log",
 		"-SavedDir=/srv/durinn/instances/alpha/data",
 		"-NoSteam",
 		"-Extra=1 2",
-		"-ExtraPassword=x",
 	}
-	wantMasked := []string{
-		"TestMap",
-		"-Port=7777",
-		"-QueryPort=27015",
-		"-MULTIHOME=192.0.2.10",
-		"-MaxPlayers=40",
-		"-ServerName=Echoes Test Server",
-		"-WorldName=main",
-		"-AnotherSetting=a b c",
-		"-BuildingDecay=false",
-		"-DayLength=3600",
-		"-PvP=true",
-		"-RulePassword=********",
-		"-ServerPassword=********",
-		"-AdminPassword=********",
-		"-log",
-		"-SavedDir=/srv/durinn/instances/alpha/data",
-		"-NoSteam",
-		"-Extra=1 2",
-		"-ExtraPassword=********",
+	if argv := l.Args(); !slices.Equal(argv, want) {
+		t.Errorf("argv mismatch\n got: %q\nwant: %q", argv, want)
 	}
-	if !slices.Equal(argv, wantArgv) {
-		t.Errorf("argv mismatch\n got: %q\nwant: %q", argv, wantArgv)
-	}
-	if !slices.Equal(masked, wantMasked) {
-		t.Errorf("masked mismatch\n got: %q\nwant: %q", masked, wantMasked)
-	}
-	for _, a := range masked {
-		if strings.Contains(a, "secret") || strings.Contains(a, "hunter22") {
-			t.Fatalf("secret in masked argv: %q", a)
-		}
+	l.Secrets = Secrets{AdminPassword: "only-admin"}
+	if argv := l.Args(); !slices.Contains(argv, "-AdminPassword=only-admin") || strings.Contains(strings.Join(argv, " "), "-ServerPassword") ||
+		strings.Contains(strings.Join(argv, " "), SecretsFileSwitch) {
+		t.Errorf("argv with only an admin password: %q", argv)
 	}
 }
 
 func TestLaunchArgsMinimal(t *testing.T) {
-	argv, masked := Launch{GamePort: 7778, QueryPort: 27016, MaxPlayers: 10, ServerName: "s", WorldName: "w", DataDir: "D"}.Args()
+	argv := Launch{GamePort: 7778, QueryPort: 27016, MaxPlayers: 10, ServerName: "s", WorldName: "w", DataDir: "D"}.Args()
 	want := []string{"Default", "-Port=7778", "-QueryPort=27016", "-MaxPlayers=10", "-ServerName=s", "-WorldName=w", "-log", "-SavedDir=D"}
-	if !slices.Equal(argv, want) || !slices.Equal(masked, want) {
-		t.Fatalf("got %q / %q", argv, masked)
+	if !slices.Equal(argv, want) {
+		t.Fatalf("got %q", argv)
 	}
 }
 
 func TestReservedSwitches(t *testing.T) {
-	for _, k := range []string{"Port", "-QUERYPORT", "MultiHome", "log", "SavedDir", "ServerPassword"} {
+	for _, k := range []string{"Port", "-QUERYPORT", "MultiHome", "log", "SavedDir", "ServerPassword", "adminpassword", "-SecretsFile", "secretsfile"} {
 		if !IsReservedSwitch(k) {
 			t.Errorf("%q not reserved", k)
 		}
@@ -204,8 +222,8 @@ func TestPoliteStopAndRequestFile(t *testing.T) {
 }
 
 func TestSecretValuesAndHiding(t *testing.T) {
-	argv, _ := Launch{GamePort: 1, QueryPort: 2, MaxPlayers: 3, DataDir: "d",
-		ServerPassword: "open sesame", AdminPassword: "abc"}.Args()
+	argv := Launch{GamePort: 1, QueryPort: 2, MaxPlayers: 3, DataDir: "d", Delivery: DeliveryCommandLine,
+		Secrets: Secrets{ServerPassword: "open sesame", AdminPassword: "abc"}}.Args()
 	argv = append(argv, "-OtherPassword=", "-Note=password")
 	got := SecretValues(argv)
 	if !slices.Equal(got, []string{"open sesame", "abc"}) {

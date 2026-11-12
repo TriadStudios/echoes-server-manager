@@ -78,12 +78,14 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if name == "" {
 		name = cfg.Name
 	}
-	argv, masked := gameserver.Launch{
+	argv := gameserver.Launch{
 		Map: cfg.Map, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query, BindIP: cfg.BindIP,
 		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Rules: cfg.Rules,
-		DataDir: dataAbs, ServerPassword: sec.ServerPassword, AdminPassword: sec.AdminPassword,
+		DataDir: dataAbs, Delivery: gameserver.DeliveryCommandLine,
+		Secrets:   gameserver.Secrets{ServerPassword: sec.ServerPassword, AdminPassword: sec.AdminPassword},
 		ExtraArgs: cfg.ExtraArgs,
 	}.Args()
+	masked := gameserver.MaskArgs(argv)
 	// A status file from an earlier run must not count as ready.
 	if err := m.st.Remove(dataDir(cfg.Name) + "/" + gameserver.StatusFileRel); err != nil {
 		return nil, err

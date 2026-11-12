@@ -24,10 +24,17 @@
 // "ready" (report ready now), "unready" (keep running but stop reporting
 // ready), "cmdline" (print the command line again).
 //
-// Like a real server it prints its whole command line, passwords included,
-// to its log and its output when it starts; ESM has to mask them.
+// Passwords come from the secrets file named by the adapter's switch, or,
+// when that switch is absent, from the adapter's password switches. Both at
+// once is an error: with a secrets file no password belongs on the command
+// line. The status file says which passwords are set, never what they are.
 //
-// The query port answers PING with PONG only once the server is ready.
+// Like a real server it prints its whole command line, with any passwords
+// on it, to its log and its output when it starts.
+//
+// The query port answers PING with PONG only once the server is ready. Only
+// for tests it also says whether a password is the right one: "JOIN <server
+// password>" and "ADMIN <admin password>" are answered with OK or DENIED.
 package main
 
 import (
@@ -65,6 +72,15 @@ const (
 	controlCommandLine = "cmdline"
 )
 
+// Test-only questions on the query port: each is followed by a password and
+// answered with answerOK or answerDenied.
+const (
+	askJoin      = "JOIN "
+	askAdmin     = "ADMIN "
+	answerOK     = "OK"
+	answerDenied = "DENIED"
+)
+
 type options struct {
 	mapName      string
 	port         int
@@ -74,6 +90,7 @@ type options struct {
 	worldName    string
 	maxPlayers   int
 	dataDir      string
+	secrets      gameserver.Secrets
 	saveInterval time.Duration
 	readyDelay   time.Duration
 	crashAfter   time.Duration
@@ -193,6 +210,9 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	if err != nil {
 		return o, err
 	}
+	if o.secrets, err = readSecrets(kv); err != nil {
+		return o, err
+	}
 	if o.worldName == "" {
 		o.worldName = "world"
 	}
@@ -204,6 +224,31 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	}
 	o.dataDir, err = filepath.Abs(o.dataDir)
 	return o, err
+}
+
+// readSecrets takes the passwords from the secrets file when its switch is
+// given, and from the password switches otherwise. A password switch next
+// to the secrets file switch is refused. Errors never repeat a value.
+func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
+	key := func(name string) string { return strings.TrimLeft(name, "-") }
+	path, fromFile := kv[key(gameserver.SecretsFileSwitch)]
+	if !fromFile {
+		return gameserver.Secrets{
+			ServerPassword: kv[key(gameserver.ServerPasswordSwitch)],
+			AdminPassword:  kv[key(gameserver.AdminPasswordSwitch)],
+		}, nil
+	}
+	for k := range kv {
+		if strings.Contains(strings.ToLower(k), "password") {
+			return gameserver.Secrets{}, fmt.Errorf("-%s is not accepted together with %s: with a secrets file no password belongs on the command line",
+				k, gameserver.SecretsFileSwitch)
+		}
+	}
+	s, err := gameserver.ReadSecretsFile(path)
+	if err != nil {
+		return gameserver.Secrets{}, fmt.Errorf("%s: %w", gameserver.SecretsFileSwitch, err)
+	}
+	return s, nil
 }
 
 type server struct {
@@ -264,7 +309,8 @@ func run(args []string) int {
 		s.logf("Failing start on purpose")
 		return 3
 	}
-	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion()}
+	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion(),
+		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != ""}
 	host := o.multihome
 	if host == "" {
 		host = "0.0.0.0"
@@ -398,8 +444,18 @@ func (s *server) answerQueries() {
 		if s.o.noQuery {
 			continue
 		}
-		if string(buf[:n]) == "PING" && s.ready.Load() {
+		msg := string(buf[:n])
+		if msg == "PING" && s.ready.Load() {
 			s.queryLn.WriteTo([]byte("PONG"), addr)
+		}
+		for ask, want := range map[string]string{askJoin: s.o.secrets.ServerPassword, askAdmin: s.o.secrets.AdminPassword} {
+			if given, ok := strings.CutPrefix(msg, ask); ok {
+				answer := answerDenied
+				if given == want {
+					answer = answerOK
+				}
+				s.queryLn.WriteTo([]byte(answer), addr)
+			}
 		}
 	}
 }

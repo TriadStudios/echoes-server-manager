@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+
 	"syscall"
 	"testing"
 	"time"
@@ -22,7 +24,7 @@ func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
 
 func TestParseArgs(t *testing.T) {
 	kv := map[string]string{"FakeReadyDelay": "5s", "FakeNoReady": "true"}
-	argv, _ := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S", WorldName: "W",
+	argv := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S", WorldName: "W",
 		DataDir: "data", Rules: map[string]string{"PvP": "true"}, ExtraArgs: []string{"-FakeReadyDelay=10ms", "-FakeIgnoreStop"}}.Args()
 	m, err := parseArgs(argv, kv)
 	if err != nil {
@@ -51,15 +53,29 @@ type fakeRun struct {
 	done chan error
 }
 
+// The passwords the test fakes are started with.
+var fakeSecrets = gameserver.Secrets{AdminPassword: `s3cret "admin" $1 -X`}
+
 func startFake(t *testing.T, exe string, extra ...string) *fakeRun {
 	t.Helper()
 	return startFakeIn(t, exe, filepath.Join(t.TempDir(), "data"), extra...)
 }
 
+// startFakeIn starts a fake with the adapter's command line, its passwords
+// in a secrets file.
 func startFakeIn(t *testing.T, exe, data string, extra ...string) *fakeRun {
 	t.Helper()
-	argv, _ := gameserver.Launch{GamePort: 0, QueryPort: 0, BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T",
-		WorldName: "w", DataDir: data, AdminPassword: "s3cret-admin"}.Args()
+	l := gameserver.Launch{GamePort: 0, QueryPort: 0, BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T",
+		WorldName: "w", DataDir: data, SecretsFile: filepath.Join(t.TempDir(), gameserver.SecretsFileName), Secrets: fakeSecrets}
+	if err := os.WriteFile(l.SecretsFile, fakeSecrets.File(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return startFakeWith(t, exe, data, l, extra...)
+}
+
+func startFakeWith(t *testing.T, exe, data string, l gameserver.Launch, extra ...string) *fakeRun {
+	t.Helper()
+	argv := l.Args()
 	argv = append(argv, "-FakeSaveInterval=200ms", "-FakeReadyDelay=100ms")
 	argv = append(argv, extra...)
 	cmd := exec.Command(exe, argv...)
@@ -111,6 +127,11 @@ func TestFakeLifecycle(t *testing.T) {
 	if st.PID != r.cmd.Process.Pid || st.Ports.Game == 0 || st.Ports.Query == 0 || st.Ports.Game == st.Ports.Query {
 		t.Fatalf("status %+v", st)
 	}
+	// The passwords came from the secrets file.
+	if st.ServerPasswordSet || !st.AdminPasswordSet {
+		t.Fatalf("status says the wrong passwords are set: %+v", st)
+	}
+	checkPasswords(t, st.Ports.Query, fakeSecrets)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
@@ -148,14 +169,107 @@ func TestFakeLifecycle(t *testing.T) {
 	if !ready || !saved {
 		t.Fatalf("log misses ready or saved lines:\n%s", text)
 	}
-	// Like a real server, the fake prints its whole command line; masking
-	// it is ESM's job.
-	if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-AdminPassword=s3cret-admin -log") {
+	// Like a real server, the fake prints its whole command line. With a
+	// secrets file there is no password on it.
+	if !strings.Contains(text, "Command line: ") || !strings.Contains(text, " "+gameserver.SecretsFileSwitch+"=") {
 		t.Fatalf("log misses the command line:\n%s", text)
+	}
+	if strings.Contains(text, "s3cret") || strings.Contains(strings.ToLower(text), "password") {
+		t.Fatalf("the log has a password or a password switch:\n%s", text)
 	}
 	files, _ := gameserver.SaveFiles(r.data)
 	if len(files) != 1 {
 		t.Fatalf("save files %v", files)
+	}
+}
+
+// checkPasswords asks the fake behind the query port which passwords it
+// has, and fails unless they are exactly want.
+func checkPasswords(t *testing.T, queryPort int, want gameserver.Secrets) {
+	t.Helper()
+	for kind, pw := range map[string]string{testkit.JoinPassword: want.ServerPassword, testkit.AdminPassword: want.AdminPassword} {
+		if ok, err := testkit.CheckPassword("127.0.0.1", queryPort, kind, pw); err != nil || !ok {
+			t.Errorf("%s with the right password: %v %v", kind, ok, err)
+		}
+		for _, wrong := range []string{pw + "x", "wrong", strings.TrimSuffix(pw, "X") + " "} {
+			if ok, err := testkit.CheckPassword("127.0.0.1", queryPort, kind, wrong); err != nil || ok {
+				t.Errorf("%s with a wrong password: %v %v", kind, ok, err)
+			}
+		}
+	}
+}
+
+// With command-line delivery the fake takes its passwords from the
+// switches, and prints them with its command line: that is what makes this
+// way unsafe.
+func TestFakePasswordsOnCommandLine(t *testing.T) {
+	data := filepath.Join(t.TempDir(), "data")
+	secrets := gameserver.Secrets{ServerPassword: "join me 7", AdminPassword: "adm1n-pw"}
+	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w",
+		DataDir: data, Delivery: gameserver.DeliveryCommandLine, Secrets: secrets})
+	st := waitReady(t, r.data)
+	if !st.ServerPasswordSet || !st.AdminPasswordSet {
+		t.Fatalf("status %+v", st)
+	}
+	checkPasswords(t, st.Ports.Query, secrets)
+	log, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
+	if !strings.Contains(string(log), "-ServerPassword=join me 7 -AdminPassword=adm1n-pw -log") {
+		t.Fatalf("the command line in the log:\n%s", log)
+	}
+	status, _ := os.ReadFile(gameserver.StatusFilePath(r.data))
+	if strings.Contains(string(status), "join me") || strings.Contains(string(status), "adm1n") {
+		t.Fatalf("the status file has a password:\n%s", status)
+	}
+}
+
+// A fake without any password lets everybody in.
+func TestFakeWithoutPasswords(t *testing.T) {
+	data := filepath.Join(t.TempDir(), "data")
+	file := filepath.Join(t.TempDir(), gameserver.SecretsFileName)
+	if err := os.WriteFile(file, gameserver.Secrets{}.File(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w",
+		DataDir: data, SecretsFile: file})
+	st := waitReady(t, r.data)
+	if st.ServerPasswordSet || st.AdminPasswordSet {
+		t.Fatalf("status %+v", st)
+	}
+	checkPasswords(t, st.Ports.Query, gameserver.Secrets{})
+}
+
+// With the secrets file switch the fake accepts no password switch, and a
+// secrets file it cannot read stops it. Its messages never repeat a value.
+func TestFakeRefusesBadSecrets(t *testing.T) {
+	exe := testkit.FakeServer(t)
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.json")
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(good, gameserver.Secrets{ServerPassword: "from-file-9"}.File(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte(`{"server_password": Zq7-not-json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w", DataDir: filepath.Join(dir, "data")}.Args()
+	for what, extra := range map[string][]string{
+		"server password next to the file": {gameserver.SecretsFileSwitch + "=" + good, gameserver.ServerPasswordSwitch + "=Zq7-on-argv"},
+		"admin password next to the file":  {gameserver.AdminPasswordSwitch + "=Zq7-on-argv", gameserver.SecretsFileSwitch + "=" + good},
+		"another password switch":          {gameserver.SecretsFileSwitch + "=" + good, "-RconPassword=Zq7-on-argv"},
+		"a missing file":                   {gameserver.SecretsFileSwitch + "=" + filepath.Join(dir, "missing.json")},
+		"a file that is not JSON":          {gameserver.SecretsFileSwitch + "=" + bad},
+	} {
+		out, err := exec.Command(exe, append(slices.Clone(base), extra...)...).CombinedOutput()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 2 {
+			t.Errorf("%s: %v, want exit code 2\n%s", what, err, out)
+		}
+		if strings.Contains(string(out), "Zq7") || strings.Contains(string(out), "from-file-9") || !strings.Contains(string(out), "esm-fakeserver: ") {
+			t.Errorf("%s: output %q", what, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data")); !os.IsNotExist(err) {
+		t.Errorf("a refused start wrote a data folder: %v", err)
 	}
 }
 

@@ -15,11 +15,13 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -235,6 +237,51 @@ func WriteControl(dataDir, name string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o600)
+}
+
+// Questions a fake server answers on its query port (only for tests).
+const (
+	// JoinPassword asks about the server password.
+	JoinPassword = "JOIN"
+	// AdminPassword asks about the admin password.
+	AdminPassword = "ADMIN"
+)
+
+// CheckPassword asks the fake server behind the query port whether password
+// is the one it was started with: its server password (kind JoinPassword)
+// or its admin password (kind AdminPassword). An empty password is right
+// when the server has none. This shows what a server really got, however
+// it got it.
+func CheckPassword(host string, queryPort int, kind, password string) (bool, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	var lastErr error
+	for range 3 {
+		c, err := net.Dial("udp", net.JoinHostPort(host, strconv.Itoa(queryPort)))
+		if err != nil {
+			return false, err
+		}
+		c.SetDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 64)
+		var n int
+		if _, err = c.Write([]byte(kind + " " + password)); err == nil {
+			n, err = c.Read(buf)
+		}
+		c.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		switch string(buf[:n]) {
+		case "OK":
+			return true, nil
+		case "DENIED":
+			return false, nil
+		}
+		return false, fmt.Errorf("testkit: unexpected answer %q", buf[:n])
+	}
+	return false, lastErr
 }
 
 // Eventually polls cond every interval until it is true or timeout passes,
