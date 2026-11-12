@@ -110,9 +110,14 @@ func TestCLIOverSocket(t *testing.T) {
 	if code != 0 || oneLine(t, "version", out) != "esm test" {
 		t.Fatalf("version: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("doctor")
+	// --bind keeps the port checks on loopback, as every test must.
+	code, out, _ = h.runCLI("doctor", "--bind", "127.0.0.1")
 	if !strings.HasPrefix(oneLine(t, "doctor", out), "doctor: ") || !strings.Contains(out, "service checked too") {
 		t.Fatalf("doctor: %d %q", code, out)
+	}
+	code, _, errOut = h.runCLI("doctor", "--bind", "nowhere")
+	if code != 1 || !strings.Contains(errOut, `--bind "nowhere" is not an IP address`) {
+		t.Fatalf("doctor with a bad --bind: %d %q", code, errOut)
 	}
 	code, _, errOut = h.runCLI("frobnicate")
 	if code != 1 || !strings.Contains(errOut, "unknown command") {
@@ -183,7 +188,7 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 	if code != 0 || !strings.Contains(oneLine(t, "box status", out), "; "+short+" (risky)") {
 		t.Fatalf("box status: %d %q", code, out)
 	}
-	_, out, _ = h.runCLI("doctor")
+	_, out, _ = h.runCLI("doctor", "--bind", "127.0.0.1")
 	if line := oneLine(t, "doctor", out); !strings.Contains(line, "; secret_delivery: UNSAFE on a shared box: 1 instance (risky)") ||
 		!strings.Contains(line, "; service secret_delivery: UNSAFE on a shared box: 1 instance (risky)") {
 		t.Fatalf("doctor: %q", out)

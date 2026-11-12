@@ -63,7 +63,8 @@ Usage: esm [--root DIR] [--json] [--url URL --token TOKEN] <command> [arguments]
 
 Service:
   serve                         run the ESM service (game servers keep running when it stops)
-  doctor                        check this box (read-only)
+  doctor [--bind IP]            check this box (read-only); --bind checks free ports
+                                on that address instead of all interfaces
   version                       print the version
 
 Instances:

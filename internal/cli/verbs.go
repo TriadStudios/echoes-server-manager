@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -58,14 +59,22 @@ type DoctorResult struct {
 
 func (e *env) doctor(args []string) int {
 	fs := e.flags("doctor")
-	if _, err := parse(fs, args); err != nil {
+	bind := fs.String("bind", "", "test-bind the port ranges on this address (default: all interfaces)")
+	pos, err := parse(fs, args)
+	if err != nil {
 		return e.fail(err)
+	}
+	if len(pos) > 0 {
+		return e.fail(usageErr("doctor takes no arguments"))
+	}
+	if *bind != "" && net.ParseIP(*bind) == nil {
+		return e.fail(usageErr("--bind %q is not an IP address", *bind))
 	}
 	root, err := config.ResolveRoot(e.g.root)
 	if err != nil {
 		return e.fail(err)
 	}
-	res := DoctorResult{Local: doctor.Run(doctor.Options{Root: root})}
+	res := DoctorResult{Local: doctor.Run(doctor.Options{Root: root, PortHost: *bind})}
 	if c, err := e.client(); err == nil {
 		var rep doctor.Report
 		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
