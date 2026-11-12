@@ -23,6 +23,12 @@ var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, ev
 // instance that passes its passwords on the server command line the read
 // role gets no log events, and state events with a notice in place of the
 // reason; that was decided when each event was published.
+//
+// A client that stops reading never holds anything up: the bus drops its
+// subscription once the subscription's buffer is full (publishing never
+// waits for a subscriber), and every write to the client has its own
+// deadline (WriteTimeout), after which the stream ends. The client then
+// reconnects with Last-Event-ID.
 func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 	q := r.URL.Query()
 	f := events.Filter{Instance: q.Get("instance"), Public: !c.full()}
@@ -50,14 +56,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 		}
 		after = n
 	}
-	backlog, sub, complete := s.o.Bus.SubscribeFrom(after, f, 1024)
+	backlog, sub, complete := s.o.Bus.SubscribeFrom(after, f, sseBuffer)
 	defer sub.Close()
 	rc := http.NewResponseController(w)
+	// deadline gives the next write WriteTimeout to get through.
+	deadline := func() { _ = rc.SetWriteDeadline(time.Now().Add(s.o.WriteTimeout)) }
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	deadline()
 	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
 		return nil
 	}
@@ -82,16 +91,22 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 			if !ok {
 				return nil // shutting down, or too far behind: the client reconnects
 			}
+			deadline()
 			if writeEvent(w, e) != nil || rc.Flush() != nil {
 				return nil
 			}
 		case <-tick.C:
+			deadline()
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil || rc.Flush() != nil {
 				return nil
 			}
 		}
 	}
 }
+
+// sseBuffer is how many events a stream's subscription holds for a client
+// that is slow to read; with one more the bus drops the subscription.
+const sseBuffer = 1024
 
 func writeEvent(w http.ResponseWriter, e events.Event) error {
 	b, err := json.Marshal(e)

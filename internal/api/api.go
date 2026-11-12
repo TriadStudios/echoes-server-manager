@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -34,8 +35,20 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/web"
 )
 
-// MaxBody is the largest request body accepted.
-const MaxBody = 1 << 20
+// Limits of a request and its reply.
+const (
+	// MaxBody is the largest request body accepted.
+	MaxBody = 1 << 20
+	// MaxHeaderBytes is the most request header bytes ESM's HTTP servers
+	// read (http.Server.MaxHeaderBytes); more is refused with 431.
+	MaxHeaderBytes = 64 << 10
+	// DefaultBodyTimeout is how long a request body may take to arrive.
+	DefaultBodyTimeout = 30 * time.Second
+	// DefaultWriteTimeout is how long a client may take to read a reply,
+	// counted from its first byte, and, in an event stream, to read each
+	// event.
+	DefaultWriteTimeout = time.Minute
+)
 
 // Options wire a Server to the rest of ESM.
 type Options struct {
@@ -53,6 +66,11 @@ type Options struct {
 	// SecureCookies marks the session cookie Secure: browsers reach ESM
 	// over TLS, its own or a TLS proxy's (behind_tls_proxy).
 	SecureCookies bool
+	// BodyTimeout and WriteTimeout are the read deadline of a request body
+	// and the write deadline of a reply (defaults DefaultBodyTimeout and
+	// DefaultWriteTimeout).
+	BodyTimeout  time.Duration
+	WriteTimeout time.Duration
 	// Started is when the service started.
 	Started time.Time
 	// KeepAlive is the SSE keep-alive interval (default 15s).
@@ -66,6 +84,7 @@ type Options struct {
 type Server struct {
 	o     Options
 	log   *slog.Logger
+	root  http.Handler // guard around mux
 	mux   *http.ServeMux
 	paths *http.ServeMux      // every API path once, for 405 answers
 	allow map[string][]string // path pattern -> methods
@@ -168,6 +187,12 @@ func New(o Options) *Server {
 	if o.Started.IsZero() {
 		o.Started = time.Now()
 	}
+	if o.BodyTimeout <= 0 {
+		o.BodyTimeout = DefaultBodyTimeout
+	}
+	if o.WriteTimeout <= 0 {
+		o.WriteTimeout = DefaultWriteTimeout
+	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{}}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
@@ -187,7 +212,81 @@ func New(o Options) *Server {
 		w.Header().Set("Allow", "GET, HEAD")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and HEAD are allowed here")
 	}))
+	s.root = s.guard(s.mux)
 	return s
+}
+
+// guard is the first handler of every request, to the API and to the page.
+// It sets the security headers, so every reply ESM writes has them, also
+// the redirects and errors of the router itself. It gives a request body a
+// read deadline (lifted again once the body is in, see readBody), and a
+// reply a write deadline that starts with its first byte, so a client that
+// sends or reads too slowly cannot hold a request open. The HTTP servers
+// themselves have no read or write timeout: either would also end the
+// calls that rightly take long (a start that waits for ready, a build
+// download, an event stream).
+func (s *Server) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		web.SetSecurityHeaders(w.Header())
+		if r.ContentLength != 0 {
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(s.o.BodyTimeout))
+		}
+		next.ServeHTTP(&deadlineWriter{ResponseWriter: w, timeout: s.o.WriteTimeout}, r)
+	})
+}
+
+// deadlineWriter sets the write deadline of a reply when its first byte is
+// written: a reply that the client has not taken within timeout is cut
+// off. A handler that streams (events) moves the deadline on as it goes.
+type deadlineWriter struct {
+	http.ResponseWriter
+	timeout time.Duration
+	started bool
+}
+
+func (w *deadlineWriter) start() {
+	if !w.started {
+		w.started = true
+		_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(w.timeout))
+	}
+}
+
+func (w *deadlineWriter) WriteHeader(code int) {
+	w.start()
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *deadlineWriter) Write(b []byte) (int, error) {
+	w.start()
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *deadlineWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// readBody reads the whole request body (at most MaxBody) before the
+// handler runs, under the read deadline that guard set, and then lifts the
+// deadline: from then on the connection is read only to notice that the
+// client went away, and that must not end a call that takes long.
+func (s *Server) readBody(w http.ResponseWriter, r *http.Request) error {
+	if r.ContentLength == 0 {
+		return nil
+	}
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		var mbe *http.MaxBytesError
+		var ne net.Error
+		switch {
+		case errors.As(err, &mbe):
+			return err
+		case errors.As(err, &ne) && ne.Timeout():
+			w.Header().Set("Connection", "close")
+			return errStatus(http.StatusRequestTimeout, "request_timeout", "the request body did not arrive within %s", s.o.BodyTimeout)
+		}
+		return fault.BadRequestf("cannot read the request body")
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return nil
 }
 
 type ctxKey int
@@ -195,13 +294,13 @@ type ctxKey int
 const socketKey ctxKey = 1
 
 // Handler serves requests arriving over TCP.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.root }
 
 // SocketHandler serves requests arriving on the unix socket: they act as
 // admin (actor kind "socket").
 func (s *Server) SocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), socketKey, true)))
+		s.root.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), socketKey, true)))
 	})
 }
 
@@ -265,6 +364,9 @@ func (s *Server) wrap(rt route) http.Handler {
 			c.actor.ID = "socket"
 		}
 		err := s.authenticate(r, rt, c)
+		if err == nil {
+			err = s.readBody(sw, r)
+		}
 		if err == nil {
 			err = rt.h(s, sw, r, c)
 		}

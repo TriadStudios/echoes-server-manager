@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -46,6 +47,10 @@ type Options struct {
 	BuildLimits       builds.Limits
 	HTTPClient        *http.Client
 	AuthOptions       auth.Options
+	// BodyTimeout and WriteTimeout override the API's request body and
+	// reply deadlines (api.DefaultBodyTimeout, api.DefaultWriteTimeout).
+	BodyTimeout  time.Duration
+	WriteTimeout time.Duration
 }
 
 // Service is a running ESM.
@@ -168,10 +173,11 @@ func Start(o Options) (_ *Service, err error) {
 		Version: o.Version, Config: cfg, Auth: s.auth, Audit: s.audit, Bus: s.bus, Instances: s.inst,
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, SecureCookies: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
+		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout,
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
-	s.web = &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute, ErrorLog: errLog}
-	s.local = &http.Server{Handler: srv.SocketHandler(), ReadHeaderTimeout: 10 * time.Second, ErrorLog: errLog}
+	s.web = newHTTPServer(srv.Handler(), errLog)
+	s.local = newHTTPServer(srv.SocketHandler(), errLog)
 	go s.serve(s.web, s.tcp)
 	go s.serve(s.local, s.sock)
 	log.Info("ESM started", "version", o.Version, "root", st.Path(), "listen", s.tcp.Addr().String(), "tls", useTLS,
@@ -180,6 +186,31 @@ func Start(o Options) (_ *Service, err error) {
 		log.Warn("memory and CPU limits are not enforced in process mode")
 	}
 	return s, nil
+}
+
+// Timeouts of the HTTP servers.
+const (
+	readHeaderTimeout = 10 * time.Second
+	idleTimeout       = 2 * time.Minute
+)
+
+// newHTTPServer makes one of ESM's HTTP servers (TCP or socket). The
+// request headers must arrive within readHeaderTimeout and fit in
+// api.MaxHeaderBytes, and an idle connection is closed after idleTimeout.
+// There is no server-wide ReadTimeout or WriteTimeout: they would also end
+// calls that rightly take long (a start that waits for ready, a build
+// download, an event stream), and a ReadTimeout even cancels such a call
+// while it waits. The API sets those deadlines per request instead: one
+// for the request body, and one for the reply, counted from its first byte
+// (each event of a stream gets its own).
+func newHTTPServer(h http.Handler, errLog *log.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    api.MaxHeaderBytes,
+		ErrorLog:          errLog,
+	}
 }
 
 // listenSocket listens on the unix socket, removing a stale socket file
