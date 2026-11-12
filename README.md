@@ -173,6 +173,14 @@ The tests build a fake game server (`cmd/esm-fakeserver`) and drive whole
 services through the API and the command line. Tests that start systemd
 user units run only when asked: `ESM_TEST_SYSTEMD=1 go test ./...` on Linux.
 
+Tests listen on 127.0.0.1 only, so a desktop firewall never asks about a
+test binary. The fake server binds loopback only; in a test binary ESM's
+own listener and port checks refuse any other address (and the run fails
+naming it); the tests check the sockets of the fake servers and of the test
+process (Linux and Windows); and a test fails on any Go file that binds or
+names all interfaces outside a short allowed list. Create test instances
+with `bind_ip` 127.0.0.1 and run `esm doctor --bind 127.0.0.1` in tests.
+
 ## Contributing
 
 Issues and pull requests are welcome. Please keep changes small, add tests,

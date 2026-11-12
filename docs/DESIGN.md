@@ -383,6 +383,12 @@ ESM never changes firewall rules. It shows the ports of every instance
 (create, list, status, the API) and the configured ranges (doctor, box
 status). Opening them, and only them, is up to the box owner.
 
+To find out whether a port is free, ESM binds it for UDP and TCP for a
+moment on the instance's `bind_ip`, or on all interfaces when that is
+empty. In a test binary ESM binds loopback addresses only (its API listener
+too) and refuses anything else without binding it: tests never make a
+desktop firewall ask about them.
+
 ## Watching
 
 The service keeps an in-memory event bus. Every event has an increasing id,
@@ -520,7 +526,7 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 ```
 esm [--root DIR] [--json] [--url URL --token TOKEN] <command> [arguments]
 
-serve | doctor | version
+serve | doctor [--bind IP] | version
 list | status [name]
 create <name> [--build V] [--channel C] [--map M] [--world W] [--display-name N]
        [--cluster C] [--game-port P] [--query-port P] [--bind IP] [--max-players N]
@@ -542,7 +548,9 @@ passwords on the command line is marked UNSAFE. `doctor` works without a
 running service: it checks the root, the config, the listen rule, free
 ports, disk space, the supervisor (with systemd lingering), the socket and
 which instances pass passwords on the command line, changes nothing, and
-adds the service's own view when a service answers.
+adds the service's own view when a service answers. It checks free ports by
+binding each one for a moment on all interfaces, or with `--bind IP` on
+that address only (the tests use 127.0.0.1).
 
 Passwords are set through the API (`PUT /api/v1/instances/{name}/secrets`).
 The command line has no verb for them yet: a password given as an argument
@@ -590,9 +598,12 @@ confirmed on a real host yet:
 - how to ask the server politely to stop on Windows;
 - how a server is marked as publicly listed.
 
-The fake server used by the tests follows exactly these assumptions; when a
-real host proves one wrong, it changes in the adapter and the fake, and
-nowhere else.
+The fake server used by the tests follows exactly these assumptions, with
+one difference on purpose: it binds loopback addresses only (127.0.0.1
+without `-MULTIHOME`, and it refuses any other address), where a real
+server without `-MULTIHOME` binds all interfaces. When a real host proves
+an assumption wrong, it changes in the adapter and the fake, and nowhere
+else.
 
 ## Phases
 
