@@ -94,6 +94,7 @@ are refused, so typos are reported.
 | `listen`               | `127.0.0.1:8740`  | API address. Anything but loopback needs TLS. |
 | `socket`               | `<root>/esm.sock` | Unix socket path. |
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
+| `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
 | `game_ports`           | `7777-7786`       | Range for game ports. |
 | `query_ports`          | `27015-27024`     | Range for query ports. |
 | `supervisor`           | `auto`            | `auto`, `systemd` or `process`. |
@@ -396,6 +397,13 @@ a public form of it, or does not get it at all, both live and when it asks
 for remembered events. That is how the output of an instance with passwords
 on the command line is kept from that role (see [Passwords](#passwords)).
 
+Publishing never waits for a subscriber. Each subscriber has a buffer
+(1024 events for a stream); a subscriber whose buffer is full is dropped,
+and the others go on getting every event. A stream also gives each write
+to its client a deadline (a minute). So a client that stops reading, or
+reads too slowly, can hold up neither a state change nor another client:
+its stream ends, and it reconnects with `Last-Event-ID`.
+
 ## Backups
 
 A backup copies the server's save files (the adapter's save glob) into
@@ -426,7 +434,19 @@ skipped.
 - Reads are GET. Every change is POST, PUT, PATCH or DELETE with a JSON body
   (an empty body counts as `{}`), at most 1 MiB.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
-  with 400, 401, 403, 404, 405, 409, 413, 422, 429 or 500.
+  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 422, 429 or 500. (The
+  HTTP server itself answers malformed requests and request headers over
+  the cap with a plain 400 or 431, without that shape or ESM's headers.)
+- **Limits.** Request headers: at most 64 KiB, within 10 seconds. A request
+  body: at most 1 MiB (413), within 30 seconds (408). A reply: the client
+  has a minute to read it, counted from its first byte; in an event stream,
+  a minute for each event. An idle connection is closed after 2 minutes.
+  A log tail: at most 5000 lines (more is refused with 422), each cut to
+  4096 bytes, and at most 4 MiB of lines in all (counted as JSON strings,
+  the oldest left out first). The HTTP servers have no server-wide read or
+  write timeout, because one would also end the calls that rightly take
+  long (a start that waits for ready, a build download, an event stream);
+  the API sets those deadlines per request instead.
 - Every change writes an audit entry (who, what, target, success, error).
   Refused calls are audited too. Audit entries and logs never contain
   passwords or tokens.
@@ -450,12 +470,31 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   (24 characters, valid for 24 hours), prints it once and keeps only its
   hash. `POST /api/v1/setup` with the code creates the first admin.
 - **Users and sessions.** Passwords need at least 12 characters and are
-  stored as PBKDF2-SHA256 with 600,000 iterations. A login sets the
-  `esm_session` cookie (HttpOnly, SameSite=Strict, Path=/, Secure behind
-  TLS); sessions expire after 12 idle hours. Every non-GET call with the
-  cookie must send `X-CSRF-Token`, and an `Origin` header, when present, must
-  match the host. Failed logins are limited to 5 per 5 minutes per client
-  address and per user name.
+  stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
+  JSON body only (`Content-Type: application/json`, else 415), which a form
+  on another site cannot send, and refuse a request whose `Origin` header
+  names another origin (403). A request without `Origin` is accepted, so
+  the command line, curl and scripts work; browsers send `Origin` with
+  every POST. A login sets the `esm_session` cookie: HttpOnly (scripts
+  cannot read it), SameSite=Strict, Path=/, Max-Age 43200, and Secure when
+  ESM has TLS or `behind_tls_proxy` is set. A session lasts 12 hours from
+  login, however much it is used, and ends at logout, which clears the
+  cookie (Max-Age=0); sessions live in memory, so a restart of ESM ends
+  them all. The session id is only ever in the cookie, never in a reply
+  body, a log or the audit log. Every non-GET call with the cookie must
+  send `X-CSRF-Token` with the session's CSRF token, a random value of its
+  own (given at login and by `GET /api/v1/session`), and an `Origin` header,
+  when present, must match the host. Failed logins are limited to 5 per 5
+  minutes per client address and per user name.
+- **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
+  on loopback. It must pass the `Host` header through unchanged (the
+  `Origin` checks compare against it), and `behind_tls_proxy` should be set
+  so the session cookie is Secure. Do not set it without such a proxy: a
+  Secure cookie is never sent over plain http, so browser logins would
+  stop working. ESM takes the client address from the connection, never
+  from forwarding headers, so behind a proxy the login rate limit per
+  client address counts all clients together (the limit per user name
+  still applies).
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
   audit log, and the server output and state reasons of instances that pass
@@ -463,10 +502,18 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   starts, stops, restarts, updates, backs up, restores and installs builds;
   `admin` does everything else (create, change, delete, secrets, tokens,
   pruning). Tokens are never accepted in URLs.
-- **Page headers.** The page is served with a strict Content-Security-Policy
-  (no inline scripts or styles, nothing from other origins, no framing),
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
-  `X-Frame-Options: DENY`.
+- **Page headers.** Every reply ESM writes, of the page and of the API,
+  errors and the router's own redirects included, carries a strict
+  Content-Security-Policy (no inline scripts or styles, nothing from other
+  origins, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
+- **Page files.** The page is served from files compiled into the binary,
+  never from the disk. A folder is never listed. The router redirects a
+  path with plain `.` or `..` segments or doubled slashes to its clean
+  form; after that, a request path that has a `.` or `..` segment (written
+  `%2e%2e`, say), a backslash (also `%5c`), a colon (a drive letter such as
+  `/C:/Windows/win.ini`, or a Windows stream name), a segment that starts
+  with a dot, or a control character gets 404, whatever files there are.
 
 ## Command line
 

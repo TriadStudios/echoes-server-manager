@@ -138,9 +138,14 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   SHA-256 hashes. Server passwords live in a private file per instance, are
   handed to the server in a private file, and are never shown by the API or
   written to ESM's logs. ESM never writes a server command line anywhere.
-- Logins are rate limited. Browser sessions use an HttpOnly, SameSite=Strict
-  cookie plus a CSRF token on every change. Tokens are never accepted in
-  URLs.
+- Logins are rate limited, and login and setup take only JSON from the same
+  origin. Browser sessions use an HttpOnly, SameSite=Strict cookie that
+  lasts 12 hours, plus a separate CSRF token on every change. Behind a TLS
+  reverse proxy, set `behind_tls_proxy` so the cookie is also Secure.
+  Tokens are never accepted in URLs.
+- Requests and replies are bounded: headers 64 KiB, bodies 1 MiB, slow
+  clients are cut off, a client that stops reading an event stream is
+  dropped without holding anything up, and log tails are capped.
 - Every change, and every refused request, is written to an append-only
   audit log.
 - Builds are checked against their manifest (SHA-256 of every file) before

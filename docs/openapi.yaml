@@ -12,8 +12,9 @@ info:
       or `POST /api/v1/tokens`. Tokens are never accepted in URLs.
     - The `esm_session` cookie from `POST /api/v1/login`. Every call that
       is not a GET must also send `X-CSRF-Token` with the `csrf_token` from
-      the login answer (or from `GET /api/v1/session`). If an `Origin`
-      header is sent, it must match the host.
+      the login answer (or from `GET /api/v1/session`), a random value of
+      its own. If an `Origin` header is sent, it must match the host. The
+      session id is only ever in the cookie (HttpOnly), never in a body.
     - The unix socket `<root>/esm.sock`, which acts as admin.
 
     Roles: `read` may make every GET call except `/tokens` and `/audit`;
@@ -32,9 +33,18 @@ info:
     state reason. `operator` and `admin` get both.
 
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
-    Request bodies are JSON and at most 1 MiB. Calls that change something
-    are POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
+    Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
+    arrive within 30 seconds (408 `request_timeout`); request headers are at
+    most 64 KiB (431, from the HTTP server, without an error body). A client
+    has a minute to read a reply, counted from its first byte, and in an
+    event stream a minute for each event. Calls that change something are
+    POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
     `{}`); each writes an audit entry, as does every refused call.
+
+    Every reply, of the API and of the page, carries
+    `Content-Security-Policy` (with `frame-ancestors 'none'`),
+    `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and
+    `Referrer-Policy: no-referrer`.
   license:
     name: MIT
 servers:
@@ -64,7 +74,13 @@ paths:
     post:
       tags: [logins]
       summary: Create the first admin with the one-time setup code
-      description: Works only while no admin exists. The setup code is printed by `esm serve` when it is made.
+      description: |
+        Works only while no admin exists. The setup code is printed by
+        `esm serve` when it is made. The body must be sent with
+        `Content-Type: application/json` (else 415 `unsupported_media_type`),
+        and an `Origin` header, when sent, must match the host (else 403
+        `origin`); a request without Origin, as the command line and curl
+        send, is accepted.
       security: []
       requestBody:
         required: true
@@ -78,13 +94,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/UserInfo" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/login:
     post:
       tags: [logins]
       summary: Log in and get the session cookie
+      description: |
+        The body must be sent with `Content-Type: application/json` (else
+        415 `unsupported_media_type`), and an `Origin` header, when sent,
+        must match the host (else 403 `origin`); a request without Origin,
+        as the command line and curl send, is accepted. A session lasts 12
+        hours from login, however much it is used.
       security: []
       requestBody:
         required: true
@@ -93,7 +117,11 @@ paths:
             schema: { $ref: "#/components/schemas/LoginRequest" }
       responses:
         "200":
-          description: Logged in. The `esm_session` cookie is HttpOnly, SameSite=Strict, Path=/, and Secure behind TLS.
+          description: |
+            Logged in. The `esm_session` cookie is HttpOnly, SameSite=Strict,
+            Path=/, has Max-Age 43200 (the session's 12 hours), and is Secure
+            when ESM has TLS or `behind_tls_proxy` is set. The answer holds
+            the CSRF token, never the session id.
           headers:
             Set-Cookie:
               schema: { type: string }
@@ -101,6 +129,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/LoginResult" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/logout:
     post:
@@ -110,7 +140,7 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/Empty" }
       responses:
         "200":
-          description: Logged out.
+          description: Logged out. `Set-Cookie` clears `esm_session` (Max-Age=0).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/LoggedOut" }
@@ -461,6 +491,10 @@ paths:
         with `secret_delivery: command_line` the `read` role gets 403 with
         the code `hidden_unsafe_secrets`, for both sources: the output of
         its server holds the passwords.
+
+        At most 5000 lines (more is refused with 422), each cut to 4096
+        bytes, and at most 4 MiB of lines in all, counted as JSON strings;
+        the oldest lines are left out first.
       parameters:
         - $ref: "#/components/parameters/Name"
         - name: lines
@@ -507,6 +541,10 @@ paths:
         gets no `log` events, and `state` events with a fixed notice in
         place of the reason. That is decided when an event is published, so
         it also holds for events asked for later with Last-Event-ID.
+
+        A client that stops reading holds up nothing: once 1024 events wait
+        for it, or one write to it takes longer than a minute, its stream
+        ends, and it reconnects with Last-Event-ID.
       parameters:
         - name: instance
           in: query
@@ -663,7 +701,9 @@ components:
                 hidden_unsafe_secrets (403: the read role asked for the output
                 of an instance with passwords on the command line),
                 looks_like_secret (422: a rule key or an extra argument names
-                a secret), not_found, method_not_allowed, conflict,
+                a secret), unsupported_media_type (415: login or setup
+                without a JSON body), request_timeout (408: the request body
+                did not arrive in time), not_found, method_not_allowed, conflict,
                 already_running, instance_exists, instance_running, busy,
                 port_in_use, no_free_ports, build_exists, build_in_use,
                 hash_mismatch, unsafe_archive, bad_manifest, too_large,
@@ -727,6 +767,9 @@ components:
         query_ports: { type: string, examples: ["27015-27024"] }
         listen: { type: string }
         tls: { type: boolean }
+        behind_tls_proxy:
+          type: boolean
+          description: The behind_tls_proxy setting. Browsers reach ESM through a TLS proxy, so the session cookie is Secure.
         started: { type: string, format: date-time }
         uptime_seconds: { type: integer }
         instances: { type: integer }
