@@ -1,0 +1,77 @@
+name: release
+
+# A pushed tag v1.2.3 (or v1.2.3-rc.1) makes a release: esm for Linux and
+# Windows (amd64), SHA256SUMS of both, and SHA256SUMS.sig, the Ed25519
+# signature of SHA256SUMS made with the release key. The key is the
+# repository secret ESM_RELEASE_KEY (the base64 of the 32-byte private
+# seed); its public half is internal/release.PublicKey. Without the secret
+# the run fails before anything is built or published.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: check the tag and the release key
+        env:
+          TAG: ${{ github.ref_name }}
+          ESM_RELEASE_KEY: ${{ secrets.ESM_RELEASE_KEY }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(-[0-9A-Za-z.]{1,64})?$'; then
+            echo "::error::tag $TAG is not a version like v1.2.3"
+            exit 1
+          fi
+          if [ -z "$ESM_RELEASE_KEY" ]; then
+            echo "::error::the repository secret ESM_RELEASE_KEY (the release signing key) is not set; nothing was built"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: vet and test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir dist
+          for target in linux/amd64 windows/amd64; do
+            os=${target%/*}
+            arch=${target#*/}
+            ext=""
+            if [ "$os" = windows ]; then ext=".exe"; fi
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X main.version=$TAG" -o "dist/esm-$os-$arch$ext" ./cmd/esm
+          done
+          (cd dist && sha256sum esm-* > SHA256SUMS && cat SHA256SUMS)
+
+      - name: sign
+        env:
+          ESM_RELEASE_KEY: ${{ secrets.ESM_RELEASE_KEY }}
+        run: go run ./cmd/esm-sign -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag $pre \
+            --notes "Binaries for Linux and Windows (amd64). SHA256SUMS lists their SHA-256 sums; SHA256SUMS.sig is its Ed25519 signature by the key built into ESM. See the README for how to check them by hand."
