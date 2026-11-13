@@ -46,7 +46,7 @@ func TestSettingsCannotSmuggleSwitches(t *testing.T) {
 	accepted := map[string]func(*Instance){
 		"display name with spaces":  func(i *Instance) { i.DisplayName = "Alpha EU - west" },
 		"display name with dashes":  func(i *Instance) { i.DisplayName = "Alpha-EU" },
-		"display name apostrophe":   func(i *Instance) { i.DisplayName = "Dillon's Server" },
+		"display name apostrophe":   func(i *Instance) { i.DisplayName = "Alpha's Server" },
 		"rule value with a dash":    func(i *Instance) { i.Rules = map[string]string{"Motd": "well-met friends"} },
 		"extra arg value form":      func(i *Instance) { i.ExtraArgs = []string{"-Motd Café"} },
 		"extra arg negative number": func(i *Instance) { i.ExtraArgs = []string{"-Offset=-5"} },
