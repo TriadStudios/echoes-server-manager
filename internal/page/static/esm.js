@@ -235,6 +235,21 @@
 
   // --- server settings ---
 
+  // saveRules is the rules map a save sends (the API replaces the whole
+  // map). fields are the form's rule fields as {key, value, game, dropped}.
+  // A game setting left empty is not set and left out, so the server uses
+  // its default; any other rule goes as it is unless it is removed. It
+  // uses nothing of the page, so the page tests run it alone.
+  // saveRules: start
+  function saveRules(fields) {
+    var rules = {};
+    fields.forEach(function (x) {
+      if (x.game ? x.value !== '' : !x.dropped) { rules[x.key] = x.value; }
+    });
+    return rules;
+  }
+  // saveRules: end
+
   var sf = document.querySelector('form[data-form="settings"]');
   if (sf) { settings(sf); }
 
@@ -356,7 +371,7 @@
     function body() {
       var b = {};
       var secrets = {};
-      var rules = {};
+      var ruleFields = [];
       var rulesChanged = false;
       fields().forEach(function (el) {
         var n = el.name;
@@ -364,9 +379,7 @@
           var key = n.slice(5);
           var drop = f.elements['drop:' + key];
           if (changed(el) || el.closest('[data-added]')) { rulesChanged = true; }
-          // A game setting left empty is not set: the server uses its
-          // default. Another rule is kept unless it is removed.
-          if (el.hasAttribute('data-game') ? el.value !== '' : !(drop && drop.checked)) { rules[key] = el.value; }
+          ruleFields.push({ key: key, value: el.value, game: el.hasAttribute('data-game'), dropped: !!(drop && drop.checked) });
           return;
         }
         if (n.indexOf('drop:') === 0) {
@@ -389,7 +402,7 @@
           default: b[n] = el.value;
         }
       });
-      if (rulesChanged) { b.rules = rules; }
+      if (rulesChanged) { b.rules = saveRules(ruleFields); }
       return { change: b, secrets: secrets };
     }
 
