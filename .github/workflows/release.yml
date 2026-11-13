@@ -1,11 +1,23 @@
 name: release
 
 # A pushed tag v1.2.3 (or v1.2.3-rc.1) makes a release: esm for Linux and
-# Windows (amd64), SHA256SUMS of both, and SHA256SUMS.sig, the Ed25519
-# signature of SHA256SUMS made with the release key. The key is the
-# repository secret ESM_RELEASE_KEY (the base64 of the 32-byte private
-# seed); its public half is internal/release.PublicKey. Without the secret
-# the run fails before anything is built or published.
+# Windows (amd64), SHA256SUMS (first line "version <tag>", then the SHA-256
+# of both binaries) and SHA256SUMS.sig, the Ed25519 signature of SHA256SUMS.
+#
+# Three jobs, so that the signing key meets as little code as possible:
+#   build    no secrets, read-only token: checks the tag, runs vet and the
+#            tests, builds the binaries and esm-sign, writes SHA256SUMS.
+#   sign     the only job with the key. It runs in the environment "release"
+#            (its secret ESM_RELEASE_KEY, the base64 of the 32-byte private
+#            seed) and runs nothing but the esm-sign binary the build job
+#            made, on the SHA256SUMS the build job wrote: no checkout, no Go
+#            toolchain, no repository code. esm-sign refuses a key that does
+#            not belong to the public key built into ESM and a SHA256SUMS
+#            whose version is not the tag.
+#   publish  no secrets, write token: publishes what the other two made.
+# The environment "release" should allow deployments from v* tags only
+# (README: "Releases and updates"). Without the secret the sign job fails
+# and nothing is published.
 
 on:
   push:
@@ -16,26 +28,23 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: check the tag and the release key
+      - name: check the tag
         env:
           TAG: ${{ github.ref_name }}
-          ESM_RELEASE_KEY: ${{ secrets.ESM_RELEASE_KEY }}
         run: |
           if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}(-[0-9A-Za-z.]{1,64})?$'; then
             echo "::error::tag $TAG is not a version like v1.2.3"
             exit 1
           fi
-          if [ -z "$ESM_RELEASE_KEY" ]; then
-            echo "::error::the repository secret ESM_RELEASE_KEY (the release signing key) is not set; nothing was built"
-            exit 1
-          fi
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -50,7 +59,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          mkdir dist
+          mkdir dist signer
           for target in linux/amd64 windows/amd64; do
             os=${target%/*}
             arch=${target#*/}
@@ -59,19 +68,79 @@ jobs:
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -buildvcs=false \
               -ldflags "-s -w -X main.version=$TAG" -o "dist/esm-$os-$arch$ext" ./cmd/esm
           done
-          (cd dist && sha256sum esm-* > SHA256SUMS && cat SHA256SUMS)
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -o signer/esm-sign ./cmd/esm-sign
+          (cd dist && { echo "version $TAG"; sha256sum esm-*; } > SHA256SUMS && cat SHA256SUMS)
 
-      - name: sign
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signer
+          path: signer/esm-sign
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signer
+          path: signer
+
+      - name: sign SHA256SUMS
         env:
+          TAG: ${{ github.ref_name }}
           ESM_RELEASE_KEY: ${{ secrets.ESM_RELEASE_KEY }}
-        run: go run ./cmd/esm-sign -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+        run: |
+          if [ -z "$ESM_RELEASE_KEY" ]; then
+            echo "::error::the secret ESM_RELEASE_KEY of the environment release (the release signing key) is not set; nothing is published"
+            exit 1
+          fi
+          chmod 0755 signer/esm-sign
+          signer/esm-sign -version "$TAG" -in dist/SHA256SUMS -out SHA256SUMS.sig
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signature
+          path: SHA256SUMS.sig
+          if-no-files-found: error
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signature
+          path: dist
 
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          ls -l dist
           pre=""
           case "$TAG" in *-*) pre="--prerelease" ;; esac
           gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag $pre \
-            --notes "Binaries for Linux and Windows (amd64). SHA256SUMS lists their SHA-256 sums; SHA256SUMS.sig is its Ed25519 signature by the key built into ESM. See the README for how to check them by hand."
+            --notes "Binaries for Linux and Windows (amd64). SHA256SUMS lists their SHA-256 sums after a line naming the version; SHA256SUMS.sig is its Ed25519 signature by the key built into ESM. See the README for how to check them by hand."
