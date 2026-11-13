@@ -230,8 +230,9 @@ What a box needs before ESM can run an Echoes of Durinn dedicated server
   `<root>/instances/<name>/data/Saved/SaveGames/`; backups and restores
   copy that whole folder. Installing or removing a build never touches it.
   The server log is `<root>/instances/<name>/logs/server.log`.
-- **Passwords.** The game server takes its passwords only on its command
-  line today. An instance whose server needs a join or admin password must
+- **Passwords.** The game server takes its passwords (and its
+  announcements and problem report tokens) only on its command line today.
+  An instance whose server needs a join or admin password, or a token, must
   be set to `secret_delivery: command_line` until the game reads the
   secrets file, and that mode is unsafe on a shared box (see
   [Server passwords](#server-passwords)).
@@ -376,8 +377,10 @@ settings, live log, backups, timed restarts), builds, clusters and the audit
 log, and it starts, stops, restarts, updates, backs up, restores, installs
 builds and changes settings. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
-rule defaults, whether players can reach the box from outside), the page
-says so. Reading works without JavaScript; changes need it. What each role
+whether players can reach the box from outside), the page says so. A
+server's settings screen has a field for every game setting ESM knows by
+name (see [Game settings](#game-settings)), grouped, each with its help,
+range and default; an empty field leaves the setting to the game. Reading works without JavaScript; changes need it. What each role
 may do is the same as in the API.
 
 ## Command line tour
@@ -386,7 +389,9 @@ may do is the same as in the API.
 esm doctor                                   # read-only checks of this box
 esm build install ~/durinn/imports/build-1.0.0.tar.gz  # or a folder there, or an https URL with --sha256
 esm build list
-esm create alpha --set Difficulty=hard       # ports are picked from the configured ranges
+esm game-settings                            # the game settings ESM knows by name
+esm create alpha --set HarvestRate=2 --set PvP=True  # ports are picked from the configured ranges
+esm secret alpha server-password < join-password.txt # a password or token, on standard input
 esm start alpha                              # waits until the server is ready
 esm status alpha
 esm logs alpha -n 100 -f
@@ -402,15 +407,58 @@ esm update-self                              # put it in place (signature checke
 ```
 
 Every command prints one result line, or one JSON object with `--json`, and
-exits 0 on success and 1 on error. `esm help` lists every command.
+exits 0 on success and 1 on error (`logs` and `game-settings` print more
+lines). `esm help` lists every command.
+
+## Game settings
+
+The game server takes its settings on its command line as `-Key=Value`.
+ESM sets the server name, world, player limit, listing, ports and passwords
+itself; every other setting the server builds take is in ESM's catalog of
+game settings, with its type, range, default and a line of help. See them
+with `esm game-settings`, `GET /api/v1/game-settings` or on a server's
+settings page.
+
+An instance keeps its game settings in `rules` (`--set Key=Value` at
+create, `rules` in the API, the fields of the settings page). A setting
+that is not set is not passed, and the server uses its own default. A
+setting of the catalog is checked when it is set or changed: a number must
+be in its range, a choice one of its values, `True` or `False` for a
+switch, a date `YYYY-MM-DD` and not in the future. A value stored before
+is kept until it is changed. Keys outside the catalog are passed as they
+are, for settings of newer server builds.
+
+| Group | Settings |
+|-------|----------|
+| Identity and access | `MOTD`, `LAN`, `AllowNonSteamClients` (caution), `AdminPlayerIds`, `AdminLoginMaxAttempts`, `AdminLoginLockoutSeconds`, `BossSummonCooldownSeconds`, `LastWipe` |
+| World rules | `HarvestRate`, `XPRate`, `TamingRate`, `TamingBiteRate`, `HatchRate`, `MatureRate`, `MatingRate`, `CareRate`, `ImprintRate` (0.1 to 1000), `DayLengthMinutes` (5 to 240), `StructureDecay`, `StructureDecayMultiplier` (0.1 to 10), `PvP`, `PvPStructureDamage`, `OfflineRaidProtection`, `ORPActivationMinutes` (0 to 1440), `ORPStructureDamageTaken`, `ORPTameDamageTaken` (0 to 1), `ORPTurretDamageMultiplier` (0 to 10), `Difficulty` (0, 1, 2), `DeathDropMode` (`Everything`, `InventoryOnly`, `Nothing`) |
+| Chat | `ChatLog`, `ChatFilter` (`Off`, `Mask`, `Drop`), `ChatBlockedWords` |
+| Announcements and reports | `AnnouncementsUrl`, `AnnouncementsPollSeconds` (at least 10), `ProblemReportUrl`, and the two tokens `AnnouncementsToken` and `ProblemReportToken` |
+
+**World rules apply only when the world is first created.** The game keeps
+them with the world from then on, so a change reaches only a new world (for
+example under a new world name); an existing world keeps its saved rules.
+`LastWipe` is not a world rule: it is read at every start.
+
+The two tokens are secrets: set them like the passwords (below), never as
+rules. A list (`AdminPlayerIds`, `ChatBlockedWords`) is items separated by
+commas. `max_players` is 1 to 70, the most the game server takes; an
+instance stored with more by an earlier version keeps its value (and a
+warning) until it is changed. Extra arguments that override the engine's
+configuration files (`-ini:...`, `-iniFile=`) are refused. The full table
+is in [docs/DESIGN.md](docs/DESIGN.md#game-settings).
 
 ## Server passwords
 
-An instance has a server password (to join) and an admin password. They are
-set only through the API, `PUT /api/v1/instances/<name>/secrets`, kept in a
+An instance has a server password (to join) and an admin password, and may
+have the game's announcements and problem report tokens. They are set only
+through the API, `PUT /api/v1/instances/<name>/secrets` (which the page's
+password and token fields and `esm secret <name> <which>` use), kept in a
 private file, and never shown. Rules (`--set`) and extra arguments (`--arg`)
 are shown to everyone who may look at an instance, so ESM refuses names
 there that look like a secret (`JoinPassword`, `RconKey`, `AuthToken`, ...).
+The tokens travel exactly like the passwords, in the file or on the command
+line.
 
 **By default the passwords travel in a file.** Before each start ESM writes
 them to `instances/<name>/run/server-secrets.json` (readable by the ESM

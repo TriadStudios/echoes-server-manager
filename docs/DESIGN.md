@@ -147,8 +147,8 @@ are refused, so typos are reported.
 | `world`            | World (save) name; defaults to the instance name. |
 | `ports`            | `game` and `query`. Picked from the ranges when not given. |
 | `bind_ip`          | Where ESM checks that the ports are free and probes the query port; empty means all interfaces. It is **not** given to the server (no `-MULTIHOME`), which listens on every address: the box's firewall decides where its query port is reachable. |
-| `max_players`      | 1 to 200. |
-| `rules`            | Server settings; each becomes `-Key=Value` on the command line. |
+| `max_players`      | 1 to 70, the most the game server takes (default 10). See below for a value stored by an earlier version. |
+| `rules`            | Game settings; each becomes `-Key=Value` on the command line. The settings ESM knows by name are in [Game settings](#game-settings); other keys pass as they are. |
 | `listed`           | Whether the server shows in the in-game server list (default: true for live, false for test); passed as `-ListInBrowser=True` or `False`. |
 | `autostart`        | Start when ESM starts. |
 | `restart_on_crash` | Restart after a crash, with back-off (default true). |
@@ -160,10 +160,20 @@ are refused, so typos are reported.
 | `previous_builds`  | Builds this instance ran before, newest first. |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
-names, passwords, the secrets file, `-UserDir`, `-abslog` and so on), may
-not be `-MULTIHOME` (see [The real server](#the-real-server)), and may not
-name a secret (see [Passwords](#passwords)). Values may not contain control
-characters. The command line is always built as an argument list, never as
+names, passwords and tokens, the secrets file, `-UserDir`, `-abslog` and so
+on), may not be `-MULTIHOME` (see [The real server](#the-real-server)) or an
+override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`
+and `-iniFile=`, which could change the ports, the networking or the
+server's folders behind ESM's back), and may not name a secret (see
+[Passwords](#passwords)). Values may not contain control characters.
+
+The game server takes at most 70 players (it lowers a larger `-MaxPlayers`
+to 70). A create, or a change of `max_players`, is held to 1 to 70. An
+instance stored with more by an earlier version (which allowed up to 200)
+loads and starts as before, with its value passed and the server using 70,
+and carries the warning `max_players_above_game_limit` until its
+`max_players` is changed. The default stays 10: ESM always passes
+`-MaxPlayers`, and a small default suits a box that runs several servers. The command line is always built as an argument list, never as
 a shell string, and ESM never writes it anywhere: not into its log, an
 error, the state or an audit entry.
 
@@ -179,7 +189,8 @@ The command line, in this order: the map, `-unattended`, `-Port=`,
 `-QueryPort=`, `-ServerName=` (the display name, or the instance name),
 `-WorldName=`, `-MaxPlayers=`, `-ListInBrowser=`, `-UserDir=<instance>/data`,
 `-abslog=<instance>/logs/server.log`, then the rules (`-Key=Value`, sorted by
-key), the password switch or switches, and the extra arguments.
+key), the secrets file switch (or, in the compatibility mode, the password
+and token switches), and the extra arguments.
 
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
@@ -188,13 +199,120 @@ again before every start. The game port is reserved and given to the server
 although the server opens no socket on it (players join through Steam's
 relay); only the query port is reachable from outside.
 
+## Game settings
+
+The game server takes its settings as `-Key=Value` switches. Besides the
+ones ESM sets itself (server name, world, player limit, listing, ports,
+passwords), ESM knows the switches of the server builds by name, in one
+catalog in the adapter
+([`internal/gameserver/catalog.go`](../internal/gameserver/catalog.go)):
+for each the key, a group, a type, the server's default, the allowed range
+or values, a line of help, and two flags, `new_world_only` and `caution`.
+The API serves it read-only (`GET /api/v1/game-settings`, every role), the
+page makes its settings fields from it, and `esm game-settings` prints it.
+
+Storage and transport do not change: an instance keeps its game settings
+in `rules`, and each rule goes onto the command line as `-Key=Value`. A
+setting that is not set is not passed, and the server uses its default.
+A rule whose key is in the catalog is checked when it is set or changed:
+by its type (`bool`: `True` or `False`, also `true`, `yes`, `no`, `1` and
+`0` in any case; `int`; `float`, a plain decimal like `0.25`; `enum`, one
+of its values in any case; `list`; `date`, `YYYY-MM-DD`; `string`) and by
+its range, refused with 422 `invalid` naming the key and what it allows.
+The server would clamp a number out of range or ignore a value it cannot
+read; ESM refuses both, so a setting does what it shows. A value stored
+before (by an earlier version, or by hand) is kept as it is and passed as
+before until it is changed. A key that names a catalog setting in another
+case (`motd`) is refused when set: the server finds its switches without
+regard to case, and the catalog's spelling is the one to use. Keys outside
+the catalog are passed as they are, as before: a newer server build may
+take a setting this catalog does not know yet.
+
+Two details of the server's command line shape the checks. It ends a
+value that has no white space at the first `,` or `)`, and reads a value
+with white space whole. So a list is passed with `, ` between its items
+(`-ChatBlockedWords=rude, ruder`), and its items may not hold white space,
+`)` or a double quote; a text value without white space may not hold `,`
+or `)`. A value has at most 256 characters, a list at most 2000.
+
+**World rules apply to a new world only.** The settings of the group
+"World rules" are copied into the world when the game creates it; from
+then on the world keeps the rules saved with it, and a change here takes
+effect only for a new world (for example under a new world name). ESM does
+not edit a world's saved rules. `LastWipe` is the exception: it is read at
+every start (it is the date the server list shows), so it sits with the
+identity settings.
+
+The two tokens (`AnnouncementsToken`, `ProblemReportToken`) are secrets:
+they are never rules (their names look like secrets and are refused there)
+and are kept with the passwords (see [Passwords](#passwords)).
+
+| Key | Type | Default | Allowed | Notes |
+|-----|------|---------|---------|-------|
+| **Identity and access** | | | | |
+| `MOTD` | string | not set (the game's own welcome) | up to 256 characters | |
+| `LAN` | bool | `False` | `True`, `False` | |
+| `AllowNonSteamClients` | bool | `False` | `True`, `False` | caution: players without a Steam identity; not together with `AdminPlayerIds` |
+| `AdminPlayerIds` | list | not set | SteamID64 numbers (or `net:` ids), up to 2000 characters | |
+| `AdminLoginMaxAttempts` | int | `5` | at least 0 (0: no lockout) | |
+| `AdminLoginLockoutSeconds` | int | `60` | 0 to 3600 seconds | |
+| `BossSummonCooldownSeconds` | int | `0` | at least 0 seconds | |
+| `LastWipe` | date | not set (the world's own) | YYYY-MM-DD, not in the future | read at every start |
+| **World rules** | | | | |
+| `HarvestRate` | float | `1` | 0.1 to 1000 | new world only |
+| `XPRate` | float | `1` | 0.1 to 1000 | new world only |
+| `TamingRate` | float | `1` | 0.1 to 1000 | new world only |
+| `TamingBiteRate` | float | `1` | 0.1 to 1000 | new world only |
+| `HatchRate` | float | `1` | 0.1 to 1000 | new world only |
+| `MatureRate` | float | `1` | 0.1 to 1000 | new world only |
+| `MatingRate` | float | `1` | 0.1 to 1000 | new world only |
+| `CareRate` | float | `1` | 0.1 to 1000 | new world only |
+| `ImprintRate` | float | `1` | 0.1 to 1000 | new world only |
+| `DayLengthMinutes` | float | `60` | 5 to 240 minutes | new world only |
+| `StructureDecay` | bool | `True` | `True`, `False` | new world only |
+| `StructureDecayMultiplier` | float | `1` | 0.1 to 10 | new world only |
+| `PvP` | bool | `False` | `True`, `False` | new world only |
+| `PvPStructureDamage` | bool | `True` | `True`, `False` | new world only |
+| `OfflineRaidProtection` | bool | `False` | `True`, `False` | new world only |
+| `ORPActivationMinutes` | float | `15` | 0 to 1440 minutes | new world only |
+| `ORPStructureDamageTaken` | float | `0.25` | 0 to 1 | new world only |
+| `ORPTameDamageTaken` | float | `0.25` | 0 to 1 | new world only |
+| `ORPTurretDamageMultiplier` | float | `2` | 0 to 10 | new world only |
+| `Difficulty` | enum | `1` | `0` (Easy), `1` (Normal), `2` (Hard) | new world only |
+| `DeathDropMode` | enum | `Everything` | `Everything`, `InventoryOnly`, `Nothing` | new world only |
+| **Chat** | | | | |
+| `ChatLog` | bool | `True` | `True`, `False` | |
+| `ChatFilter` | enum | `Mask` | `Off`, `Mask`, `Drop` | |
+| `ChatBlockedWords` | list | not set | words, up to 2000 characters | |
+| **Announcements and reports** | | | | |
+| `AnnouncementsUrl` | string | not set (no announcements) | http or https address | |
+| `AnnouncementsPollSeconds` | float | `30` | at least 10 seconds | |
+| `AnnouncementsToken` | secret | not set | with the secrets (`announcements_token`) | falls back to the report token |
+| `ProblemReportUrl` | string | not set (reports stay on the server) | http or https address | |
+| `ProblemReportToken` | secret | not set | with the secrets (`problem_report_token`) | |
+
+The game also has settings with no switch at all (they live only in a
+world's save or the build's own configuration files); ESM cannot set
+those per instance.
+
 ## Passwords
 
-An instance has two secrets: the server password (needed to join) and the
-admin password. They are set with `PUT /api/v1/instances/{name}/secrets`
-and nowhere else, stored in `secrets.json` (0600) and never returned: the
-API only says whether each is set. A change reaches the server with its
-next start.
+An instance has two passwords: the server password (needed to join) and
+the admin password. It may also have the game's two tokens, the
+announcements token and the problem report token (the game settings
+`AnnouncementsToken` and `ProblemReportToken`), which are secrets too and
+travel exactly like the passwords. All four are set with
+`PUT /api/v1/instances/{name}/secrets` (the page's write-only fields and
+`esm secret` use it) and nowhere else, stored in `secrets.json` (0600) and
+never returned: the API only says whether each is set. A change reaches the
+server with its next start.
+
+A token has 8 to 256 characters of printable ASCII without white space,
+`"`, `,` or `)` (422 `invalid`): in the compatibility mode it goes onto the
+command line, where the server would end it at `,` or `)`. Like a password
+it may not occur in a setting (422 `password_in_settings`), it is masked
+wherever the output filter masks passwords, and a switch whose name holds
+`token` has its value masked like a password switch.
 
 A password has at least 8 characters (422 `password_too_short`; a choice
 made for now, it can only be raised later). A password may not occur, in
@@ -214,10 +332,10 @@ that names the file, `-SecretsFile=<absolute path>`. The file is one JSON
 object on one line, UTF-8:
 
 ```json
-{"server_password":"...","admin_password":"..."}
+{"server_password":"...","admin_password":"...","announcements_token":"...","problem_report_token":"..."}
 ```
 
-A password that is not set is left out; with none set the file is `{}`.
+A secret that is not set is left out; with none set the file is `{}`.
 The file has mode 0600 inside folders with mode 0700, is written afresh at
 every start, and is removed once the server has stopped: after a stop, a
 crash, a failed start, or at the next ESM start that finds the server gone.
@@ -244,7 +362,8 @@ compatibility mode below.
 ### On the command line (compatibility mode)
 
 `secret_delivery: "command_line"` passes the passwords as
-`-ServerPassword=` and `-AdminPassword=` switches instead. It is off unless
+`-ServerPassword=` and `-AdminPassword=` switches instead, and the tokens
+as the server's own `-AnnouncementsToken=` and `-ProblemReportToken=`. It is off unless
 an admin sets it for an instance in so many words, at create or with a
 change. (The secrets file is written in this mode too. The server is not
 told about it; it is ESM's record of what the running server was started
@@ -324,12 +443,12 @@ by its position, a rule by its key.
 ### The output filter
 
 ESM still filters what a server wrote (log tails and `log` events) and
-what a supervisor's tool printed (start errors). It masks the passwords now
-set and the ones the running server was started with, in the forms they
-take on the way (as they are, with systemd's doubled `$`, JSON and Go
-quoting); the value of anything that looks like a password switch
-(`-...Password=`, up to the next switch) or pair (`password=`); and API
-tokens. A command line that a supervisor's tool repeats whole is cut out of
+what a supervisor's tool printed (start errors). It masks the passwords and
+tokens now set and the ones the running server was started with, in the
+forms they take on the way (as they are, with systemd's doubled `$`, JSON
+and Go quoting); the value of anything that looks like a password or token
+switch (`-...Password=`, `-...Token=`, up to the next switch) or a password
+pair (`password=`); and API tokens. A command line that a supervisor's tool repeats whole is cut out of
 its message.
 
 This is a second line of defence, for a server that prints a password
@@ -976,11 +1095,22 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   line; every role sees that instance's UNSAFE warning.
 - **Honest gaps.** The page shows only what the API returns and says where
   ESM cannot know something yet: CPU use per server, memory on Windows, the
-  player list (only the count from the status file), rule defaults and
-  allowed values (rules are shown as name and value; there is no rules
-  description from the game yet, so no presets), the Steam runtime files,
+  player list (only the count from the status file), presets of game
+  settings, the Steam runtime files,
   whether players can reach the box from outside, and a budget for all
   game servers together.
+- **Game settings.** A server's settings screen has a field for every
+  setting of the [catalog](#game-settings), by group, made from
+  `GET /api/v1/game-settings`: a choice for a `bool` or an `enum` (with
+  "Game default" first), a number field with the range, a date field, a
+  text field, each with its help and default. An empty field is a setting
+  not set. The world rules carry the notice that only a new world takes
+  them. A value set in another spelling than the field writes (`true` for
+  `True`) is kept as it is, and a stored value the catalog does not accept
+  is shown as text with the reason, so saving never drops or rewrites it.
+  The two tokens are write-only fields like the passwords. Rules outside
+  the catalog are listed apart ("Other settings"), as name and value. A
+  save sends the whole rules map, as the API wants.
 - **Health check on demand.** The Box screen runs the health check
   (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
   every free port of the ranges; other roles are told it needs the admin
@@ -1006,6 +1136,9 @@ create <name> [--build V] [--channel C] [--map M] [--world W] [--display-name N]
        [--cluster C] [--game-port P] [--query-port P] [--bind IP] [--max-players N]
        [--set Key=Value ...] [--arg -X=Y ...] [--secret-delivery file|command_line]
 start | stop | restart <name>
+secret <name> server-password|admin-password|announcements-token|problem-report-token [--clear]
+       (the value on standard input)
+game-settings [--group access|world|chat|reports]
 logs <name> [-n N] [-f] [--console]
 build install <folder|archive|https-url|steam:<source>> [--sha256 HEX] | build list | build prune
 build manifest <folder> --version V [--channel C] --executable linux=<path> [--default-map M] [--commit C]
@@ -1024,7 +1157,11 @@ clear.
 
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
-object). `logs` prints the log lines themselves. `create`, `list` and
+object). `logs` prints the log lines themselves, and `game-settings` a
+table of the [game settings](#game-settings): key, type, default, what is
+allowed, and whether a setting is a world rule, a caution or a secret.
+`create --set Key=Value` is checked against the catalog by the API like
+any other change. `create`, `list` and
 `status` print the warnings of an instance in words; one that passes its
 passwords on the command line is marked UNSAFE. `doctor` works without a
 running service: it checks the root, the config, the listen rule, free
@@ -1171,6 +1308,18 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   goes onto the command line (see [Instances](#instances)); a value that
   holds another switch's name without a space before it (`x-Port=1`) is
   left to the server's own parsing.
+- **World rules reach a new world only.** The game copies them into a
+  world when it creates it and keeps them with the world; ESM does not
+  edit a world's saved rules. A changed world rule shows in the instance's
+  rules, but an existing world goes on with the rules it was created with.
+- **No overrides of the engine's configuration files.** `-ini:` and
+  `-iniFile=` are refused as extra arguments and as rules, so the build's
+  own tuning (its configuration files) cannot be changed per instance
+  through ESM.
+- **The catalog follows the server builds it was written for.** A setting
+  of a newer server build that the catalog does not know yet is a plain
+  rule, passed as it is and not checked; a setting the server no longer
+  takes is still checked and passed until the catalog changes.
 - **Chat that imitates a log line.** ESM only takes lines that carry the
   engine's full prefix with the words right after the category (and an
   optional verbosity). Should the game ever log what a player types right
