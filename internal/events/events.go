@@ -20,6 +20,9 @@ const (
 	TypeLog   = "log"
 	TypeAudit = "audit"
 	TypeBuild = "build"
+	// TypeUpdate is a step of an instance's update to a newer build that
+	// ESM found by itself (available, started, updated, failed, overdue).
+	TypeUpdate = "update"
 )
 
 // Event is one published event. Data is the JSON encoding of the payload,

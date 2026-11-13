@@ -16,6 +16,7 @@ func (m *Manager) schedLoop() {
 			return
 		case <-t.C:
 			m.schedTick(m.opts.Now())
+			m.autoTick(m.opts.Now())
 		}
 	}
 }

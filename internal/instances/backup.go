@@ -344,6 +344,13 @@ func (m *Manager) checkBackupFiles(name, id string, files []string) error {
 // and started, and the error says so. An instance that was stopped is
 // stopped again after the new build proved ready.
 func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
+	return m.update(ctx, name, to, false)
+}
+
+// update is Update; auto marks an automatic update (see autoupdate.go):
+// the player count is asked again right before the server is stopped, and
+// a manual one may pause automatic updates.
+func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
@@ -382,6 +389,18 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 		in.mu.Unlock()
 		return m.mustStatus(name), fmt.Errorf("pre-update backup: %w", err)
 	}
+	if wasRunning && auto {
+		if beforeAutoStop != nil {
+			beforeAutoStop(name)
+		}
+		// The scheduler saw no players; one may have joined since.
+		if why := m.playersWaiting(cfg); why != "" {
+			in.mu.Lock()
+			m.setLocked(in, prevState, "automatic update to "+to+" put off: "+why)
+			in.mu.Unlock()
+			return m.mustStatus(name), fault.New(fault.Conflict, "players_online", "automatic update to %s put off: %s", to, why)
+		}
+	}
 	if wasRunning {
 		if err := m.stopLocked(ctx, in, "stopped for an update to "+to); err != nil {
 			return m.mustStatus(name), err
@@ -402,6 +421,9 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 			}
 		}
 		m.log.Info("instance updated", "instance", name, "from", old, "to", to)
+		if !auto {
+			m.noteManualUpdate(in, old, to)
+		}
 		return m.mustStatus(name), nil
 	}
 	cause := err

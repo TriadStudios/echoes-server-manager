@@ -7,6 +7,19 @@
 {{if $b.SecretsOnCommandLine}}<p class="alert danger">UNSAFE on a shared box: {{join $b.SecretsOnCommandLine ", "}} pass their passwords on the server command line, where every account on this box can read them from the process list, and the server writes them into its log.</p>{{end}}
 
 <div class="grid cards">
+<section class="panel stack" aria-labelledby="esm-h">
+<h2 class="label" id="esm-h">ESM version</h2>
+<dl class="facts one">
+<div><dt>Running</dt><dd class="mono">{{$b.Version}}</dd></div>
+<div><dt>Newest release</dt><dd class="mono">{{if $b.Release.Latest}}{{$b.Release.Latest}}{{else}}not known{{end}}</dd></div>
+<div><dt>Last looked</dt><dd>{{if not $b.Release.Checked.IsZero}}<time datetime="{{iso $b.Release.Checked}}">{{when $b.Release.Checked}}</time>{{else}}not yet{{end}}</dd></div>
+</dl>
+{{if $b.UpdateAvailable}}<p class="alert">ESM {{$b.Release.Latest}} is out.</p>{{end}}
+{{if $b.Release.Note}}<p class="note">{{$b.Release.Note}}</p>{{end}}
+{{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place and restart ESM? Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
+<p class="note">ESM never updates itself on its own. An update takes a release only when its signature checks out with the key built into ESM and the binary's hash matches the signed list; the old binary is kept next to it as <span class="mono">.previous</span>. ESM then restarts through its service manager (<span class="mono">esm service install</span>). On the box: <span class="mono">esm update-self</span>.</p>
+</section>
+
 <section class="panel stack" aria-labelledby="access-h">
 <h2 class="label" id="access-h">Access</h2>
 <dl class="facts one">

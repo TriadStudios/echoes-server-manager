@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
@@ -29,6 +32,8 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/page"
+	"github.com/TriadStudios/echoes-server-manager/internal/release"
+	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 )
@@ -57,6 +62,19 @@ type Options struct {
 	// FailDelay overrides how long a failed login waits for its answer
 	// (api.DefaultFailDelay).
 	FailDelay time.Duration
+	// SteamTick overrides how often Steam sources are looked at
+	// (steam.DefaultTick).
+	SteamTick time.Duration
+	// ReleaseAPI, ReleaseHTTP and ReleaseKey override where releases are
+	// looked up, the client that fetches them and the key that checks them
+	// (release.DefaultAPI, an https-only client, release.PublicKey). In a
+	// test binary nothing is looked up unless ReleaseAPI is set.
+	ReleaseAPI  string
+	ReleaseHTTP *http.Client
+	ReleaseKey  ed25519.PublicKey
+	// Executable is the binary a self-update replaces (default: the
+	// running one).
+	Executable string
 }
 
 // Service is a running ESM.
@@ -69,12 +87,22 @@ type Service struct {
 	bus   *events.Bus
 	sup   supervisor.Supervisor
 	inst  *instances.Manager
+	steam *steam.Manager
+	rel   *release.Client
 	tcp   net.Listener
 	sock  net.Listener
 	web   *http.Server
 	local *http.Server
 	errc  chan error
 	once  sync.Once
+	// exit is closed when the service should end so that its service
+	// manager starts it again (after a self-update).
+	exit     chan struct{}
+	exitOnce sync.Once
+	exe      string
+	version  string
+	// releaseOff says why no release is ever looked up ("" when they are).
+	releaseOff string
 }
 
 // Start opens the root and starts serving. It fails when the listen rule
@@ -116,7 +144,7 @@ func Start(o Options) (_ *Service, err error) {
 	if created {
 		log.Info("wrote the default config", "path", config.FileName)
 	}
-	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 2)}
+	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 2), exit: make(chan struct{}), exe: o.Executable, version: o.Version}
 
 	if s.audit, err = audit.Open(st); err != nil {
 		return nil, err
@@ -155,12 +183,24 @@ func Start(o Options) (_ *Service, err error) {
 	if err := bm.CleanTemp(); err != nil {
 		log.Warn("cannot clean the tmp folder", "err", err)
 	}
+	s.steam = steam.New(steam.Options{Store: st, Config: cfg, Builds: bm, Audit: s.audit, Logger: log, Tick: o.SteamTick})
+	cleanups = append(cleanups, s.steam.Close)
 	if s.inst, err = instances.New(instances.Options{
 		Store: st, Config: cfg, Supervisor: s.sup, Builds: bm, Bus: s.bus, Logger: log,
 		WatchInterval: o.WatchInterval, SchedulerInterval: o.SchedulerInterval,
+		SteamTarget: s.steam.Target, Audit: s.audit,
 	}); err != nil {
 		return nil, err
 	}
+	s.rel = &release.Client{API: o.ReleaseAPI, HTTP: o.ReleaseHTTP, Key: o.ReleaseKey, UserAgent: "esm/" + o.Version}
+	if o.ReleaseAPI == "" && testing.Testing() {
+		s.releaseOff = "releases are not looked up in tests"
+	}
+	checkNote := s.releaseOff
+	if !cfg.UpdateCheck {
+		checkNote = "update_check is off in " + config.FileName
+	}
+	checker := release.NewChecker(s.rel, o.Version, 0, checkNote == "", checkNote)
 
 	// Listen before adopting servers, so a second ESM on the same root
 	// stops here.
@@ -190,6 +230,7 @@ func Start(o Options) (_ *Service, err error) {
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
 		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts,
+		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate,
 		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
@@ -197,6 +238,7 @@ func Start(o Options) (_ *Service, err error) {
 	s.local = newHTTPServer(srv.SocketHandler(), errLog)
 	go s.serve(s.web, s.tcp)
 	go s.serve(s.local, s.sock)
+	s.steam.Start()
 	log.Info("ESM started", "version", o.Version, "root", st.Path(), "listen", s.tcp.Addr().String(), "tls", useTLS,
 		"socket", cfg.SocketPath(), "supervisor", s.sup.Kind(), "limits_enforced", s.sup.LimitsEnforced())
 	if !s.sup.LimitsEnforced() {
@@ -281,6 +323,34 @@ func (s *Service) Config() *config.Config { return s.cfg }
 // Err delivers a listener failure.
 func (s *Service) Err() <-chan error { return s.errc }
 
+// Exit is closed when the service should end and be started again by its
+// service manager: after a self-update put a new binary in place.
+func (s *Service) Exit() <-chan struct{} { return s.exit }
+
+// selfUpdate replaces ESM's binary with the newest release's (see
+// release.Client.Update) and, when that worked, asks the service to end a
+// moment later so the answer still reaches the caller. Game servers keep
+// running; the new ESM adopts them.
+func (s *Service) selfUpdate(ctx context.Context, force bool) (release.Result, error) {
+	if s.releaseOff != "" {
+		return release.Result{}, errors.New(s.releaseOff)
+	}
+	exe := s.exe
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return release.Result{}, err
+		}
+	}
+	res, err := s.rel.Update(ctx, s.version, exe, runtime.GOOS, runtime.GOARCH, force)
+	if err != nil {
+		return res, err
+	}
+	s.log.Info("ESM binary updated; ending so the service manager starts the new one", "from", res.From, "to", res.To, "previous", res.Previous)
+	time.AfterFunc(time.Second, func() { s.exitOnce.Do(func() { close(s.exit) }) })
+	return res, nil
+}
+
 // Shutdown stops accepting requests, ends event streams, stops watching
 // and scheduling, flushes the audit log and removes the socket. Game
 // servers keep running.
@@ -289,6 +359,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	s.once.Do(func() {
 		s.bus.Close()
 		err = errors.Join(s.web.Shutdown(ctx), s.local.Shutdown(ctx))
+		s.steam.Close()
 		n := s.inst.Close()
 		s.sup.Close()
 		if aerr := s.audit.Close(); aerr != nil {

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/service"
+	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 )
 
 func (e *env) serve(args []string) error {
@@ -45,6 +47,8 @@ func (e *env) serve(args []string) error {
 	select {
 	case <-ctx.Done():
 	case runErr = <-svc.Err():
+	case <-svc.Exit():
+		fmt.Fprintln(e.errOut, "esm: ending after a self-update; the service manager starts the new binary")
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -483,12 +487,15 @@ func (e *env) restore(args []string) error {
 func (e *env) build(args []string) error {
 	fs := e.flags("build")
 	sum := fs.String("sha256", "", "expected sha256 of an archive or download")
+	if len(args) > 0 && args[0] == "manifest" {
+		return e.buildManifest(args[1:])
+	}
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return usageErr("build needs install, list or prune")
+		return usageErr("build needs install, list, prune or manifest")
 	}
 	c, err := e.client()
 	if err != nil {
@@ -500,15 +507,20 @@ func (e *env) build(args []string) error {
 			return err
 		}
 		src := pos[1]
-		if lower := strings.ToLower(src); !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") {
+		if lower := strings.ToLower(src); !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") &&
+			!strings.HasPrefix(src, steam.SourcePrefix) {
 			// The service resolves paths on its own; send an absolute one.
 			if src, err = filepath.Abs(src); err != nil {
 				return err
 			}
 		}
 		var b api.BuildView
-		if err := c.do(e.ctx, "POST", "/api/v1/builds", api.InstallRequest{Source: src, SHA256: *sum}, &b); err != nil {
+		status, err := c.doStatus(e.ctx, "POST", "/api/v1/builds", api.InstallRequest{Source: src, SHA256: *sum}, &b)
+		if err != nil {
 			return err
+		}
+		if status == http.StatusOK {
+			return e.result(b, fmt.Sprintf("%s is at build %s, which is installed already", src, b.Version))
 		}
 		return e.result(b, fmt.Sprintf("installed build %s (%s, %s, %s)", b.Version, b.Channel, plural(b.Files, "file", "files"), byteSize(b.SizeBytes)))
 	case "list":

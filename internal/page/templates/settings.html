@@ -19,6 +19,21 @@
 </fieldset>
 
 <fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
+<legend class="label">Updates</legend>
+<p class="note">{{if $s.Update.Source}}This server's build came from the Steam source <span class="mono">{{$s.Update.Source}}</span>, whose checks install each new build of its branch.{{else}}This server's build is not from a Steam source, so no newer build is looked for; update it to a build from one to follow it.{{end}} With <span class="mono">restart</span> ESM updates the server when it has no players: a backup, one stop request, the new build, and a roll back if it does not get ready.</p>
+<div class="grid fields">
+<label class="field"><span>Automatic updates</span>
+<select name="auto_update" data-orig="{{$s.AutoUpdate}}" data-label="Automatic updates">
+<option value="off"{{if eq $s.AutoUpdate "off"}} selected{{end}}>off: show a newer build</option>
+<option value="install"{{if eq $s.AutoUpdate "install"}} selected{{end}}>install: show a newer build</option>
+<option value="restart"{{if eq $s.AutoUpdate "restart"}} selected{{end}}>restart: update when no players are on</option>
+</select></label>
+<label class="field"><span>Warn when an update waits longer than</span>
+<input type="text" name="update_max_wait" class="mono" maxlength="16" value="{{$s.UpdateMaxWait}}" data-orig="{{$s.UpdateMaxWait}}" data-label="Update wait warning"></label>
+</div>
+</fieldset>
+
+<fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Passwords</legend>
 <p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.</p>
 <div class="grid fields">

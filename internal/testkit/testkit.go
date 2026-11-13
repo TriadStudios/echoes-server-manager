@@ -52,6 +52,9 @@ const (
 	ControlUnready = "unready"
 	// ControlCommandLine makes the fake print its command line again.
 	ControlCommandLine = "cmdline"
+	// ControlPlayers sets the player count the fake reports (see
+	// SetPlayers).
+	ControlPlayers = "players"
 	// ControlSecondSignal is the file the fake writes (and never takes)
 	// when it gets a second stop signal: a test that finds it failed to
 	// stop with exactly one signal.
@@ -158,6 +161,9 @@ func Run(m *testing.M) int {
 	if fakeTemp != "" {
 		os.RemoveAll(fakeTemp)
 	}
+	if steamTemp != "" {
+		os.RemoveAll(steamTemp)
+	}
 	if r := netbind.Refused(); len(r) > 0 {
 		fmt.Fprintf(os.Stderr, "FAIL: tests asked ESM to bind addresses that are not loopback (refused, tests must use 127.0.0.1): %s\n",
 			strings.Join(r, ", "))
@@ -205,10 +211,6 @@ func MakeBuild(t testing.TB, parent string, o BuildOptions) string {
 		o.Channel = "live"
 	}
 	dir := filepath.Join(parent, o.Version)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fake := FakeServer(t)
 	switch o.DefaultMap {
 	case "":
 		o.DefaultMap = DefaultMap
@@ -216,29 +218,7 @@ func MakeBuild(t testing.TB, parent string, o BuildOptions) string {
 		o.DefaultMap = ""
 	}
 	m := builds.Manifest{Version: o.Version, Commit: o.Commit, Channel: o.Channel, DefaultMap: o.DefaultMap,
-		Executables: map[string]string{}, Files: map[string]string{}}
-	for goos, rel := range map[string]string{"linux": LinuxExe, "windows": WindowsExe} {
-		if goos != runtime.GOOS && o.ThisOSOnly {
-			continue
-		}
-		m.Executables[goos] = rel
-		dst := filepath.Join(dir, filepath.FromSlash(rel))
-		if goos == runtime.GOOS {
-			copyFile(t, fake, dst, 0o755)
-		} else {
-			writeFile(t, dst, []byte("placeholder: the "+goos+" server is not built in tests\n"), 0o755)
-		}
-		if o.Fake != nil {
-			b, err := json.Marshal(o.Fake)
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, filepath.Join(filepath.Dir(dst), "fake.json"), b, 0o644)
-		}
-	}
-	for _, rel := range slices.Sorted(maps.Keys(o.Extra)) {
-		writeFile(t, filepath.Join(dir, filepath.FromSlash(rel)), o.Extra[rel], 0o644)
-	}
+		Executables: MakeContent(t, dir, o), Files: map[string]string{}}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -261,6 +241,42 @@ func MakeBuild(t testing.TB, parent string, o BuildOptions) string {
 	b, _ := json.MarshalIndent(m, "", "  ")
 	writeFile(t, filepath.Join(dir, "manifest.json"), b, 0o644)
 	return dir
+}
+
+// MakeContent fills dir with what a build of o holds besides its manifest:
+// the fake server for this OS, a placeholder for the other OS (unless
+// ThisOSOnly), optional fake.json files and the extra files. It returns the
+// executables by OS. (A Steam app's files look like this.)
+func MakeContent(t testing.TB, dir string, o BuildOptions) map[string]string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := FakeServer(t)
+	exes := map[string]string{}
+	for goos, rel := range map[string]string{"linux": LinuxExe, "windows": WindowsExe} {
+		if goos != runtime.GOOS && o.ThisOSOnly {
+			continue
+		}
+		exes[goos] = rel
+		dst := filepath.Join(dir, filepath.FromSlash(rel))
+		if goos == runtime.GOOS {
+			copyFile(t, fake, dst, 0o755)
+		} else {
+			writeFile(t, dst, []byte("placeholder: the "+goos+" server is not built in tests\n"), 0o755)
+		}
+		if o.Fake != nil {
+			b, err := json.Marshal(o.Fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(filepath.Dir(dst), "fake.json"), b, 0o644)
+		}
+	}
+	for _, rel := range slices.Sorted(maps.Keys(o.Extra)) {
+		writeFile(t, filepath.Join(dir, filepath.FromSlash(rel)), o.Extra[rel], 0o644)
+	}
+	return exes
 }
 
 // FileSHA256 returns the hex sha256 of a file.
@@ -294,6 +310,19 @@ func copyFile(t testing.TB, src, dst string, mode fs.FileMode) {
 		t.Fatal(err)
 	}
 	writeFile(t, dst, b, mode)
+}
+
+// SetPlayers makes the fake with this data folder report n players.
+func SetPlayers(dataDir string, n int) error {
+	dir := filepath.Join(dataDir, "control")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, ".players.tmp")
+	if err := os.WriteFile(tmp, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, ControlPlayers))
 }
 
 // WriteControl drops a request file (ControlStop, ControlCrash,

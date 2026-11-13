@@ -126,6 +126,7 @@ func Run(o Options) Report {
 	if rootOK {
 		checkBuilds(&r, o.Root, goos, cfg.SteamAppID)
 	}
+	checkSteamSources(&r, cfg, o.Root, goos)
 	return r
 }
 

@@ -134,6 +134,17 @@ type Config struct {
 	// server's LD_LIBRARY_PATH. Empty means <root>/steam/linux64; a
 	// relative path is taken from the root.
 	SteamRuntimeDir string `json:"steam_runtime_dir,omitempty"`
+	// UpdateCheck lets the service look up the newest ESM release (at most
+	// every 6 hours, and only while someone looks at the box) to say when a
+	// newer one is out. It never updates anything by itself. On by default.
+	UpdateCheck bool `json:"update_check"`
+	// SteamCMD is the path of SteamCMD (steamcmd.sh on Linux, steamcmd.exe
+	// on Windows), used to download builds of SteamSources. Empty means
+	// <root>/steamcmd/steamcmd.sh (or .exe); a relative path is taken from
+	// the root.
+	SteamCMD string `json:"steamcmd,omitempty"`
+	// SteamSources are Steam apps ESM installs builds from (see SteamSource).
+	SteamSources []SteamSource `json:"steam_sources,omitempty"`
 
 	// Root is the ESM root this config was loaded from. Not stored.
 	Root string `json:"-"`
@@ -157,6 +168,7 @@ func Defaults(root string) *Config {
 		KeepPreviousBuilds: DefaultKeepPreviousBuilds,
 		BackupSaveWait:     Duration(DefaultBackupSaveWait),
 		LogLevel:           DefaultLogLevel,
+		UpdateCheck:        true,
 		Root:               root,
 	}
 }
@@ -310,6 +322,19 @@ func (c *Config) Validate() error {
 	if strings.ContainsFunc(c.SteamRuntimeDir, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
 		runtime.GOOS != "windows" && strings.Contains(c.SteamRuntimeDir, ":") {
 		return errors.New(`config: steam_runtime_dir must be a folder path without control characters or ":"`)
+	}
+	if strings.ContainsFunc(c.SteamCMD, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errors.New("config: steamcmd must be a file path without control characters")
+	}
+	seen := map[string]bool{}
+	for i, s := range c.SteamSources {
+		if err := s.Validate(); err != nil {
+			return fmt.Errorf("config: steam_sources[%d]: %w", i, err)
+		}
+		if seen[s.Name] {
+			return fmt.Errorf("config: steam_sources: %q is named twice", s.Name)
+		}
+		seen[s.Name] = true
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

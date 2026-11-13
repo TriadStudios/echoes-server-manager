@@ -35,6 +35,8 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/release"
+	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 	"github.com/TriadStudios/echoes-server-manager/internal/web"
 )
@@ -103,6 +105,12 @@ type Options struct {
 	// hosts or gets 421 (see hostSet); the unix socket is not checked.
 	Listen      string
 	PublicHosts []string
+	// Steam installs builds from Steam sources (optional).
+	Steam *steam.Manager
+	// Release says whether a newer ESM release is out (optional), and
+	// SelfUpdate puts it in place of the running binary (optional).
+	Release    *release.Checker
+	SelfUpdate func(ctx context.Context, force bool) (release.Result, error)
 }
 
 // Server serves the API and the page.
@@ -180,6 +188,10 @@ func init() {
 	// The check test-binds every free port of both ranges: admin only.
 	r("GET", p+"/box/doctor", required, admin, "box.doctor", (*Server).doctor)
 	r("GET", p+"/box/firewall", required, read, "box.firewall", (*Server).firewall)
+	// Replacing ESM's own binary: admin only, and only when asked.
+	r("POST", p+"/box/self-update", required, admin, "box.self_update", (*Server).selfUpdate)
+	r("GET", p+"/steam", required, read, "steam.list", (*Server).listSteam)
+	r("PUT", p+"/steam/{name}/password", required, admin, "steam.password", (*Server).steamPassword)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
 	// Installing a build is installing a program that runs with ESM's own
 	// rights: admin only. Switching an instance to an installed build is

@@ -136,6 +136,10 @@
       if (!r.removed.length) { say('No build was unused.'); return; }
       done('removed');
     },
+    'self-update': async function () {
+      var r = await call('POST', '/api/v1/box/self-update');
+      say('ESM ' + r.to + ' is in place and ESM restarts now. Reload this page in a few seconds.');
+    },
     revoke: async function (b) {
       await call('DELETE', '/api/v1/tokens/' + enc(b.dataset.id));
       done('revoked');

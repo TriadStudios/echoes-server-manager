@@ -9,6 +9,7 @@
 <div><dt>Up for</dt><dd class="mono">{{if and (active $s.Status.State) (not $s.Status.StartedAt.IsZero)}}{{since $s.Status.StartedAt}}{{else}}not running{{end}}</dd></div>
 <div><dt>Ready by</dt><dd class="mono">{{if $s.Status.ReadySource}}{{$s.Status.ReadySource}}{{else}}not ready{{end}}</dd></div>
 <div><dt>Build</dt><dd class="mono">{{$s.Build}}</dd></div>
+<div><dt>Automatic updates</dt><dd>{{$s.AutoUpdate}}{{if $s.Update.Source}} <span class="note">(follows Steam source {{$s.Update.Source}})</span>{{else}} <span class="note">(this build is not from a Steam source)</span>{{end}}</dd></div>
 <div><dt>Channel</dt><dd class="mono">{{$s.Channel}}</dd></div>
 <div><dt>Cluster</dt><dd class="mono">{{if $s.Cluster}}{{$s.Cluster}}{{else}}none{{end}}</dd></div>
 <div><dt>World</dt><dd class="mono">{{$s.World}}</dd></div>
@@ -66,6 +67,12 @@
 </div>{{end}}
 </section>
 </div>
+
+{{if or $s.UpdateAvailable $s.Update.LastError}}<section class="panel" aria-labelledby="newer-h">
+<h2 class="label" id="newer-h">Newer build</h2>
+{{template "update-note" $s}}
+<p class="note">auto_update is set under Settings: off and install only show the newer build; restart updates the server as soon as it has no players (it asks the query port), with a backup first and a roll back when the new build does not get ready.</p>
+</section>{{end}}
 
 {{if $v.Operator}}<section class="panel" aria-labelledby="update-h">
 <h2 class="label" id="update-h">Update</h2>

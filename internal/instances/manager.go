@@ -66,6 +66,12 @@ type Options struct {
 	ProbeTimeout time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
+	// SteamTarget, when set, returns the newest installed build of a Steam
+	// source and when it was first seen (see steam.Manager.Target): what
+	// instances that follow the source update to.
+	SteamTarget func(source string) (version string, since time.Time, ok bool)
+	// Audit records automatic updates.
+	Audit *audit.Log
 }
 
 // View is an instance as the API shows it: settings, which secrets are set,
@@ -79,6 +85,11 @@ type View struct {
 	Live      Live        `json:"live"`
 	Scheduled Scheduled   `json:"scheduled"`
 	Warnings  []string    `json:"warnings"`
+	// UpdateAvailable says that the Steam source the instance's build came
+	// from has a newer installed build of its channel; Update has the
+	// details.
+	UpdateAvailable bool       `json:"update_available"`
+	Update          UpdateInfo `json:"update"`
 }
 
 // LogLine is the data of a "log" event.
@@ -137,6 +148,8 @@ type rt struct {
 	// serverID is the Steam server id the running server logged, "" while
 	// none is known. It changes at every start and is never stored.
 	serverID string
+	// auto is the scheduler's state of an automatic update.
+	auto autoState
 }
 
 // setFilterLocked rebuilds the filter for server output. in.mu must be
@@ -269,6 +282,7 @@ func New(opts Options) (*Manager, error) {
 			}
 		}
 		r.setFilterLocked()
+		r.auto = m.loadAuto(in.Name)
 		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build}
 		var last Status
 		if err := m.st.ReadJSON(stateFile(in.Name), &last); err == nil {
@@ -456,7 +470,10 @@ func (m *Manager) view(in *rt) View {
 	in.mu.Lock()
 	v := View{Instance: in.cfg.clone(), Status: in.status, Scheduled: m.scheduledLocked(in)}
 	serverID := in.serverID
+	auto := in.auto
 	in.mu.Unlock()
+	v.Update = m.updateInfo(v.Instance, auto)
+	v.UpdateAvailable = v.Update.Target != ""
 	v.Secrets = m.secretFlags(in.name)
 	v.Live = m.live(v, serverID)
 	v.Warnings = m.warnings(v)

@@ -4,12 +4,14 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
@@ -190,11 +192,26 @@ func unpackTarGz(r io.Reader, w *writer) error {
 // writer's folder. Files are read through an os.Root on the source, so a
 // file swapped for a link that leaves the folder cannot be followed.
 func copyFolder(sr *os.Root, w *writer) error {
+	return copyFolderSkip(context.Background(), sr, w, nil)
+}
+
+// copyFolderSkip is copyFolder without the top level names in skip, ending
+// early when ctx ends.
+func copyFolderSkip(ctx context.Context, sr *os.Root, w *writer, skip []string) error {
 	return fs.WalkDir(sr.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if p == "." {
+			return nil
+		}
+		if !strings.Contains(p, "/") && slices.Contains(skip, p) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		switch t := d.Type(); {

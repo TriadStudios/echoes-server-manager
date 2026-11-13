@@ -40,6 +40,69 @@ You need Go 1.24 or newer. ESM uses only the Go standard library.
 go build ./cmd/esm
 ```
 
+## Releases and updates
+
+Each release (a tag such as `v0.3.0`) carries `esm-linux-amd64`,
+`esm-windows-amd64.exe`, `SHA256SUMS` and `SHA256SUMS.sig`, the Ed25519
+signature of `SHA256SUMS`. `SHA256SUMS` starts with the line
+`version <tag>` and then lists the SHA-256 of both binaries, so the
+signature also says which release they belong to. The public half of the
+signing key is built into ESM (`internal/release.PublicKey`):
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAEUMNTA3aSwhquvpDj+iD59eFAonmvKFROj/RbZyZksI=
+-----END PUBLIC KEY-----
+```
+
+To check a download by hand (OpenSSL 3), save that key as
+`esm-release.pem`, then:
+
+```sh
+base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin
+openssl pkeyutl -verify -pubin -inkey esm-release.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig.bin
+head -1 SHA256SUMS                      # must name the release you downloaded
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+(`sha256sum` warns that one line, the version line, is not a checksum
+line; that is expected.)
+
+`esm version --check` says whether a newer release is out; the service
+looks too (at most every 6 hours, only while someone looks at the box) and
+shows it on the Box page and in `GET /api/v1/box` (`update_available`).
+Set `"update_check": false` in `esm.json` to turn that off.
+
+ESM never updates itself on its own. `esm update-self` (or the Box page's
+update button, admins only) downloads the newest release for this system,
+checks the signature with the built-in key and the binary's hash against
+the signed list, and only then puts the new binary in place; the old one
+stays next to it as `esm.previous` (to roll back, move it back). The page's
+button then ends the service so that its service manager starts the new
+binary; after `esm update-self` on the command line, restart the service
+yourself (`systemctl --user restart esm`). Game servers keep running
+either way and the new ESM adopts them.
+
+### Making a release (maintainers)
+
+The release workflow signs in a job of its own that runs in the GitHub
+environment `release`, whose secret `ESM_RELEASE_KEY` is the base64 of the
+32-byte private seed. That job runs only the `esm-sign` binary the build
+job made; building, testing and publishing run without the key. Set the
+environment up once, allowing deployments from `v*` tags only (a required
+reviewer can be added in the repository settings):
+
+```sh
+gh api -X PUT repos/TriadStudios/echoes-server-manager/environments/release \
+  -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/TriadStudios/echoes-server-manager/environments/release/deployment-branch-policies \
+  -f name='v*' -f type=tag
+gh secret set ESM_RELEASE_KEY --env release --repo TriadStudios/echoes-server-manager < release-key.txt
+```
+
+Then push a tag `vX.Y.Z`. Without the secret the sign job fails and
+nothing is published.
+
 ## Run
 
 ```sh
@@ -91,6 +154,20 @@ sudo loginctl enable-linger <esm-account>
 Without systemd, ESM starts servers as detached processes (limits are not
 enforced in that mode). Either way, stopping ESM leaves the game servers
 running; the next `esm serve` finds them again.
+
+### Linux: run ESM as a service
+
+```sh
+esm --root ~/durinn service install
+systemctl --user daemon-reload
+systemctl --user enable --now esm
+```
+
+`esm service install` writes `~/.config/systemd/user/esm.service`
+(`Restart=always`, `ExecStart=<this esm binary> serve --root <root>`) and
+runs nothing else. It uses `KillMode=process`: stopping or restarting ESM
+never stops game servers. Lingering (above) keeps the unit running after
+you log out; ESM prints the command but does not run it.
 
 ## Real server setup
 
@@ -146,6 +223,99 @@ What a box needs before ESM can run an Echoes of Durinn dedicated server
 - **Memory.** One server used about 0.6 GB idle and up to about 2.2 GB with
   one player. See [docs/DESIGN.md](docs/DESIGN.md#the-real-server).
 
+## Builds from Steam
+
+ESM can take server builds straight from a Steam app (a dedicated server
+tool app with a Linux depot), on a password-protected beta branch, with
+SteamCMD.
+
+1. Install SteamCMD into `<root>/steamcmd/` (Valve's tarball; on 64-bit
+   Ubuntu SteamCMD also needs `lib32gcc-s1`):
+
+   ```sh
+   mkdir -p ~/durinn/steamcmd && cd ~/durinn/steamcmd
+   curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf -
+   ```
+
+   Elsewhere? Set `steamcmd` in `esm.json` to its `steamcmd.sh`.
+2. Describe the source in `esm.json` (the values here are examples):
+
+   ```json
+   "steam_sources": [
+     {
+       "name": "main",
+       "app_id": "1000001",
+       "branch": "testing",
+       "executable": {"linux": "Server/Binaries/Linux/ServerBinary"},
+       "default_map": "MapName",
+       "channel": "test",
+       "check_every": "15m"
+     }
+   ]
+   ```
+
+   `executable` is the server binary's path inside the app's files.
+   `check_every` (default 15m, `"0"` for off) is how often ESM asks
+   SteamCMD for a new build; when nothing changed that is a quick check.
+3. Give ESM the branch password, on standard input (never as an argument):
+
+   ```sh
+   esm steam password main < branch-password.txt
+   ```
+
+   It is kept in `<root>/secrets/steam.json` (0600), never shown, logged or
+   written to the audit log, and it reaches SteamCMD only in a private
+   script file that is removed after each run.
+4. `esm build install steam:main` downloads the branch (validating every
+   file) and installs its build as `steam-main-<buildid>`, read-only, like
+   any build; the regular checks do the same without validation. The app's
+   files are kept in `<root>/steam-cache/main/` so later downloads are
+   deltas, and SteamCMD's own files stay there too. `esm steam list` shows
+   what each source last did; `esm doctor` checks SteamCMD, the sources and
+   the passwords.
+
+Anyone else can fetch the same build once the tool app is released (in the
+free dedicated server package):
+
+```sh
+steamcmd +login anonymous +app_update <app> -beta <branch> -betapassword <password> validate +quit
+```
+
+### Making a build folder by hand
+
+A build folder needs a `manifest.json`. `esm build manifest` writes it,
+with the SHA-256 of every file, under the same rules as an install (no
+links, clean names):
+
+```sh
+esm build manifest ./ServerBuild --version 1.2.0 --channel test --executable linux=Server/Binaries/Linux/ServerBinary --default-map MapName
+```
+
+## Automatic updates
+
+An instance follows the Steam source its build came from (a build named
+`steam-<source>-<buildid>`). When the source has a newer build of the
+instance's channel, the instance shows it as available. What happens next
+is its `auto_update` setting (Settings on the page, or `PATCH` the
+instance):
+
+- `off` (default) and `install`: nothing more; update by hand.
+- `restart`: ESM updates the instance itself as soon as its server answers
+  the query port with **0 players** (or at once when it is stopped): a
+  backup, one stop signal, the new build, and a roll back when the new
+  build does not get ready. The player count is asked once more right
+  before the stop; a player who joined meanwhile puts the update off. While
+  players are on it waits and asks again; after `update_max_wait` (default
+  6h) it raises a warning and keeps waiting. A failed automatic update is
+  not tried again for that build.
+
+Updating an instance by hand to an older build of its source pauses its
+automatic updates until the source has a build newer than the one it
+left.
+
+Every step is an `update` event, and each automatic update is in the audit
+log.
+
 ## Web page
 
 The page is served on the same address as the API: by default
@@ -180,6 +350,10 @@ esm update alpha --to 1.1.0                  # rolls back if the new build never
 esm restore alpha 20260101T120000Z-manual
 esm stop alpha
 esm list --json
+esm build install steam:main                 # a new build of a Steam source, if there is one
+esm steam list
+esm version --check                          # is a newer ESM out?
+esm update-self                              # put it in place (signature checked)
 ```
 
 Every command prints one result line, or one JSON object with `--json`, and
@@ -275,8 +449,9 @@ go vet ./...
 go test ./...
 ```
 
-The tests build a fake game server (`cmd/esm-fakeserver`) and drive whole
-services through the API and the command line. Tests that start systemd
+The tests build a fake game server (`cmd/esm-fakeserver`) and a fake
+SteamCMD (`cmd/esm-fakesteamcmd`) and drive whole services through the API
+and the command line. Tests that start systemd
 user units run only when asked: `ESM_TEST_SYSTEMD=1 go test ./...` on Linux.
 
 Tests listen on 127.0.0.1 only, so a desktop firewall never asks about a

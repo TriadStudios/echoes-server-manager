@@ -21,6 +21,8 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/release"
+	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
 
@@ -189,6 +191,11 @@ type Box struct {
 	// Usage is the box's memory, CPUs, load and the disk that holds the
 	// root, as the system reports them now.
 	Usage sysinfo.Box `json:"usage"`
+	// UpdateAvailable says that a newer ESM release is out; Release has
+	// the details of the last check (at most every 6 hours; off with
+	// update_check false). Nothing is updated without being asked.
+	UpdateAvailable bool           `json:"update_available"`
+	Release         release.Status `json:"release"`
 }
 
 // timeZone names the local time zone and its offset from UTC at now.
@@ -219,7 +226,12 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 	}
 	cfg := s.o.Config
 	hostname, _ := os.Hostname()
+	rs := release.Status{Current: s.o.Version, Note: "not checked"}
+	if s.o.Release != nil {
+		rs = s.o.Release.Status()
+	}
 	return writeJSON(w, http.StatusOK, Box{
+		UpdateAvailable: rs.Available, Release: rs,
 		Version: s.o.Version, Root: cfg.Root, OS: runtime.GOOS,
 		Supervisor: s.o.Supervisor.Kind(), LimitsEnforced: s.o.Supervisor.LimitsEnforced(),
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,
@@ -342,6 +354,9 @@ func (s *Server) installBuild(w http.ResponseWriter, r *http.Request, c *call) e
 		return err
 	}
 	c.target = builds.RedactSource(req.Source)
+	if name, ok := strings.CutPrefix(strings.TrimSpace(req.Source), steam.SourcePrefix); ok {
+		return s.installSteam(w, r, c, name, req)
+	}
 	b, err := s.o.Builds.Install(r.Context(), req.Source, req.SHA256)
 	if err != nil {
 		return err

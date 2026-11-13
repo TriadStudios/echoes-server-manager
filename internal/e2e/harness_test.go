@@ -64,6 +64,8 @@ type harness struct {
 	sock       *http.Client
 	gameLo     int
 	queryLo    int
+	// tune changes the service options of every start (optional).
+	tune func(*service.Options)
 }
 
 type option func(cfg map[string]any)
@@ -76,6 +78,12 @@ func newESM(t *testing.T, opts ...option) *harness {
 
 func newESMWith(t *testing.T, supervisorKind string, opts ...option) *harness {
 	t.Helper()
+	return newESMTuned(t, supervisorKind, nil, opts...)
+}
+
+// newESMTuned is newESMWith with service options changed by tune.
+func newESMTuned(t *testing.T, supervisorKind string, tune func(*service.Options), opts ...option) *harness {
+	t.Helper()
 	// A short root keeps the socket path under the platform limit.
 	root, err := os.MkdirTemp("", "esm")
 	if err != nil {
@@ -83,7 +91,7 @@ func newESMWith(t *testing.T, supervisorKind string, opts ...option) *harness {
 	}
 	blk := int(portBlock.Add(1))
 	h := &harness{t: t, root: root, src: t.TempDir(), supervisor: supervisorKind, http: &http.Client{},
-		gameLo: 30000 + blk*20, queryLo: 31000 + blk*20}
+		gameLo: 30000 + blk*20, queryLo: 31000 + blk*20, tune: tune}
 	cfg := map[string]any{
 		"listen":           "127.0.0.1:0",
 		"game_ports":       fmt.Sprintf("%d-%d", h.gameLo, h.gameLo+9),
@@ -120,11 +128,15 @@ func newESMWith(t *testing.T, supervisorKind string, opts ...option) *harness {
 func (h *harness) startService() {
 	h.t.Helper()
 	h.stderr = &lockedBuffer{}
-	svc, err := service.Start(service.Options{
+	o := service.Options{
 		Root: h.root, Version: "test", Stderr: h.stderr,
 		WatchInterval: 50 * time.Millisecond, SchedulerInterval: time.Hour, KeepAlive: 200 * time.Millisecond,
 		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000}, FailDelay: 10 * time.Millisecond,
-	})
+	}
+	if h.tune != nil {
+		h.tune(&o)
+	}
+	svc, err := service.Start(o)
 	if err != nil {
 		h.t.Fatalf("start service: %v", err)
 	}

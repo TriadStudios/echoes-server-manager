@@ -15,7 +15,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 )
 
-var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeAudit}
+var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeAudit, events.TypeUpdate}
 
 // events streams events as Server-Sent Events. Each event has an id, a
 // type (state, log, build or audit) and the event as JSON data. A client
@@ -48,7 +48,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 	}
 	if !c.role.Allows(auth.RoleAdmin) {
 		if len(f.Types) == 0 {
-			f.Types = []string{events.TypeState, events.TypeLog, events.TypeBuild}
+			f.Types = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeUpdate}
 		} else if f.Types = slices.DeleteFunc(f.Types, func(t string) bool { return t == events.TypeAudit }); len(f.Types) == 0 {
 			return errStatus(http.StatusForbidden, "forbidden", "audit events need the admin role")
 		}
