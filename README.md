@@ -102,8 +102,7 @@ The release workflow signs in a job of its own that runs in the GitHub
 environment `release`, whose secret `ESM_RELEASE_KEY` is the base64 of the
 32-byte private seed. That job runs only the `esm-sign` binary the build
 job made; building, testing and publishing run without the key. Set the
-environment up once, allowing deployments from `v*` tags only (a required
-reviewer can be added in the repository settings):
+environment up once, allowing deployments from `v*` tags only:
 
 ```sh
 gh api -X PUT repos/TriadStudios/echoes-server-manager/environments/release \
@@ -112,6 +111,11 @@ gh api -X POST repos/TriadStudios/echoes-server-manager/environments/release/dep
   -f name='v*' -f type=tag
 gh secret set ESM_RELEASE_KEY --env release --repo TriadStudios/echoes-server-manager < release-key.txt
 ```
+
+Two more settings belong with the key: the `release` environment should
+require a reviewer (repository settings, Environments), so that no
+release is signed before a maintainer approves the run, and a tag
+ruleset should limit who may create `v*` tags.
 
 Then push a tag `vX.Y.Z`. Without the secret the sign job fails and
 nothing is published.

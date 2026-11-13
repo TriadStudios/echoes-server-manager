@@ -1192,6 +1192,17 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   is 15 minutes old. On Windows a second self-update fails while the
   `.previous` binary of the first one still runs (it cannot be replaced);
   end that process first.
+- **A forced self-update takes an older release.** With `force` (admins
+  only), ESM takes the release that the release list names as the newest
+  even when it is older than the running ESM, as long as its signature
+  verifies and its signed version is its tag. The signature shows that the
+  binaries are those of a real release; which signed release is offered is
+  up to whoever serves the release list.
+- **A stop during a Steam install can take a while.** ESM ends a Steam
+  install it is running when it stops, but the copy of the app's files
+  into the install work folder only stops between files, so a stop may
+  wait until the copy gets there. The stop timeout of the service manager
+  applies (`TimeoutStopSec=60` in the unit of `esm service install`).
 
 ## Open items
 
