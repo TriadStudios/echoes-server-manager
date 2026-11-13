@@ -532,13 +532,16 @@ func (s *server) logCommandLine(args []string) {
 	s.logf("Command line: %s", strings.Join(args, " "))
 }
 
+// takeControl reports whether the request file name is there, and takes
+// it. A request counts only once its file is gone: on Windows the file
+// cannot be removed while its writer still has it open, and a request
+// left in place would be acted on again by the next server.
 func (s *server) takeControl(name string) bool {
 	p := filepath.Join(s.o.userDir, gameserver.ControlDirRel, name)
 	if _, err := os.Stat(p); err != nil {
 		return false
 	}
-	os.Remove(p)
-	return true
+	return os.Remove(p) == nil
 }
 
 func (s *server) writeControl(name, content string) {
