@@ -37,8 +37,11 @@ import (
 const (
 	DefaultMaxPlayers = 10
 	DefaultBackupKeep = 10
-	MaxMaxPlayers     = 200
-	maxRules          = 64
+	// MaxMaxPlayers is the largest max_players an instance may be stored
+	// with (earlier versions allowed it). A new value is held to the game
+	// server's limit, gameserver.MaxPlayersLimit (see checkChanges).
+	MaxMaxPlayers = 200
+	maxRules      = 64
 	// maxRuleValue bounds a rule value; a list setting of the game's
 	// catalog may be longer (gameserver.GameSetting.MaxLength).
 	maxRuleValue    = 256
@@ -338,7 +341,7 @@ func (in *Instance) Validate() error {
 		return invalid("bind_ip", "%q is not an IP address", in.BindIP)
 	}
 	if in.MaxPlayers < 1 || in.MaxPlayers > MaxMaxPlayers {
-		return invalid("max_players", "must be between 1 and %d", MaxMaxPlayers)
+		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
 	}
 	if len(in.Rules) > maxRules {
 		return invalid("rules", "at most %d rules", maxRules)
@@ -434,6 +437,12 @@ func (in *Instance) Validate() error {
 // without regard to case, and the setting is known by its own spelling.
 // now is the time of the check (a date may not lie after it).
 func (in *Instance) checkChanges(old *Instance, now time.Time) error {
+	// The server takes at most gameserver.MaxPlayersLimit players. A value
+	// stored before ESM knew that stays until max_players is changed (the
+	// server uses its limit; the instance carries a warning).
+	if (old == nil || in.MaxPlayers != old.MaxPlayers) && in.MaxPlayers > gameserver.MaxPlayersLimit {
+		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
+	}
 	var before map[string]string
 	if old != nil {
 		before = old.Rules

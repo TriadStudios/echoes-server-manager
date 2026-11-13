@@ -1244,15 +1244,17 @@ components:
         instance's server output and no state reasons.
     Warning:
       type: string
-      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced]
+      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced, max_players_above_game_limit]
       description: |
-        `secrets_on_command_line`: the instance passes its passwords on the
-        server command line. `secrets_unconfirmed`: the instance has
-        passwords and file delivery, and its running server has not
-        confirmed that it took them; a server build that cannot read the
-        secrets file runs without passwords. `limits_not_enforced`: the
-        instance has resource limits and the supervisor in use does not
-        apply them.
+        `secrets_on_command_line`: the instance passes its passwords (and
+        tokens) on the server command line. `secrets_unconfirmed`: the
+        instance has passwords and file delivery, and its running server
+        has not confirmed that it took them; a server build that cannot
+        read the secrets file runs without passwords. `limits_not_enforced`:
+        the instance has resource limits and the supervisor in use does not
+        apply them. `max_players_above_game_limit`: the instance was stored
+        with a max_players above 70, the most the game server takes; the
+        server uses 70.
     Settings:
       type: object
       additionalProperties: false
@@ -1266,7 +1268,16 @@ components:
         bind_ip:
           type: string
           description: Where ESM checks that the ports are free and probes the query port. It is not given to the server, which listens on every address; the box's firewall decides where its query port is reachable.
-        max_players: { type: integer, minimum: 1, maximum: 200 }
+        max_players:
+          type: integer
+          minimum: 1
+          maximum: 70
+          description: |
+            At most 70, the most the game server takes (422 when a create or
+            a change sets more). An instance stored with more by an earlier
+            version (up to 200) keeps its value until max_players is
+            changed; the server uses 70, and the instance carries the warning
+            `max_players_above_game_limit`. Default 10.
         rules:
           type: object
           description: |
@@ -1297,7 +1308,7 @@ components:
         limits: { $ref: "#/components/schemas/Limits" }
         extra_args:
           type: array
-          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key.
+          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key. A switch ESM sets itself, -MULTIHOME, and the engine's configuration overrides (-ini:<File>:[Section]:Key=Value and -iniFile=) are refused (422), as rule keys too.
           items: { type: string }
         secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
         auto_update: { $ref: "#/components/schemas/AutoUpdate" }

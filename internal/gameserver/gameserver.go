@@ -175,11 +175,22 @@ func IsReservedSwitch(key string) bool {
 	return slices.Contains(reserved, switchName(key))
 }
 
+// MaxPlayersLimit is the most players the server takes: it lowers a
+// larger -MaxPlayers to this.
+const MaxPlayersLimit = 70
+
 // RefusedSwitch reports whether key (with or without the leading "-") names
-// a switch that must never reach the server, and says why.
+// a switch that must never reach the server, and says why. Besides
+// -MULTIHOME these are the engine's overrides of its configuration files:
+// "-ini:<File>:[<Section>]:<Key>=<Value>" (the name is "ini", up to the
+// ":") and -iniFile=, which could change what ESM sets itself (ports,
+// networking, where the server keeps its files).
 func RefusedSwitch(key string) (why string, refused bool) {
-	if switchName(key) == switchName(MultihomeSwitch) {
+	switch switchName(key) {
+	case switchName(MultihomeSwitch):
 		return MultihomeSwitch + " is never passed: with it the server advertises the bind address instead of its Steam identity and players cannot join; the box's firewall decides where the query port is reachable", true
+	case "ini", "inifile":
+		return "-ini: and -iniFile= override the engine's configuration files and are never passed: they could change what ESM sets itself (ports, networking, the server's folders)", true
 	}
 	return "", false
 }

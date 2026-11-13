@@ -1,6 +1,8 @@
 package instances
 
 import (
+	"fmt"
+
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 )
@@ -60,6 +62,10 @@ const (
 	// status file, that it took them. A server build that cannot read the
 	// secrets file runs without passwords; this is how that shows.
 	WarnSecretsUnconfirmed = "secrets_unconfirmed"
+	// WarnMaxPlayersAboveGame: the instance was stored with a max_players
+	// above what the game server takes (gameserver.MaxPlayersLimit); the
+	// server uses its limit.
+	WarnMaxPlayersAboveGame = "max_players_above_game_limit"
 )
 
 // WarningText says in words what a warning of an instance view means.
@@ -71,6 +77,9 @@ func WarningText(code string) string {
 		return "memory and CPU limits are not enforced by the process supervisor"
 	case WarnSecretsUnconfirmed:
 		return "the running server has not confirmed that it took its passwords from the secrets file; a server build that cannot read that file runs WITHOUT passwords"
+	case WarnMaxPlayersAboveGame:
+		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
+			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
 	}
 	return code
 }

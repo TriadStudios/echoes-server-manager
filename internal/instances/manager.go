@@ -506,6 +506,9 @@ func (m *Manager) warnings(v View) []string {
 	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
 		w = append(w, WarnLimitsNotEnforced)
 	}
+	if v.MaxPlayers > gameserver.MaxPlayersLimit {
+		w = append(w, WarnMaxPlayersAboveGame)
+	}
 	return w
 }
 

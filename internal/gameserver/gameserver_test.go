@@ -130,8 +130,20 @@ func TestReservedAndRefusedSwitches(t *testing.T) {
 			t.Errorf("%q not refused (%q)", k, why)
 		}
 	}
-	if _, ok := RefusedSwitch("Port"); ok {
-		t.Error("Port refused")
+	for _, k := range []string{"ini", "-INI", "-iniFile", "IniFile"} {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "never passed") {
+			t.Errorf("%q not refused (%q)", k, why)
+		}
+	}
+	for _, k := range []string{"Port", "Initial", "Mini", "NoIni"} {
+		if _, ok := RefusedSwitch(k); ok {
+			t.Errorf("%q refused", k)
+		}
+	}
+	for _, k := range []string{"AnnouncementsToken", "-problemreporttoken"} {
+		if !IsReservedSwitch(k) {
+			t.Errorf("%q not reserved", k)
+		}
 	}
 }
 
