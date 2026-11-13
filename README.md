@@ -91,10 +91,10 @@ the command line replaces the binary and ends nothing: restart the service
 yourself (`systemctl --user restart esm`). Game servers keep running
 either way and the new ESM adopts them.
 
-One self-update runs at a time: while it runs it holds `esm.update.lock`
-next to the binary, and another one, from the page or the command line,
-is refused. A lock older than 15 minutes was left by an update that did
-not finish and is taken over.
+One self-update runs at a time: while it runs it holds the lock file
+`<binary>.update.lock` next to the binary, and another one, from the page
+or the command line, is refused. A lock older than 15 minutes was left by
+an update that did not finish and is taken over.
 
 ### Making a release (maintainers)
 

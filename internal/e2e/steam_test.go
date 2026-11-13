@@ -282,6 +282,9 @@ func TestSelfUpdateThroughTheAPI(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the service was not asked to end after the update")
 	}
+	if !h.svc.Restarts() {
+		t.Fatal("the service says nothing starts it again, under a service manager")
+	}
 	var box api.Box
 	testkit.Eventually(t, 5*time.Second, func() bool {
 		h.must(http.StatusOK, "GET", "/api/v1/box", nil, &box)
@@ -325,5 +328,8 @@ func TestSelfUpdateWithoutAServiceManager(t *testing.T) {
 	case <-h.svc.Exit():
 	case <-time.After(5 * time.Second):
 		t.Fatal("the service was not asked to end after an update with exit_anyway")
+	}
+	if h.svc.Restarts() {
+		t.Fatal("the service says its service manager starts it again, with none")
 	}
 }

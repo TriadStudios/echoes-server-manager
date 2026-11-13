@@ -100,10 +100,12 @@ type Service struct {
 	local *http.Server
 	errc  chan error
 	once  sync.Once
-	// exit is closed when the service should end so that its service
-	// manager starts it again (after a self-update).
+	// exit is closed when the service should end after a self-update;
+	// restarts, set just before, says whether its service manager starts
+	// it again.
 	exit     chan struct{}
 	exitOnce sync.Once
+	restarts bool
 	// updating is held while a self-update runs; updated is set once one
 	// put a new binary in place (the service ends a moment later).
 	updating sync.Mutex
@@ -366,9 +368,14 @@ func (s *Service) Config() *config.Config { return s.cfg }
 // Err delivers a listener failure.
 func (s *Service) Err() <-chan error { return s.errc }
 
-// Exit is closed when the service should end and be started again by its
-// service manager: after a self-update put a new binary in place.
+// Exit is closed when the service should end: after a self-update put a
+// new binary in place. Restarts says whether something starts it again.
 func (s *Service) Exit() <-chan struct{} { return s.exit }
+
+// Restarts says, once Exit is closed, whether ESM's service manager starts
+// the new binary. It is false after a self-update with exit_anyway when
+// nothing does: ESM then has to be started by hand.
+func (s *Service) Restarts() bool { return s.restarts }
 
 // restartedBy says what starts ESM again after it ends: "systemd" when
 // systemd runs ESM as a service (systemd sets INVOCATION_ID for every
@@ -437,8 +444,14 @@ func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res r
 		s.log.Warn("ESM binary updated; ending, and nothing starts ESM again: start it by hand", "from", res.From, "to", res.To,
 			"previous", res.Previous)
 	}
-	time.AfterFunc(time.Second, func() { s.exitOnce.Do(func() { close(s.exit) }) })
-	return res, by != "", nil
+	restarts := by != ""
+	time.AfterFunc(time.Second, func() {
+		s.exitOnce.Do(func() {
+			s.restarts = restarts
+			close(s.exit)
+		})
+	})
+	return res, restarts, nil
 }
 
 // Shutdown stops accepting requests, ends event streams, stops watching
