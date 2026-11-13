@@ -46,7 +46,8 @@ func TestSteamAppIDPlaced(t *testing.T) {
 	if fi, _ := os.Stat(p); fi.Mode().Perm()&0o222 != 0 {
 		t.Fatalf("app id file is writable: %v", fi.Mode())
 	}
-	if b.DefaultMap != testkit.DefaultMap || b.Files != 3 {
+	// The manifest, the two server binaries and the app id file.
+	if b.DefaultMap != testkit.DefaultMap || b.Files != 4 {
 		t.Fatalf("build %+v", b)
 	}
 

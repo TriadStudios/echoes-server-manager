@@ -470,7 +470,8 @@ func (m *Manager) finish(tree string) (Build, error) {
 	if err != nil {
 		return Build{}, err
 	}
-	if err := m.placeSteamAppID(top, man); err != nil {
+	placed, err := m.placeSteamAppID(top, man)
+	if err != nil {
 		return Build{}, err
 	}
 	if m.opts.GOOS != "windows" {
@@ -490,6 +491,11 @@ func (m *Manager) finish(tree string) (Build, error) {
 		return Build{}, err
 	}
 	in := info{Installed: time.Now().UTC(), Files: files + 1, SizeBytes: size + int64(len(b))}
+	if placed {
+		// The app id file ESM added counts like any file of the build.
+		in.Files++
+		in.SizeBytes += int64(len(m.opts.SteamAppID))
+	}
 	if err := m.st.WriteJSON(infoDir+"/"+man.Version+".json", in, 0o600); err != nil {
 		m.log.Warn("cannot write build info", "version", man.Version, "err", err)
 	}
@@ -499,30 +505,31 @@ func (m *Manager) finish(tree string) (Build, error) {
 }
 
 // placeSteamAppID writes the configured Steam app id next to the server
-// binary for this OS, as a read-only file like every file of the build.
-// A build that brings the file along keeps its own. Nothing is written
-// when no app id is configured (doctor warns about that).
-func (m *Manager) placeSteamAppID(top string, man *Manifest) error {
+// binary for this OS, as a read-only file like every file of the build,
+// and reports whether it did. A build that brings the file along keeps its
+// own. Nothing is written when no app id is configured (doctor warns
+// about that).
+func (m *Manager) placeSteamAppID(top string, man *Manifest) (bool, error) {
 	if m.opts.SteamAppID == "" {
-		return nil
+		return false, nil
 	}
 	rel := path.Join(path.Dir(man.Executables[m.opts.GOOS]), gameserver.SteamAppIDFile)
 	if m.st.Exists(top + "/" + rel) {
 		m.log.Info("the build has its own Steam app id file; leaving it", "version", man.Version, "file", rel)
-		return nil
+		return false, nil
 	}
 	f, err := m.st.Create(top+"/"+rel, 0o400)
 	if err != nil {
-		return fmt.Errorf("write %s: %w", rel, err)
+		return false, fmt.Errorf("write %s: %w", rel, err)
 	}
 	_, err = f.WriteString(m.opts.SteamAppID)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return fmt.Errorf("write %s: %w", rel, err)
+		return false, fmt.Errorf("write %s: %w", rel, err)
 	}
-	return nil
+	return true, nil
 }
 
 // verify checks that the folder holds exactly the files the manifest lists

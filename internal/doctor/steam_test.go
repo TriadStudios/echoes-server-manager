@@ -120,6 +120,19 @@ func TestBuildsCheck(t *testing.T) {
 	if c := run("481"); c.Status != Warn || !strings.Contains(c.Message, "another app id") {
 		t.Fatalf("other app id: %+v", c)
 	}
+	// A manifest whose server binary is not a clean path inside the build
+	// is reported, never followed.
+	writeFile(t, filepath.Join(root, builds.Dir, "escape", builds.ManifestName),
+		[]byte(`{"version":"escape","channel":"live","executables":{"linux":"../good-1/Game/Binaries/Linux/GameServer"},"files":{"x":"`+strings.Repeat("0", 64)+`"}}`), 0o600)
+	// A huge app id file is read only so far.
+	big := makeBuild(t, root, "bigid", "bin/server", elf64, 0o700)
+	writeFile(t, filepath.Join(big, "bin", gameserver.SteamAppIDFile), []byte(strings.Repeat("4", 1<<20)), 0o600)
+	if c := run("480"); c.Status != Fail || !strings.Contains(c.Message, "escape: manifest.json") ||
+		!strings.Contains(c.Message, "bigid: "+gameserver.SteamAppIDFile+" names another app id") || len(c.Message) > 4096 {
+		t.Errorf("escaping manifest or big app id file: %.300s", c.Message)
+	}
+	os.RemoveAll(filepath.Join(root, builds.Dir, "escape"))
+	os.RemoveAll(big)
 	makeBuild(t, root, "x32", "bin/server", elf32, 0o700)
 	makeBuild(t, root, "noexec", "bin/server", elf64, 0o600)
 	makeBuild(t, root, "missing", "bin/server", nil, 0)

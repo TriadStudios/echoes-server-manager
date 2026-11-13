@@ -97,6 +97,16 @@ func checkSteamRuntime(r *Report, dir, goos string) {
 		gameserver.LibraryPathVar)
 }
 
+// readSmall reads at most limit bytes of the file at path.
+func readSmall(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
+}
+
 // checkBuilds checks every installed build: its server binary for goos
 // exists and is a regular executable file (a 64-bit ELF file on Linux), and
 // when an app id is configured, the app id file next to it holds it.
@@ -124,15 +134,16 @@ func checkBuilds(r *Report, root, goos, appID string) {
 		}
 		n++
 		man, err := builds.ParseManifest(b)
+		if err == nil {
+			// Clean relative paths only, each listed with its hash, before
+			// any of them is used as a path.
+			err = man.Check(goos)
+		}
 		if err != nil {
 			problems = append(problems, e.Name()+": "+err.Error())
 			continue
 		}
-		rel, ok := man.Executables[goos]
-		if !ok {
-			problems = append(problems, fmt.Sprintf("%s: no server binary for %s", e.Name(), goos))
-			continue
-		}
+		rel := man.Executables[goos]
 		exe := filepath.Join(dir, filepath.FromSlash(rel))
 		fi, err := os.Lstat(exe)
 		switch {
@@ -154,7 +165,7 @@ func checkBuilds(r *Report, root, goos, appID string) {
 		}
 		if appID != "" {
 			idFile := filepath.Join(filepath.Dir(exe), gameserver.SteamAppIDFile)
-			got, err := os.ReadFile(idFile)
+			got, err := readSmall(idFile, 64)
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
 				notes = append(notes, fmt.Sprintf("%s has no %s (installed before steam_app_id was set?)", e.Name(), gameserver.SteamAppIDFile))
