@@ -12,6 +12,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
@@ -170,7 +171,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{t: t, root: t.TempDir(), steam: t.TempDir(), content: filepath.Join(t.TempDir(), "content")}
 	r.record = filepath.Join(r.steam, "record.jsonl")
 	exes := testkit.MakeContent(t, r.content, testkit.BuildOptions{Version: "x", Extra: map[string][]byte{"Data/world.dat": []byte("data")}})
-	r.ctl = testkit.SteamControl{AppID: "1000001", BuildID: "100", Content: r.content, Branch: "testing", Password: "right-Pw1", Record: r.record}
+	r.ctl = testkit.SteamControl{AppID: "1000001", BuildID: "100", Content: r.content, Branch: "testing", Password: "right-Pw1", Record: r.record, Echo: true}
 	exe := testkit.FakeSteamCMD(t, r.steam, r.ctl)
 	st, err := store.Open(r.root)
 	if err != nil {
@@ -317,7 +318,8 @@ func TestSteamInstallFlow(t *testing.T) {
 	}
 	r.noLeak()
 	// The SteamCMD log says what happened, with the password masked.
-	if log, _ := os.ReadFile(filepath.Join(r.root, CacheDir, "main.log")); !strings.Contains(string(log), "Success!") {
+	if log, _ := os.ReadFile(filepath.Join(r.root, CacheDir, "main.log")); !strings.Contains(string(log), "Success!") ||
+		!strings.Contains(string(log), "-betapassword "+gameserver.Mask) {
 		t.Errorf("log: %s", log)
 	}
 }

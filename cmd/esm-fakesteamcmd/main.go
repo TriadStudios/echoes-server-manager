@@ -12,7 +12,7 @@
 //
 //	{"app_id": "1000001", "buildid": "100", "content": "<folder>",
 //	 "branch": "testing", "password": "<the branch password>",
-//	 "record": "<file>"}
+//	 "record": "<file>", "echo": false}
 //
 // app_update copies the content folder into the install folder (replacing
 // what was there, except steamapps/) and writes
@@ -44,6 +44,9 @@ type control struct {
 	Branch   string `json:"branch"`
 	Password string `json:"password"`
 	Record   string `json:"record"`
+	// Echo prints every command before running it, password and all, as
+	// SteamCMD may: ESM must mask its output.
+	Echo bool `json:"echo"`
 }
 
 type record struct {
@@ -194,6 +197,9 @@ type session struct {
 }
 
 func (s *session) do(cmd []string) int {
+	if s.c.Echo {
+		fmt.Println("Executing command: " + strings.Join(cmd, " "))
+	}
 	switch name := strings.ToLower(cmd[0]); {
 	case strings.HasPrefix(name, "@"):
 		return 0

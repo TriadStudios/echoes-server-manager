@@ -58,6 +58,8 @@ type SteamControl struct {
 	Branch   string `json:"branch"`
 	Password string `json:"password"`
 	Record   string `json:"record"`
+	// Echo makes the fake print each command, the password included.
+	Echo bool `json:"echo"`
 }
 
 // FakeSteamCMD copies the fake SteamCMD into dir (its own copy, so its
