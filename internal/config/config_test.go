@@ -31,7 +31,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 		t.Fatal("first load should report created")
 	}
 	if cfg.Listen != "127.0.0.1:8740" || cfg.GamePorts != "7777-7786" || cfg.QueryPorts != "27015-27024" ||
-		cfg.Supervisor != "auto" || cfg.StopTimeout.D() != 30*time.Second || cfg.ReadyTimeout.D() != 120*time.Second ||
+		cfg.Supervisor != "auto" || cfg.StopTimeout.D() != 120*time.Second || cfg.ReadyTimeout.D() != 120*time.Second ||
 		cfg.KeepPreviousBuilds != 2 || cfg.Backoff.Window.D() != 10*time.Minute || cfg.Backoff.MaxCrashes != 5 ||
 		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute || cfg.BehindTLSProxy {
 		t.Fatalf("unexpected defaults: %+v", cfg)
@@ -46,7 +46,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 	if !strings.Contains(string(b), `"behind_tls_proxy": false`) {
 		t.Fatalf("behind_tls_proxy should be written, off:\n%s", b)
 	}
-	if !strings.Contains(string(b), `"stop_timeout": "30s"`) {
+	if !strings.Contains(string(b), `"stop_timeout": "2m0s"`) {
 		t.Fatalf("durations should be written as strings:\n%s", b)
 	}
 	_, created, err = Load(st)
