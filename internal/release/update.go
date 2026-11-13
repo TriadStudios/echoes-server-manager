@@ -87,7 +87,19 @@ func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, 
 	if err != nil {
 		return Result{}, fmt.Errorf("release %s: %w", r.Tag, err)
 	}
-	want, ok := list[name]
+	// The tag comes from the release list, which is not signed; the
+	// version in SHA256SUMS is. They must agree, and the signed one decides
+	// whether the release is newer.
+	if list.Version != r.Tag {
+		return Result{}, fmt.Errorf("release %s: the signed %s belongs to %s; it was not taken", r.Tag, SumsName, list.Version)
+	}
+	if newer, ok := Newer(list.Version, current); !force && (!ok || !newer) {
+		if !ok {
+			return Result{}, ErrUnknownVersion
+		}
+		return Result{}, ErrUpToDate
+	}
+	want, ok := list.Files[name]
 	if !ok {
 		return Result{}, fmt.Errorf("release %s: the signed %s does not list %s", r.Tag, SumsName, name)
 	}
@@ -100,7 +112,7 @@ func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, 
 		os.Remove(tmp)
 		return Result{}, err
 	}
-	return Result{From: current, To: r.Tag, Binary: exe, Previous: prev}, nil
+	return Result{From: current, To: list.Version, Binary: exe, Previous: prev}, nil
 }
 
 // download fetches the binary into a new file next to exe and checks its

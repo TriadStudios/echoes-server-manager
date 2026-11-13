@@ -51,17 +51,21 @@ func TestBuiltinKeyParses(t *testing.T) {
 
 func TestParseSums(t *testing.T) {
 	sum := strings.Repeat("ab", 32)
-	got, err := ParseSums([]byte(sum + "  esm-linux-amd64\n" + sum + " *esm-windows-amd64.exe\r\n\n"))
-	if err != nil || got["esm-linux-amd64"] != sum || got["esm-windows-amd64.exe"] != sum || len(got) != 2 {
+	got, err := ParseSums([]byte("version v1.2.3\n" + sum + "  esm-linux-amd64\n" + sum + " *esm-windows-amd64.exe\r\n\n"))
+	if err != nil || got.Version != "v1.2.3" || got.Files["esm-linux-amd64"] != sum || got.Files["esm-windows-amd64.exe"] != sum || len(got.Files) != 2 {
 		t.Fatalf("ParseSums: %v %v", got, err)
 	}
 	for _, bad := range []string{
-		"xyz  esm\n",
-		strings.Repeat("AB", 32) + "  esm\n",
-		sum + "  ../esm\n",
-		sum + "  dir/esm\n",
-		sum + "\n",
-		sum + "  esm\n" + sum + "  esm\n",
+		"",
+		sum + "  esm\n",
+		"version 1.2.3\n" + sum + "  esm\n",
+		"version v1.2.3 \n" + sum + "  esm\n",
+		"version v1.2.3\nxyz  esm\n",
+		"version v1.2.3\n" + strings.Repeat("AB", 32) + "  esm\n",
+		"version v1.2.3\n" + sum + "  ../esm\n",
+		"version v1.2.3\n" + sum + "  dir/esm\n",
+		"version v1.2.3\n" + sum + "\n",
+		"version v1.2.3\n" + sum + "  esm\n" + sum + "  esm\n",
 	} {
 		if _, err := ParseSums([]byte(bad)); err == nil {
 			t.Errorf("ParseSums(%q) accepted", bad)
@@ -142,6 +146,7 @@ func signedRelease(tag string, bin []byte, priv ed25519.PrivateKey, sums map[str
 		sums = map[string]string{name: hex.EncodeToString(h[:])}
 	}
 	var b strings.Builder
+	b.WriteString(VersionPrefix + tag + "\n")
 	for n, s := range sums {
 		fmt.Fprintf(&b, "%s  %s\n", s, n)
 	}

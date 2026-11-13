@@ -34,17 +34,20 @@ func TestKeygenAndSign(t *testing.T) {
 
 	sums := filepath.Join(dir, "SHA256SUMS")
 	sig := filepath.Join(dir, "SHA256SUMS.sig")
-	os.WriteFile(sums, []byte(strings.Repeat("ab", 32)+"  esm-linux-amd64\n"), 0o644)
-	if err := sign(sums, sig, "", pub); err == nil || !strings.Contains(err.Error(), "empty") {
+	os.WriteFile(sums, []byte("version v1.0.0\n"+strings.Repeat("ab", 32)+"  esm-linux-amd64\n"), 0o644)
+	if err := sign(sums, sig, "v1.0.0", "", pub); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("no key: %v", err)
 	}
-	if err := sign(sums, sig, string(seed), release.BuiltinKey()); err == nil || !strings.Contains(err.Error(), "does not belong") {
+	if err := sign(sums, sig, "v1.0.0", string(seed), release.BuiltinKey()); err == nil || !strings.Contains(err.Error(), "does not belong") {
 		t.Fatalf("a key that is not ESM's: %v", err)
 	}
 	if _, err := os.Stat(sig); err == nil {
 		t.Fatal("a signature was written by a foreign key")
 	}
-	if err := sign(sums, sig, string(seed), pub); err != nil {
+	if err := sign(sums, sig, "v1.0.1", string(seed), pub); err == nil {
+		t.Fatal("signed a SHA256SUMS of another version")
+	}
+	if err := sign(sums, sig, "v1.0.0", string(seed), pub); err != nil {
 		t.Fatal(err)
 	}
 	msg, _ := os.ReadFile(sums)

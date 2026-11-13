@@ -3,7 +3,7 @@
 //
 // Signing (the release workflow does this):
 //
-//	ESM_RELEASE_KEY=<base64 seed> esm-sign -in SHA256SUMS -out SHA256SUMS.sig
+//	ESM_RELEASE_KEY=<base64 seed> esm-sign -version v1.2.3 -in SHA256SUMS -out SHA256SUMS.sig
 //
 // The key comes only from the environment, never from the command line.
 // The signature is checked against the public key built into ESM before it
@@ -44,6 +44,7 @@ func run(args []string, key string, stdout, stderr io.Writer) int {
 	in := fs.String("in", "", "file to sign (SHA256SUMS)")
 	out := fs.String("out", "", "signature file to write (SHA256SUMS.sig)")
 	keygen := fs.String("keygen", "", "write a new private seed to this new file and print the public key")
+	version := fs.String("version", "", "the release tag; SHA256SUMS must name it on its first line")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return 2
 	}
@@ -51,10 +52,10 @@ func run(args []string, key string, stdout, stderr io.Writer) int {
 	switch {
 	case *keygen != "":
 		err = makeKey(*keygen, stdout)
-	case *in != "" && *out != "":
-		err = sign(*in, *out, key, release.BuiltinKey())
+	case *in != "" && *out != "" && *version != "":
+		err = sign(*in, *out, *version, key, release.BuiltinKey())
 	default:
-		fmt.Fprintln(stderr, "usage: esm-sign -in SHA256SUMS -out SHA256SUMS.sig   (key in $"+KeyEnv+")\n       esm-sign -keygen <file>")
+		fmt.Fprintln(stderr, "usage: esm-sign -version <tag> -in SHA256SUMS -out SHA256SUMS.sig   (key in $"+KeyEnv+")\n       esm-sign -keygen <file>")
 		return 2
 	}
 	if err != nil {
@@ -85,9 +86,9 @@ func makeKey(path string, stdout io.Writer) error {
 	return nil
 }
 
-func sign(in, out, key string, builtin ed25519.PublicKey) error {
+func sign(in, out, version, key string, builtin ed25519.PublicKey) error {
 	if key == "" {
-		return errors.New("$" + KeyEnv + " is empty: set the release key (the repository secret " + KeyEnv + ")")
+		return errors.New("$" + KeyEnv + " is empty: set the release key (the secret " + KeyEnv + " of the environment release)")
 	}
 	priv, err := release.ParseSeed(key)
 	if err != nil {
@@ -96,6 +97,15 @@ func sign(in, out, key string, builtin ed25519.PublicKey) error {
 	msg, err := os.ReadFile(in)
 	if err != nil {
 		return err
+	}
+	// The version is part of what is signed: a signature then vouches for
+	// this release only, not for whatever tag it is served under later.
+	sums, err := release.ParseSums(msg)
+	if err != nil {
+		return err
+	}
+	if sums.Version != version {
+		return fmt.Errorf("%s names version %s, not %s", in, sums.Version, version)
 	}
 	sig := release.Sign(priv, msg)
 	if err := release.Verify(builtin, msg, sig); err != nil {

@@ -209,31 +209,58 @@ func Verify(pub ed25519.PublicKey, msg, sigFile []byte) error {
 	return nil
 }
 
-// ParseSums reads a SHA256SUMS file: lines "<64 hex>  <name>" (a "*" before
-// the name, binary mode, is allowed). Names must be plain file names and
-// appear once.
-func ParseSums(b []byte) (map[string]string, error) {
-	out := map[string]string{}
+// Sums is a parsed SHA256SUMS file.
+type Sums struct {
+	// Version is the release the file belongs to. It is inside what is
+	// signed, so a signed file cannot be passed off as another release's.
+	Version string
+	// Files maps each file name to its SHA-256.
+	Files map[string]string
+}
+
+// VersionPrefix starts the first line of SHA256SUMS: "version v1.2.3".
+const VersionPrefix = "version "
+
+// ParseSums reads a SHA256SUMS file: a first line "version <tag>" (the
+// release workflow writes the release's tag there), then lines
+// "<64 hex>  <name>" (a "*" before the name, binary mode, is allowed).
+// Names must be plain file names and appear once.
+func ParseSums(b []byte) (Sums, error) {
+	out := Sums{Files: map[string]string{}}
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimRight(sc.Text(), "\r")
+		if n == 1 {
+			v, ok := strings.CutPrefix(line, VersionPrefix)
+			if !ok || !ValidTag(v) {
+				return Sums{}, fmt.Errorf("%s does not start with the line \"version <tag>\", so it does not say which release it belongs to", SumsName)
+			}
+			out.Version = v
+			continue
+		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		sum, name, ok := strings.Cut(line, " ")
 		name = strings.TrimPrefix(strings.TrimPrefix(name, " "), "*")
 		if !ok || len(sum) != 64 || strings.ToLower(sum) != sum || name == "" || strings.ContainsAny(name, "/\\ \t") {
-			return nil, fmt.Errorf("%s line %d is not \"<sha256>  <name>\"", SumsName, n)
+			return Sums{}, fmt.Errorf("%s line %d is not \"<sha256>  <name>\"", SumsName, n)
 		}
 		if _, err := hex.DecodeString(sum); err != nil {
-			return nil, fmt.Errorf("%s line %d is not \"<sha256>  <name>\"", SumsName, n)
+			return Sums{}, fmt.Errorf("%s line %d is not \"<sha256>  <name>\"", SumsName, n)
 		}
-		if _, dup := out[name]; dup {
-			return nil, fmt.Errorf("%s names %s twice", SumsName, name)
+		if _, dup := out.Files[name]; dup {
+			return Sums{}, fmt.Errorf("%s names %s twice", SumsName, name)
 		}
-		out[name] = sum
+		out.Files[name] = sum
 	}
-	return out, sc.Err()
+	if err := sc.Err(); err != nil {
+		return Sums{}, err
+	}
+	if out.Version == "" {
+		return Sums{}, fmt.Errorf("%s is empty", SumsName)
+	}
+	return out, nil
 }
 
 // --- fetching ---

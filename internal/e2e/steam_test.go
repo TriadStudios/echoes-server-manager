@@ -216,7 +216,7 @@ func TestSelfUpdateThroughTheAPI(t *testing.T) {
 	name := release.AssetName(runtime.GOOS, runtime.GOARCH)
 	bin := []byte("the new esm")
 	sum := sha256.Sum256(bin)
-	sums := fmt.Sprintf("%s  %s\n", hex.EncodeToString(sum[:]), name)
+	sums := fmt.Sprintf("version v9.9.9\n%s  %s\n", hex.EncodeToString(sum[:]), name)
 	var srv *httptest.Server
 	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
