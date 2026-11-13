@@ -27,11 +27,13 @@ import (
 //     query port with 0 players, or right away when it is stopped. While
 //     players are on, or the count is not known, it waits and asks again
 //     at the next scheduler tick. Waiting longer than update_max_wait
-//     raises a warning event once (it keeps waiting). Right before the
-//     server is stopped (after the backup) the player count is asked again:
-//     a player who joined meanwhile puts the update off. An update that is
-//     refused because the instance is busy is tried again later. An
-//     automatic update that failed is not tried again for the same build.
+//     raises a warning event once (it keeps waiting). The update asks the
+//     player count again before its backup and once more right before the
+//     server is stopped: a player who joined meanwhile puts the update
+//     off, and a backup it made is removed again; older backups are pruned
+//     only once the update goes ahead. An update that is refused because
+//     the instance is busy is tried again later. An automatic update that
+//     failed is not tried again for the same build.
 //
 // An admin who updates an instance by hand to an older build of its source
 // pauses its automatic updates until the source has a build newer than the
