@@ -30,14 +30,15 @@ const MaxPasswordLength = 128
 
 // CheckPassword says what is wrong with a branch password, or nil. A
 // password is 1 to MaxPasswordLength printable ASCII characters without
-// spaces or quotes: SteamCMD reads its commands as words.
+// spaces, quotes, backslashes or semicolons: SteamCMD reads its commands as
+// words, and a semicolon may end a command.
 func CheckPassword(pw string) error {
 	if pw == "" || len(pw) > MaxPasswordLength {
 		return fmt.Errorf("a branch password has 1 to %d characters", MaxPasswordLength)
 	}
 	for _, r := range pw {
-		if r <= ' ' || r > '~' || r == '"' || r == '\'' || r == '\\' {
-			return errors.New("a branch password may only have printable ASCII characters without spaces, quotes or backslashes")
+		if r <= ' ' || r > '~' || r == '"' || r == '\'' || r == '\\' || r == ';' {
+			return errors.New("a branch password may only have printable ASCII characters without spaces, quotes, backslashes or semicolons")
 		}
 	}
 	return nil

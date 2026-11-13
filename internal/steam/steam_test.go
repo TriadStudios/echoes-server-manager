@@ -115,20 +115,40 @@ func TestScript(t *testing.T) {
 		t.Fatalf("default branch: %s", b)
 	}
 	for name, r := range map[string]Request{
-		"relative dir":      {InstallDir: "app", AppID: "1"},
-		"quote in dir":      {InstallDir: filepath.Join(dir, `a"b`), AppID: "1"},
-		"newline in dir":    {InstallDir: dir + "\nquit", AppID: "1"},
-		"app id":            {InstallDir: dir, AppID: "1 +quit"},
-		"branch":            {InstallDir: dir, AppID: "1", Branch: "a b"},
-		"password no beta":  {InstallDir: dir, AppID: "1", Password: "x"},
-		"password space":    {InstallDir: dir, AppID: "1", Branch: "b", Password: "a b"},
-		"password newline":  {InstallDir: dir, AppID: "1", Branch: "b", Password: "a\nquit"},
-		"password quote":    {InstallDir: dir, AppID: "1", Branch: "b", Password: `a"b`},
-		"password too long": {InstallDir: dir, AppID: "1", Branch: "b", Password: strings.Repeat("a", 129)},
+		"relative dir":       {InstallDir: "app", AppID: "1"},
+		"quote in dir":       {InstallDir: filepath.Join(dir, `a"b`), AppID: "1"},
+		"newline in dir":     {InstallDir: dir + "\nquit", AppID: "1"},
+		"app id":             {InstallDir: dir, AppID: "1 +quit"},
+		"branch":             {InstallDir: dir, AppID: "1", Branch: "a b"},
+		"password no beta":   {InstallDir: dir, AppID: "1", Password: "x"},
+		"password space":     {InstallDir: dir, AppID: "1", Branch: "b", Password: "a b"},
+		"password newline":   {InstallDir: dir, AppID: "1", Branch: "b", Password: "a\nquit"},
+		"password quote":     {InstallDir: dir, AppID: "1", Branch: "b", Password: `a"b`},
+		"password too long":  {InstallDir: dir, AppID: "1", Branch: "b", Password: strings.Repeat("a", 129)},
+		"password semicolon": {InstallDir: dir, AppID: "1", Branch: "b", Password: "a;quit"},
 	} {
 		if _, err := Script(r); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A branch password may hold no character that could end SteamCMD's word
+// or command early: white space, quotes, backslashes and semicolons are
+// refused; other printable ASCII is fine.
+func TestCheckPassword(t *testing.T) {
+	for _, pw := range []string{"a;b", ";", "pw;quit", "a b", "a\tb", `a"b`, "a'b", `a\b`, "a\nb", "é", "", strings.Repeat("a", MaxPasswordLength+1)} {
+		if err := CheckPassword(pw); err == nil {
+			t.Errorf("CheckPassword(%q) accepted", pw)
+		}
+	}
+	for _, pw := range []string{"s3cret-Pw", "A!#$%&()*+,-./:<=>?@[]^_`{|}~", strings.Repeat("a", MaxPasswordLength)} {
+		if err := CheckPassword(pw); err != nil {
+			t.Errorf("CheckPassword(%q): %v", pw, err)
+		}
+	}
+	if err := CheckPassword("a;b"); err == nil || !strings.Contains(err.Error(), "semicolon") {
+		t.Errorf("the message does not name semicolons: %v", err)
 	}
 }
 

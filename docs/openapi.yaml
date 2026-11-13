@@ -759,8 +759,8 @@ paths:
         Stored in `<root>/secrets/steam.json` (0600). It is never returned,
         logged or written to the audit log, and reaches SteamCMD only in a
         private script file, never on a command line. 1 to 128 printable
-        ASCII characters without spaces, quotes or backslashes; "" removes
-        it.
+        ASCII characters without spaces, quotes, backslashes or
+        semicolons; "" removes it.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
