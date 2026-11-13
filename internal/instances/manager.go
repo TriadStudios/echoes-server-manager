@@ -613,6 +613,9 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 	if err := in.Validate(); err != nil {
 		return View{}, err
 	}
+	if err := in.checkChanges(nil, now); err != nil {
+		return View{}, err
+	}
 	ports, err := m.allocPortsLocked(in.BindIP, in.Ports, "", nil)
 	if err != nil {
 		return View{}, err
@@ -677,6 +680,9 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	cfg := old.clone()
 	portsGiven := req.Settings.apply(&cfg)
 	if err := cfg.Validate(); err != nil {
+		return View{}, false, err
+	}
+	if err := cfg.checkChanges(&old, m.now()); err != nil {
 		return View{}, false, err
 	}
 	secrets, err := m.readSecrets(name)

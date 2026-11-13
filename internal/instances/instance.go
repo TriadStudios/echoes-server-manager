@@ -39,9 +39,12 @@ const (
 	DefaultBackupKeep = 10
 	MaxMaxPlayers     = 200
 	maxRules          = 64
-	maxExtraArgs      = 32
-	maxRestartTimes   = 24
-	maxSecretLength   = 128
+	// maxRuleValue bounds a rule value; a list setting of the game's
+	// catalog may be longer (gameserver.GameSetting.MaxLength).
+	maxRuleValue    = 256
+	maxExtraArgs    = 32
+	maxRestartTimes = 24
+	maxSecretLength = 128
 	// MinSecretLength is the shortest password accepted, in characters.
 	MinSecretLength = 8
 )
@@ -358,8 +361,12 @@ func (in *Instance) Validate() error {
 		if err := unsafeArgument("rules", fmt.Sprintf("key %q", k), k); err != nil {
 			return err
 		}
-		if v := in.Rules[k]; len(v) > 256 || hasControl(v) {
-			return invalid("rules", "value of %s must be at most 256 printable characters", k)
+		limit := maxRuleValue
+		if s, ok := gameserver.LookupGameSetting(k); ok && s.MaxLength > limit {
+			limit = s.MaxLength
+		}
+		if v := in.Rules[k]; len(v) > limit || hasControl(v) {
+			return invalid("rules", "value of %s must be at most %d printable characters", k, limit)
 		}
 		if err := unsafeArgument("rules", fmt.Sprintf("the value of %s", k), in.Rules[k]); err != nil {
 			return err
@@ -412,6 +419,39 @@ func (in *Instance) Validate() error {
 	for _, b := range in.PreviousBuilds {
 		if !builds.ValidVersion(b) {
 			return invalid("previous_builds", "%q is not a valid build version", b)
+		}
+	}
+	return nil
+}
+
+// checkChanges checks what a create or a change sets, beyond Validate:
+// the rules that name a setting of the game's catalog
+// (gameserver.GameSettings) are checked by the setting's type and range.
+// Only a rule that is new or changed against old is checked (every rule
+// when old is nil), so a value stored before the catalog knew the setting
+// keeps working until it is changed. A rule that names a catalog setting
+// in another case is refused when set: the server finds its switches
+// without regard to case, and the setting is known by its own spelling.
+// now is the time of the check (a date may not lie after it).
+func (in *Instance) checkChanges(old *Instance, now time.Time) error {
+	var before map[string]string
+	if old != nil {
+		before = old.Rules
+	}
+	for _, k := range slices.Sorted(maps.Keys(in.Rules)) {
+		v := in.Rules[k]
+		if prev, ok := before[k]; ok && prev == v {
+			continue
+		}
+		s, ok := gameserver.LookupGameSetting(k)
+		if !ok {
+			if f, folded := gameserver.FoldGameSetting(k); folded {
+				return invalid("rules", "%s is the game setting %s: write its name as %s", k, f.Key, f.Key)
+			}
+			continue
+		}
+		if err := s.Check(v, now); err != nil {
+			return invalid("rules", "%v", err)
 		}
 	}
 	return nil

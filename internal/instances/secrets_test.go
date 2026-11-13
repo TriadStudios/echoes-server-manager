@@ -425,7 +425,7 @@ func TestPasswordRules(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
 	v, err := r.m.Create(CreateRequest{Name: "alpha", Settings: Settings{BindIP: ptr("127.0.0.1"), DisplayName: ptr("Alpha EU"),
-		World: ptr("north"), Cluster: ptr("eu-1"), Rules: &map[string]string{"Difficulty": "Hard-Mode-77", "Motd": "welcome"},
+		World: ptr("north"), Cluster: ptr("eu-1"), Rules: &map[string]string{"Challenge": "Hard-Mode-77", "Greeting": "welcome"},
 		ExtraArgs: &[]string{"-Banner=OpenSesame-42"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestPasswordRules(t *testing.T) {
 		"hard-mode-77":      "rules",
 		"OPENSESAME-42":     "extra_args",
 		"Alpha EU":          "display_name",
-		"difficulty":        "rules",
+		"challenge":         "rules",
 		"-Banner=OpenSesam": "extra_args",
 	} {
 		_, _, err := r.m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(pw)})
@@ -466,7 +466,7 @@ func TestPasswordRules(t *testing.T) {
 		"display_name": {DisplayName: ptr("The zq7-gate-keeper server")},
 		"world":        {World: ptr("zq7-gate-keeperx")},
 		"cluster":      {Cluster: ptr("zq7-gate-keeper")},
-		"rules":        {Rules: &map[string]string{"Motd": "say ZQ7-GATE-KEEPER"}},
+		"rules":        {Rules: &map[string]string{"Greeting": "say ZQ7-GATE-KEEPER"}},
 		"extra_args":   {ExtraArgs: &[]string{"-Banner=" + pw}},
 	} {
 		_, _, err := r.m.Patch("alpha", PatchRequest{Settings: s})

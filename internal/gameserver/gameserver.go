@@ -79,7 +79,8 @@ type Launch struct {
 	UserDir string
 	// LogFile is the absolute path of the server log file.
 	LogFile string
-	// Rules are game settings; each becomes -Key=Value, sorted by key.
+	// Rules are game settings; each becomes -Key=Value, sorted by key. A
+	// list setting of the catalog is written as ListValue writes it.
 	// CONFIRMED: every key of the game's server settings works as a switch.
 	// UNCONFIRMED: whether a loose settings file next to the build would be
 	// read instead; ESM does not rely on one.
@@ -123,7 +124,7 @@ func (l Launch) Args() []string {
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		argv = append(argv, "-"+k+"="+l.Rules[k])
+		argv = append(argv, "-"+k+"="+switchValue(k, l.Rules[k]))
 	}
 	if l.Delivery == DeliveryCommandLine {
 		if l.Secrets.ServerPassword != "" {

@@ -414,7 +414,7 @@ func TestEveryScreen(t *testing.T) {
 		dir := testkit.MakeBuild(t, src, testkit.BuildOptions{Version: v})
 		s.must(http.StatusCreated, "POST", "/api/v1/builds", s.admin, api.InstallRequest{Source: dir}, nil)
 	}
-	fast := map[string]string{"FakeReadyDelay": "100ms", "FakeSaveInterval": "200ms", "Difficulty": "<b>hard</b>"}
+	fast := map[string]string{"FakeReadyDelay": "100ms", "FakeSaveInterval": "200ms", "Banner": "<b>hard</b>"}
 	s.must(http.StatusCreated, "POST", "/api/v1/instances", s.admin, map[string]any{"name": "alpha", "display_name": "Alpha <Wilds>",
 		"bind_ip": "127.0.0.1", "build": "1.0", "cluster": "north", "rules": fast, "limits": map[string]any{"memory_max": "1G"},
 		"schedule": map[string]any{"restart_at": []string{"04:00"}}}, nil)
