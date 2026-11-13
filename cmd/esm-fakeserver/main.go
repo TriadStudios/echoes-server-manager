@@ -43,7 +43,8 @@
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
 // the crash code now), "hang" (ignore stop requests from now on),
 // "ready" (report ready now), "unready" (keep running but stop reporting
-// ready), "cmdline" (print the command line again).
+// ready), "cmdline" (print the command line again), "players" (report the
+// player count the file holds, on the query port and in the status file).
 //
 // Passwords come from the secrets file named by the adapter's switch, or,
 // when that switch is absent, from the adapter's password switches. Both at
@@ -98,6 +99,9 @@ const (
 	controlUnready = "unready"
 	// controlCommandLine prints the command line again.
 	controlCommandLine = "cmdline"
+	// controlPlayers sets the player count the server reports (the file
+	// holds the number).
+	controlPlayers = "players"
 	// controlSecondSignal is written (never read) when a second stop
 	// signal arrives.
 	controlSecondSignal = "second-signal"
@@ -321,6 +325,7 @@ type server struct {
 	counter int
 	status  gameserver.Status
 	ready   atomic.Bool // the query port answers only once ready
+	players atomic.Int32
 }
 
 // logf writes one log line the way the engine does: time and frame in
@@ -484,6 +489,14 @@ func run(args []string) int {
 			if s.takeControl(controlCommandLine) {
 				s.logCommandLine(args)
 			}
+			if v, ok := s.takeControlValue(controlPlayers); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+					s.players.Store(int32(n))
+					s.status.Players = n
+					s.writeStatus()
+					s.logf("Players requested: %d", n)
+				}
+			}
 			if s.takeControl(controlHang) {
 				ignoreStop = true
 				s.logf("Hang requested: stop requests are ignored from now on")
@@ -547,6 +560,16 @@ func (s *server) takeControl(name string) bool {
 	return os.Remove(p) == nil
 }
 
+// takeControlValue is takeControl for a request file whose content matters.
+func (s *server) takeControlValue(name string) (string, bool) {
+	p := filepath.Join(s.o.userDir, gameserver.ControlDirRel, name)
+	b, err := os.ReadFile(p)
+	if err != nil || os.Remove(p) != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
 func (s *server) writeControl(name, content string) {
 	os.WriteFile(filepath.Join(s.o.userDir, gameserver.ControlDirRel, name), []byte(content), 0o600)
 }
@@ -594,7 +617,7 @@ func (s *server) info() gameserver.Info {
 		osByte = 'w'
 	}
 	return gameserver.Info{Protocol: 17, Name: s.o.serverName, Map: shortMap(s.o.mapName), Folder: "fake", Game: "Fake",
-		MaxPlayers: s.o.maxPlayers, ServerType: 'd', OS: osByte, Password: s.o.secrets.ServerPassword != "",
+		Players: int(s.players.Load()), MaxPlayers: s.o.maxPlayers, ServerType: 'd', OS: osByte, Password: s.o.secrets.ServerPassword != "",
 		Version: findVersion()}
 }
 

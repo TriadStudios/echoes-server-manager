@@ -96,10 +96,19 @@ type Instance struct {
 	// "command_line" (as command-line switches, for server builds that
 	// cannot read the file; unsafe on a shared box, see
 	// gameserver.DeliveryCommandLine).
-	SecretDelivery string    `json:"secret_delivery"`
-	PreviousBuilds []string  `json:"previous_builds"`
-	Created        time.Time `json:"created"`
-	Updated        time.Time `json:"updated"`
+	SecretDelivery string `json:"secret_delivery"`
+	// AutoUpdate says what happens when the Steam source the instance's
+	// build came from has a newer build: "off" (nothing; the newer build
+	// shows as available), "install" (the same: the build is installed by
+	// the source's checks, and the instance is flagged), or "restart" (the
+	// instance is also updated, when its server has no players).
+	AutoUpdate string `json:"auto_update"`
+	// UpdateMaxWait is how long a "restart" update waits for an empty
+	// server before ESM raises a warning (it keeps waiting).
+	UpdateMaxWait  config.Duration `json:"update_max_wait"`
+	PreviousBuilds []string        `json:"previous_builds"`
+	Created        time.Time       `json:"created"`
+	Updated        time.Time       `json:"updated"`
 }
 
 // normalize replaces nil maps and slices with empty ones so the JSON form
@@ -117,7 +126,23 @@ func (in *Instance) normalize() {
 	if in.Schedule.RestartAt == nil {
 		in.Schedule.RestartAt = []string{}
 	}
+	if in.AutoUpdate == "" {
+		in.AutoUpdate = AutoUpdateOff
+	}
+	if in.UpdateMaxWait == 0 {
+		in.UpdateMaxWait = config.Duration(DefaultUpdateMaxWait)
+	}
 }
+
+// Auto-update modes (Instance.AutoUpdate).
+const (
+	AutoUpdateOff     = "off"
+	AutoUpdateInstall = "install"
+	AutoUpdateRestart = "restart"
+)
+
+// DefaultUpdateMaxWait is the default of update_max_wait.
+const DefaultUpdateMaxWait = 6 * time.Hour
 
 func (in Instance) clone() Instance {
 	out := in
@@ -149,6 +174,8 @@ type Settings struct {
 	Limits         *Limits            `json:"limits,omitempty"`
 	ExtraArgs      *[]string          `json:"extra_args,omitempty"`
 	SecretDelivery *string            `json:"secret_delivery,omitempty"`
+	AutoUpdate     *string            `json:"auto_update,omitempty"`
+	UpdateMaxWait  *config.Duration   `json:"update_max_wait,omitempty"`
 }
 
 // CreateRequest is the body of a create call. Ports left at 0 are picked
@@ -224,6 +251,12 @@ func (s Settings) apply(in *Instance) (portsGiven bool) {
 	}
 	if s.SecretDelivery != nil {
 		in.SecretDelivery = *s.SecretDelivery
+	}
+	if s.AutoUpdate != nil {
+		in.AutoUpdate = *s.AutoUpdate
+	}
+	if s.UpdateMaxWait != nil {
+		in.UpdateMaxWait = *s.UpdateMaxWait
 	}
 	in.normalize()
 	return portsGiven
@@ -367,6 +400,14 @@ func (in *Instance) Validate() error {
 	}
 	if !gameserver.ValidDelivery(in.SecretDelivery) {
 		return invalid("secret_delivery", "must be %q or %q", gameserver.DeliveryFile, gameserver.DeliveryCommandLine)
+	}
+	switch in.AutoUpdate {
+	case AutoUpdateOff, AutoUpdateInstall, AutoUpdateRestart:
+	default:
+		return invalid("auto_update", "must be %q, %q or %q", AutoUpdateOff, AutoUpdateInstall, AutoUpdateRestart)
+	}
+	if d := in.UpdateMaxWait.D(); d < time.Minute || d > 30*24*time.Hour {
+		return invalid("update_max_wait", "must be between 1m and 720h")
 	}
 	for _, b := range in.PreviousBuilds {
 		if !builds.ValidVersion(b) {

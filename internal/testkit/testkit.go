@@ -52,6 +52,9 @@ const (
 	ControlUnready = "unready"
 	// ControlCommandLine makes the fake print its command line again.
 	ControlCommandLine = "cmdline"
+	// ControlPlayers sets the player count the fake reports (see
+	// SetPlayers).
+	ControlPlayers = "players"
 	// ControlSecondSignal is the file the fake writes (and never takes)
 	// when it gets a second stop signal: a test that finds it failed to
 	// stop with exactly one signal.
@@ -307,6 +310,19 @@ func copyFile(t testing.TB, src, dst string, mode fs.FileMode) {
 		t.Fatal(err)
 	}
 	writeFile(t, dst, b, mode)
+}
+
+// SetPlayers makes the fake with this data folder report n players.
+func SetPlayers(dataDir string, n int) error {
+	dir := filepath.Join(dataDir, "control")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, ".players.tmp")
+	if err := os.WriteFile(tmp, []byte(strconv.Itoa(n)), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, ControlPlayers))
 }
 
 // WriteControl drops a request file (ControlStop, ControlCrash,

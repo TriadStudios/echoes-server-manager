@@ -40,6 +40,9 @@ func (s Status) ForRead() Status {
 func (v View) ForRead() View {
 	if v.OutputHidden() {
 		v.Status = v.Status.ForRead()
+		if v.Update.LastError != "" {
+			v.Update.LastError = HiddenNotice
+		}
 	}
 	return v
 }
