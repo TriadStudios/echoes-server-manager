@@ -523,7 +523,10 @@ UNCONFIRMED.
 the saves, stop the server if it runs, switch the build, start, and wait for
 ready. If the new build does not become ready, ESM stops it, switches back
 and starts the old build again; the answer says the update failed and was
-rolled back. World data is not touched by a rollback.
+rolled back. A rollback puts the previous build back, not the saves: what
+the new build already wrote to them stays. To go back to the saves from
+before the update, restore the backup the update made (see
+[Backups](#backups)).
 
 **Pruning** removes every build that no instance uses as its current build,
 as one of its newest `keep_previous_builds` previous builds, or as the
@@ -550,11 +553,11 @@ source's own checks every `check_every` do the same:
    `steam-cache/.run-<random>/` (0700, the file 0600):
    `force_install_dir`, `login anonymous`, `app_update <app> -beta <branch>
    -betapassword <password>` (plus `validate` when a person asked), `quit`,
-   and runs `steamcmd +runscript <file>` with `HOME` set to the source's
-   cache, so SteamCMD's own files stay there. The folder is removed after
-   the run. The password is never on a command line, in the environment,
-   in a log or in the audit log; SteamCMD's output is masked before ESM
-   keeps any of it.
+   and runs `steamcmd +runscript <file>` with `HOME` set to
+   `steam-cache/<name>/home`. The folder is removed after the run. The
+   password is never on a command line, in the environment, in a log or
+   in the audit log; SteamCMD's output is masked before ESM keeps any of
+   it.
 2. A wrong password (SteamCMD says "Invalid Password") is `wrong_password`;
    any other failure is `steamcmd_failed`, with the last error line.
 3. ESM reads `steamapps/appmanifest_<app>.acf` with a strict, bounded

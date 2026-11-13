@@ -281,11 +281,11 @@ SteamCMD.
    script file that is removed after each run.
 4. `esm build install steam:main` downloads the branch (validating every
    file) and installs its build as `steam-main-<buildid>`, read-only, like
-   any build; the regular checks do the same without validation. The app's
-   files are kept in `<root>/steam-cache/main/` so later downloads are
-   deltas, and SteamCMD's own files stay there too. `esm steam list` shows
-   what each source last did; `esm doctor` checks SteamCMD, the sources and
-   the passwords.
+   any build; the regular checks do the same without validation. ESM keeps
+   the app's files in `<root>/steam-cache/main/` so later downloads are
+   deltas, and runs SteamCMD with `HOME` set to a folder there.
+   `esm steam list` shows what each source last did; `esm doctor` checks
+   SteamCMD, the sources and the passwords.
 
 A new build is installed only when the disk that holds `builds/` has at
 least twice its size free; otherwise the install is refused
@@ -300,8 +300,12 @@ Anyone else can fetch the same build once the tool app is released (in the
 free dedicated server package):
 
 ```sh
-steamcmd +login anonymous +app_update <app> -beta <branch> -betapassword <password> validate +quit
+steamcmd +login anonymous +app_update <app> -beta <branch> validate +quit
 ```
+
+A password-protected branch also needs its password. Keep it off the
+command line, where other accounts on the machine can read it; ESM puts
+it in a private script file that SteamCMD runs with `+runscript`.
 
 ### Making a build folder by hand
 
@@ -324,7 +328,10 @@ instance):
 - `off` (default) and `install`: nothing more; update by hand.
 - `restart`: ESM updates a running instance itself as soon as its server
   answers the query port with **0 players**: a backup, one stop signal,
-  the new build, and a roll back when the new build does not get ready.
+  the new build, and a roll back to the previous build when the new build
+  does not get ready. A roll back puts the build back, not the saves: what
+  the new build already wrote stays, and restoring the backup made before
+  the update undoes that.
   The player count is asked again before the backup and once more right
   before the stop; a player who joined meanwhile puts the update off, and
   a backup made for it is removed again (older backups are pruned only
@@ -379,7 +386,7 @@ esm start alpha                              # waits until the server is ready
 esm status alpha
 esm logs alpha -n 100 -f
 esm backup alpha
-esm update alpha --to 1.1.0                  # rolls back if the new build never gets ready
+esm update alpha --to 1.1.0                  # goes back to the old build if the new one never gets ready
 esm restore alpha 20260101T120000Z-manual
 esm stop alpha
 esm list --json

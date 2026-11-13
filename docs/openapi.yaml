@@ -531,9 +531,11 @@ paths:
         Backs up the save files, stops a running server, starts the new
         build and waits until it is ready. If it does not become ready the
         old build is put back and started, and the answer is 422 with code
-        update_failed ("update failed, rolled back to ..."). World data is
-        not touched by a rollback. An instance that was stopped is stopped
-        again after the new build proved ready. Always waits.
+        update_failed ("update failed, rolled back to ..."). A rollback
+        puts the old build back, not the saves: what the new build already
+        wrote stays (restore the backup the update made for that). An
+        instance that was stopped is stopped again after the new build
+        proved ready. Always waits.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
