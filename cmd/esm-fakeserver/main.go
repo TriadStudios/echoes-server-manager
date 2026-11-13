@@ -17,6 +17,7 @@
 //	-FakeCrashAfter=<dur>  exit with the crash code after this long
 //	-FakeIgnoreStop        ignore stop requests (only a kill ends it)
 //	-FakeNoReady           never report ready
+//	-FakeNoReadyLine       report ready without writing the ready log line
 //	-FakeNoStatusFile      write no status file
 //	-FakeNoQuery           never answer the query port
 //	-FakeIgnoreSecretsFile behave like a server build that does not know the
@@ -54,9 +55,12 @@
 // id at every start. Only for tests it also prints its working folder and
 // its LD_LIBRARY_PATH.
 //
-// The query port answers PING with PONG only once the server is ready. Only
-// for tests it also says whether a password is the right one: "JOIN <server
-// password>" and "ADMIN <admin password>" are answered with OK or DENIED.
+// The query port answers A2S_INFO, the Source server query, only once the
+// server is ready: a request without the server's challenge gets the
+// challenge reply, one with it the info reply (name, map, players, max
+// players). Only for tests it also says whether a password is the right
+// one: "JOIN <server password>" and "ADMIN <admin password>" are answered
+// with OK or DENIED.
 package main
 
 import (
@@ -132,6 +136,7 @@ type options struct {
 	crashAfter   time.Duration
 	ignoreStop   bool
 	noReady      bool
+	noReadyLine  bool
 	noStatusFile bool
 	noQuery      bool
 	failStart    bool
@@ -248,6 +253,7 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	dur("FakeCrashAfter", &o.crashAfter)
 	flag("FakeIgnoreStop", &o.ignoreStop)
 	flag("FakeNoReady", &o.noReady)
+	flag("FakeNoReadyLine", &o.noReadyLine)
 	flag("FakeNoStatusFile", &o.noStatusFile)
 	flag("FakeNoQuery", &o.noQuery)
 	flag("FakeFailStart", &o.failStart)
@@ -436,6 +442,10 @@ func run(args []string) int {
 		s.status.State = gameserver.StateReady
 		s.writeStatus()
 		s.ready.Store(true)
+		if o.noReadyLine {
+			s.logf("Ready (no ready line on purpose)")
+			return
+		}
 		s.logf("%s", gameserver.ReadyLine(o.serverName, shortMap(o.mapName), o.maxPlayers))
 	}
 
@@ -536,6 +546,8 @@ func (s *server) writeControl(name, content string) {
 }
 
 func (s *server) answerQueries() {
+	var challenge [4]byte
+	rand.Read(challenge[:])
 	buf := make([]byte, 512)
 	for {
 		n, addr, err := s.queryLn.ReadFrom(buf)
@@ -549,8 +561,13 @@ func (s *server) answerQueries() {
 			continue
 		}
 		msg := string(buf[:n])
-		if msg == "PING" && s.ready.Load() {
-			s.queryLn.WriteTo([]byte("PONG"), addr)
+		if got, ok := gameserver.ParseInfoRequest(buf[:n]); ok && s.ready.Load() {
+			if string(got) != string(challenge[:]) {
+				s.queryLn.WriteTo(gameserver.ChallengeReply(challenge), addr)
+				continue
+			}
+			s.queryLn.WriteTo(gameserver.InfoReply(s.info()), addr)
+			continue
 		}
 		for ask, want := range map[string]string{askJoin: s.o.secrets.ServerPassword, askAdmin: s.o.secrets.AdminPassword} {
 			if given, ok := strings.CutPrefix(msg, ask); ok {
@@ -562,6 +579,17 @@ func (s *server) answerQueries() {
 			}
 		}
 	}
+}
+
+// info is the fake's answer to A2S_INFO.
+func (s *server) info() gameserver.Info {
+	osByte := byte('l')
+	if runtime.GOOS == "windows" {
+		osByte = 'w'
+	}
+	return gameserver.Info{Protocol: 17, Name: s.o.serverName, Map: shortMap(s.o.mapName), Folder: "fake", Game: "Fake",
+		MaxPlayers: s.o.maxPlayers, ServerType: 'd', OS: osByte, Password: s.o.secrets.ServerPassword != "",
+		Version: findVersion()}
 }
 
 // savePath is the world's save file: below the user folder's save folder,

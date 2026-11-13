@@ -15,7 +15,6 @@
 package gameserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -471,42 +470,3 @@ var PortProtocols = []string{"udp"}
 // told and puts in its advert. UNCONFIRMED: two or more servers on one box,
 // told apart by their ports only, and a query port other than the default.
 const InboundPorts = "query"
-
-// Probe asks the query port whether the server answers: it sends "PING" over
-// UDP and expects "PONG". A server on all interfaces (host empty, 0.0.0.0
-// or ::) is asked on 127.0.0.1. Only the fake server answers this;
-// UNCONFIRMED for the real server, which answers the Steam server query
-// protocol on that port, so for it the ready log line decides.
-func Probe(ctx context.Context, host string, port int) error {
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(time.Second)
-	}
-	var d net.Dialer
-	if la := LoopbackLocalAddr(host); la != nil {
-		d.LocalAddr = la
-	}
-	c, err := d.DialContext(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(port)))
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	if err := c.SetDeadline(deadline); err != nil {
-		return err
-	}
-	if _, err := c.Write([]byte("PING")); err != nil {
-		return err
-	}
-	buf := make([]byte, 64)
-	n, err := c.Read(buf)
-	if err != nil {
-		return err
-	}
-	if string(buf[:n]) != "PONG" {
-		return errors.New("gameserver: unexpected query answer")
-	}
-	return nil
-}

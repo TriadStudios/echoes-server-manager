@@ -1,14 +1,11 @@
 package gameserver
 
 import (
-	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 func goldenLaunch() Launch {
@@ -335,40 +332,5 @@ func TestLoopbackLocalAddr(t *testing.T) {
 		if got := LoopbackLocalAddr(host); got != nil {
 			t.Errorf("LoopbackLocalAddr(%q) = %v, want nil", host, got)
 		}
-	}
-}
-
-func TestProbe(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pc.Close()
-	go func() {
-		buf := make([]byte, 64)
-		for {
-			n, addr, err := pc.ReadFrom(buf)
-			if err != nil {
-				return
-			}
-			if string(buf[:n]) == "PING" {
-				pc.WriteTo([]byte("PONG"), addr)
-			}
-		}
-	}()
-	port := pc.LocalAddr().(*net.UDPAddr).Port
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := Probe(ctx, "", port); err != nil {
-		t.Fatalf("probe: %v", err)
-	}
-	// Nothing listening: the probe fails within its deadline.
-	free, _ := net.ListenPacket("udp", "127.0.0.1:0")
-	freePort := free.LocalAddr().(*net.UDPAddr).Port
-	free.Close()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel2()
-	if err := Probe(ctx2, "127.0.0.1", freePort); err == nil {
-		t.Fatal("probe of a closed port succeeded")
 	}
 }

@@ -191,6 +191,24 @@ func TestFakeLifecycle(t *testing.T) {
 	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
 		t.Fatalf("query probe: %v", err)
 	}
+	// A2S_INFO: the challenge step, then the server's name, map and slots.
+	info, err := gameserver.QueryInfo(ctx, "127.0.0.1", st.Ports.Query)
+	if err != nil || info.Name != "T" || info.Map != "TestMap" || info.MaxPlayers != 8 || info.Players != 0 || info.ServerType != 'd' {
+		t.Fatalf("A2S_INFO: %+v %v", info, err)
+	}
+	// Sent from loopback, like every socket of a test.
+	conn, err := net.DialUDP("udp", gameserver.LoopbackLocalAddr("127.0.0.1"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: st.Ports.Query})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.Write(gameserver.InfoRequest(nil))
+	reply := make([]byte, 2048)
+	n, err := conn.Read(reply)
+	if ch, _, perr := gameserver.ParseQueryReply(reply[:n]); err != nil || perr != nil || len(ch) != 4 {
+		t.Fatalf("a request without the challenge got %q (%v %v), want the challenge", reply[:n], err, perr)
+	}
 	save := testkit.FakeSavePath(r.data, "TestMap", "w")
 	testkit.Eventually(t, 5*time.Second, func() bool { _, err := os.Stat(save + ".bak2"); return err == nil }, "no rotated save files")
 	if err := testkit.WriteControl(r.data, testkit.ControlCommandLine); err != nil {
@@ -504,6 +522,21 @@ func TestFakeReadyOnRequest(t *testing.T) {
 	testkit.WriteControl(r.data, testkit.ControlStop)
 	if code := r.wait(t, 10*time.Second); code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// Told to, the fake becomes ready without its ready line: only the query
+// port says so.
+func TestFakeReadyWithoutLine(t *testing.T) {
+	r := startFake(t, testkit.FakeServer(t), "-FakeNoReadyLine")
+	st := waitReady(t, r.data)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
+		t.Fatalf("query probe: %v", err)
+	}
+	if n := countLines(r.logText(), gameserver.IsReadyLine); n != 0 {
+		t.Fatalf("%d ready lines", n)
 	}
 }
 

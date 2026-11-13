@@ -34,7 +34,7 @@ var wildcardPatterns = []*regexp.Regexp{
 var wildcardAllowed = []struct{ file, line, why string }{
 	{"internal/netbind/netbind.go", `host = "0.0.0.0"`,
 		"an empty bind address means all interfaces, as configured; refused in test binaries"},
-	{"internal/gameserver/gameserver.go", `if host == "" || host == "0.0.0.0" || host == "::" {`,
+	{"internal/gameserver/query.go", `if host == "" || host == "0.0.0.0" || host == "::" {`,
 		"Probe dials: a server on all interfaces is asked on 127.0.0.1"},
 	{"internal/config/config_test.go", `{"0.0.0.0:8740", `, "listen rule checks; nothing is bound"},
 	{"internal/config/config_test.go", `{"[::]:8740", `, "listen rule checks; nothing is bound"},

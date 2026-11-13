@@ -130,6 +130,23 @@ func TestRealServerShape(t *testing.T) {
 	}
 }
 
+// With no status file and no ready line, the server is seen ready by its
+// answer to A2S_INFO on the query port.
+func TestReadyThroughQueryPort(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	h.create("alpha", "", map[string]string{"FakeNoStatusFile": "true", "FakeNoReadyLine": "true"})
+	var st instances.Status
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, &st)
+	if st.State != instances.Running || st.ReadySource != instances.ReadyQueryPort {
+		t.Fatalf("after start: %+v", st)
+	}
+	if n := len(logLines(t, h.serverLog("alpha"), gameserver.IsReadyLine)); n != 0 {
+		t.Fatalf("%d ready lines in the log", n)
+	}
+}
+
 // A build without a default map runs only instances that name their map.
 func TestMapFromBuildOrInstance(t *testing.T) {
 	t.Parallel()
