@@ -106,7 +106,12 @@ Tokens:
 // Main runs the command line with args (without the program name) and
 // returns the exit code.
 func Main(args []string, stdout, stderr io.Writer, version string) int {
-	e := &env{out: stdout, errOut: stderr, in: os.Stdin, version: version, ctx: context.Background()}
+	return MainIn(args, os.Stdin, stdout, stderr, version)
+}
+
+// MainIn is Main with standard input given (for steam password).
+func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version string) int {
+	e := &env{out: stdout, errOut: stderr, in: stdin, version: version, ctx: context.Background()}
 	top := flag.NewFlagSet("esm", flag.ContinueOnError)
 	top.SetOutput(io.Discard)
 	e.g.register(top)
