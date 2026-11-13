@@ -297,8 +297,9 @@ least twice its size free; otherwise the install is refused
 After each install from a source, ESM keeps that source's newest
 `keep_steam_builds` builds by build id (default 3, at least 1, set in
 `esm.json`) and removes its older ones that no instance uses (as its
-build, a kept previous build, or the build an unproven update goes back
-to). Builds of other sources and builds not from Steam are left alone.
+build, a kept previous build, the build an unproven update goes back to,
+or a build an update under way still needs). Builds of other sources and
+builds not from Steam are left alone.
 
 Anyone else can fetch the same build once the tool app is released (in the
 free dedicated server package):

@@ -531,9 +531,11 @@ before the update, restore the backup the update made (see
 **Pruning** removes every build that no instance uses as its current build,
 as one of its newest `keep_previous_builds` previous builds, or as the
 build an unproven automatic update goes back to (`update_rollback_build`,
-see [Automatic updates](#automatic-updates)). A single build can be
-deleted when no instance uses it. Builds of a Steam source are also pruned
-after each install from that source (see
+see [Automatic updates](#automatic-updates)). While an update of an
+instance runs, the build it started from and the build it goes to count as
+used by that instance too, until the update has ended either way. A single
+build can be deleted when no instance uses it. Builds of a Steam source
+are also pruned after each install from that source (see
 [Builds from Steam](#builds-from-steam)).
 
 **Making a manifest.** `esm build manifest <folder> --version V
@@ -1198,6 +1200,12 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   verifies and its signed version is its tag. The signature shows that the
   binaries are those of a real release; which signed release is offered is
   up to whoever serves the release list.
+- **Going back to an older release can need an edit of `esm.json`.** ESM
+  writes `esm.json`, with every setting, only when it starts without one.
+  A file written by a release that has `keep_steam_builds` holds that
+  setting; older releases do not know it and refuse a configuration file
+  with a setting they do not know. Before going back to one with a forced
+  self-update, remove the `keep_steam_builds` line.
 - **A stop during a Steam install can take a while.** ESM ends a Steam
   install it is running when it stops, but the copy of the app's files
   into the install work folder only stops between files, so a stop may
