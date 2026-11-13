@@ -297,6 +297,10 @@ func TestProcessStopIsOneSignal(t *testing.T) {
 	// A server that does stop on its signal is not sent another one by a
 	// stop that follows.
 	r.kill("stubborn")
+	testkit.Eventually(t, 10*time.Second, func() bool { pr, _ := p.Status("stubborn"); return !pr.Running }, "the killed server still counts as running")
+	// The status file of the killed run says ready; only the new run's
+	// may count (a signal before the server's handler is set up ends it).
+	os.Remove(gameserver.StatusFilePath(data))
 	if err := p.Start(context.Background(), r.spec("stubborn", "-FakeStopDelay=1500ms")); err != nil {
 		t.Fatal(err)
 	}

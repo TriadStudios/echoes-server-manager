@@ -110,7 +110,10 @@ func TestSystemdLifecycle(t *testing.T) {
 		return err == nil && !pr.Running
 	}, "crash not detected")
 
-	// Start again, then a fresh supervisor adopts it.
+	// Start again, then a fresh supervisor adopts it. The status file of
+	// the crashed run says ready; only the new run's may count (a signal
+	// before the server's handler is set up ends it at once).
+	os.Remove(gameserver.StatusFilePath(data))
 	spec.Args = spec.Args[:len(spec.Args)-1]
 	if err := s.Start(context.Background(), spec); err != nil {
 		t.Fatal(err)
