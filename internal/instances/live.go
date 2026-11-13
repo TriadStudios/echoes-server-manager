@@ -27,6 +27,10 @@ type Live struct {
 	Players *int `json:"players"`
 	// LastSave is the last world save the status file names.
 	LastSave *time.Time `json:"last_save"`
+	// SteamServerID is the Steam server id the running server logged when
+	// it logged on. It is new at every start of the server, so it is shown
+	// for the running server only and never stored.
+	SteamServerID *string `json:"steam_server_id"`
 	// Unknown lists the values above that are null, and why. Never nil.
 	Unknown []sysinfo.Unknown `json:"unknown"`
 }
@@ -40,13 +44,22 @@ type Scheduled struct {
 	Backup  time.Time `json:"backup,omitzero"`
 }
 
-// live reads the live values of v.
-func (m *Manager) live(v View) Live {
+// live reads the live values of v; serverID is the Steam server id the
+// running server logged, if any.
+func (m *Manager) live(v View, serverID string) Live {
 	l := Live{Unknown: []sysinfo.Unknown{}}
 	unknown := func(field, reason string) {
 		l.Unknown = append(l.Unknown, sysinfo.Unknown{Field: field, Reason: reason})
 	}
 	running := v.Status.State.active() && v.Status.PID > 0
+	switch {
+	case !running:
+		unknown("steam_server_id", "the server is not running")
+	case serverID == "":
+		unknown("steam_server_id", "the server has not logged its Steam server id (yet)")
+	default:
+		l.SteamServerID = &serverID
+	}
 	if !running {
 		unknown("memory_bytes", "the server is not running")
 	} else {

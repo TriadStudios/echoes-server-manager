@@ -18,7 +18,7 @@ func TestSecretsFile(t *testing.T) {
 		{ServerPassword: "join"},
 		{AdminPassword: "admin only"},
 		{ServerPassword: `sp ace "quote" 'single' \back $dollar <tag> & é 密 -Port=1`, AdminPassword: "  lead and trail  "},
-		{ServerPassword: ReadyMarker, AdminPassword: `{"server_password":"x"}`},
+		{ServerPassword: ReadyLine("x", "y", 1), AdminPassword: `{"server_password":"x"}`},
 	} {
 		b := s.File()
 		if !json.Valid(b) || !bytes.HasSuffix(b, []byte("\n")) || bytes.Count(b, []byte("\n")) != 1 {

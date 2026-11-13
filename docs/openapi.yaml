@@ -423,7 +423,15 @@ paths:
   /api/v1/instances/{name}/stop:
     post:
       tags: [instances]
-      summary: Stop politely, then by force after stop_timeout (operator)
+      summary: Stop with one polite request and wait up to stop_timeout (operator)
+      description: |
+        On Linux the server gets exactly one SIGINT and saves its world
+        before it exits. ESM never sends a second signal and never kills
+        it: a server still running after stop_timeout is left running, the
+        instance becomes failed with a reason that says so, and the answer
+        is 422 stop_timeout. Stopping again waits again without a signal.
+        (Process mode on Windows, for development, writes the stop request
+        file and kills the server after stop_timeout.)
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody: { $ref: "#/components/requestBodies/Empty" }
@@ -810,8 +818,13 @@ components:
                 already_running, instance_exists, instance_running, busy,
                 port_in_use, no_free_ports, build_exists, build_in_use,
                 hash_mismatch, unsafe_archive, bad_manifest, too_large,
-                no_build, update_failed, backup_damaged, start_failed,
-                not_ready, rate_limited, internal.
+                unsafe_argument (422: a setting that goes onto the server
+                command line holds a double quote, MULTIHOME, or white
+                space followed by "-"), no_build, no_map (409: neither the instance nor its build
+                names a map), update_failed, backup_damaged, start_failed,
+                not_ready, stop_timeout (422: the server did not exit within
+                stop_timeout after its one stop signal and was left
+                running), stop_failed, rate_limited, internal.
             message: { type: string }
     Duration:
       description: A duration such as "90s" or "1h30m", or a number of seconds.
@@ -916,18 +929,22 @@ components:
           items: { $ref: "#/components/schemas/Unknown" }
     Firewall:
       type: object
+      description: |
+        Commands that open the query port range. Only the query ports need
+        to be reachable from outside: a server has no socket on its game
+        port (players join through Steam's relay over outbound UDP).
       properties:
-        game_ports: { type: string }
+        game_ports: { type: string, description: For reference only; no inbound rule is needed. }
         query_ports: { type: string }
         protocols:
           type: array
           items: { type: string, examples: [udp] }
         ufw:
           type: array
-          items: { type: string, examples: ["sudo ufw allow 7777:7786/udp"] }
+          items: { type: string, examples: ["sudo ufw allow 27015:27024/udp"] }
         firewalld:
           type: array
-          items: { type: string, examples: ["sudo firewall-cmd --permanent --add-port=7777-7786/udp"] }
+          items: { type: string, examples: ["sudo firewall-cmd --permanent --add-port=27015-27024/udp"] }
         note: { type: string }
     DoctorReport:
       type: object
@@ -949,7 +966,10 @@ components:
         version: { type: string }
         commit: { type: string }
         channel: { type: string, enum: [live, test] }
-        executable: { type: string, description: Path of this OS's executable inside the build. }
+        default_map:
+          type: string
+          description: The manifest's default_map, loaded by instances that name no map ("" when the build has none).
+        executable: { type: string, description: Path of this OS's server binary inside the build (the manifest's executables entry). }
         installed: { type: string, format: date-time }
         files: { type: integer }
         size_bytes: { type: integer }
@@ -1031,10 +1051,12 @@ components:
         display_name: { type: string, maxLength: 64 }
         cluster: { type: string }
         channel: { type: string, enum: [live, test] }
-        map: { type: string, description: Empty means the server's default map. }
+        map: { type: string, description: Empty means the build's default_map. }
         world: { type: string }
         ports: { $ref: "#/components/schemas/Ports" }
-        bind_ip: { type: string }
+        bind_ip:
+          type: string
+          description: Where ESM checks that the ports are free and probes the query port. It is not given to the server, which listens on every address; the box's firewall decides where its query port is reachable.
         max_players: { type: integer, minimum: 1, maximum: 200 }
         rules:
           type: object
@@ -1118,6 +1140,10 @@ components:
           description: cgroup is the server's systemd unit (the server and everything it started); process is the resident memory of the server process alone.
         players: { type: [integer, "null"], description: Player count from the running server's status file. }
         last_save: { type: [string, "null"], format: date-time, description: Last world save named in the status file. }
+        steam_server_id:
+          type: [string, "null"]
+          description: The Steam server id the running server logged when it logged on. It changes at every start of the server, so it is shown for the running server only and never stored.
+          examples: ["90000000000000001"]
         unknown:
           type: array
           items: { $ref: "#/components/schemas/Unknown" }

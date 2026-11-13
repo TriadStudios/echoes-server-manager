@@ -1,7 +1,8 @@
 // Package doctor runs read-only checks of an ESM box: the root folder, the
 // config, the exposure rule, free ports, disk space, the supervisor, the
-// socket, the secrets folder and how instances hand their servers the
-// passwords. It changes nothing.
+// socket, the secrets folder, how instances hand their servers the
+// passwords, the Steam app id and runtime libraries, and the server binary
+// of every installed build. It changes nothing.
 package doctor
 
 import (
@@ -65,6 +66,8 @@ type Options struct {
 	// Service is true when the running service asks; the socket is then
 	// known to be live and is not checked.
 	Service bool
+	// GOOS is the system the servers run on (default runtime.GOOS).
+	GOOS string
 }
 
 func (r *Report) add(name, status, format string, args ...any) {
@@ -113,6 +116,15 @@ func Run(o Options) Report {
 	if rootOK {
 		checkSecrets(&r, o.Root)
 		checkSecretDelivery(&r, o.Root)
+	}
+	goos := o.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	checkSteamAppID(&r, cfg)
+	checkSteamRuntime(&r, cfg.SteamRuntime(), goos)
+	if rootOK {
+		checkBuilds(&r, o.Root, goos, cfg.SteamAppID)
 	}
 	return r
 }

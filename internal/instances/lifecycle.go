@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
@@ -73,6 +76,20 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if err != nil {
 		return nil, err
 	}
+	buildAbs, err := m.builds.Path(cfg.Build)
+	if err != nil {
+		return nil, err
+	}
+	mapName := cfg.Map
+	if mapName == "" {
+		mapName = b.DefaultMap
+	}
+	if mapName == "" {
+		return nil, fault.New(fault.Conflict, "no_map", "instance %s names no map and build %s has no default_map; set the instance's map", cfg.Name, cfg.Build)
+	}
+	if m.alive(cfg.Name) {
+		return nil, fault.New(fault.Conflict, "already_running", "a server of instance %s is already running", cfg.Name)
+	}
 	if err := checkPortsBindable(cfg); err != nil {
 		return nil, err
 	}
@@ -95,17 +112,32 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if err != nil {
 		return nil, err
 	}
-	dirAbs, _ := m.st.Abs(instDir(cfg.Name))
+	// Every start begins a new server log; the last one is kept beside it.
+	if m.st.Exists(serverLog(cfg.Name)) {
+		if err := m.st.Rename(serverLog(cfg.Name), previousServerLog(cfg.Name)); err != nil {
+			return nil, fmt.Errorf("keep the previous server log: %w", err)
+		}
+	}
+	if err := m.st.MkdirAll(instDir(cfg.Name)+"/logs", 0o700); err != nil {
+		return nil, err
+	}
+	logAbs, err := m.st.Abs(serverLog(cfg.Name))
+	if err != nil {
+		return nil, err
+	}
 	outAbs, _ := m.st.Abs(consoleFile(cfg.Name))
 	memMax, _ := ParseMemory(cfg.Limits.MemoryMax)
 	name := cfg.DisplayName
 	if name == "" {
 		name = cfg.Name
 	}
+	// The configured bind address is not given to the server (see
+	// gameserver.MultihomeSwitch): it only says where ESM checks and
+	// probes the ports.
 	l := gameserver.Launch{
-		Map: cfg.Map, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query, BindIP: cfg.BindIP,
-		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Rules: cfg.Rules,
-		DataDir: dataAbs, Delivery: cfg.SecretDelivery, SecretsFile: secretsAbs,
+		Map: mapName, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query,
+		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Listed: cfg.Listed, Rules: cfg.Rules,
+		UserDir: dataAbs, LogFile: logAbs, Delivery: cfg.SecretDelivery, SecretsFile: secretsAbs,
 		ExtraArgs: cfg.ExtraArgs,
 	}
 	// onCommandLine are the passwords that go on the command line: none,
@@ -122,14 +154,15 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		return nil, err
 	}
 	w := &watchState{
-		server:  m.tailAt(serverLog(cfg.Name)),
+		server:  tail{rel: serverLog(cfg.Name)}, // a new file: read from its start
 		console: m.tailAt(consoleFile(cfg.Name)),
 		bindIP:  cfg.BindIP,
 		query:   cfg.Ports.Query,
 		unsafe:  cfg.OutputHidden(),
 	}
 	spec := supervisor.Spec{
-		Name: cfg.Name, Executable: exe, Args: argv, Dir: dirAbs, OutputFile: outAbs,
+		Name: cfg.Name, Executable: exe, Args: argv, Dir: buildAbs, OutputFile: outAbs,
+		Env:          m.serverEnv(),
 		Limits:       supervisor.Limits{MemoryMaxBytes: memMax, CPUQuotaPercent: cfg.Limits.CPUQuotaPercent},
 		StopFile:     gameserver.StopRequestPath(dataAbs),
 		SecretValues: onCommandLine,
@@ -162,6 +195,7 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	in.gen++
 	r := &run{gen: in.gen, autoRestart: autoRestart, done: make(chan struct{})}
 	in.cur = r
+	in.serverID = ""
 	in.status.Build = cfg.Build
 	in.status.PID = pr.PID
 	in.status.StartedAt = now
@@ -174,6 +208,36 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	in.mu.Unlock()
 	go m.watch(in, r, w)
 	return r, nil
+}
+
+// serverEnv is what ESM adds to a server's environment: the Steam runtime
+// folder first on LD_LIBRARY_PATH (gameserver.SteamLibraries). Windows
+// servers get nothing added.
+func (m *Manager) serverEnv() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return []string{gameserver.LibraryPathVar + "=" + gameserver.LibraryPath(m.cfg.SteamRuntime(), os.Getenv(gameserver.LibraryPathVar))}
+}
+
+// findServerID reads the Steam server id from the start of the current
+// server log, for a server found running when ESM starts. Every start
+// begins a new log, and the server logs its id a few seconds after it
+// starts, so the first id line is this run's; a later one is not taken.
+func (m *Manager) findServerID(name string) string {
+	f, err := m.st.Open(serverLog(name))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, 1<<20)
+	n, _ := f.ReadAt(buf, 0)
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		if v, ok := gameserver.ServerID(line); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // dropRunSecretsLocked removes the secrets file of a server that has
@@ -206,12 +270,14 @@ func (m *Manager) adoptRun(in *rt, p supervisor.Proc) {
 		deadline: now.Add(m.cfg.ReadyTimeout.D()),
 		adopted:  true,
 	}
+	id := m.findServerID(in.name)
 	in.mu.Lock()
 	w.bindIP, w.query = in.cfg.BindIP, in.cfg.Ports.Query
 	w.unsafe = in.cfg.OutputHidden()
 	in.gen++
 	r := &run{gen: in.gen, autoRestart: true, done: make(chan struct{})}
 	in.cur = r
+	in.serverID = id
 	in.status.Build = in.cfg.Build
 	in.status.PID = p.PID
 	in.status.StartedAt = p.StartedAt
@@ -352,15 +418,19 @@ func (m *Manager) notReady(in *rt, r *run) {
 	m.log.Warn("server not ready in time; stopping it", "instance", in.name, "ready_timeout", limit)
 	stopErr := m.sup.Stop(context.Background(), in.name, m.cfg.StopTimeout.D())
 	reason := fmt.Sprintf("not ready within %s", limit)
-	if stopErr != nil {
+	switch {
+	case errors.Is(stopErr, supervisor.ErrStopTimeout):
+		reason += "; " + m.stopTimeoutReason()
+	case stopErr != nil:
 		reason += "; stopping it failed: " + stopErr.Error()
 	}
 	in.mu.Lock()
 	// Unless something else (a restart, a stop) took the instance over
 	// while the server was being stopped.
 	if in.gen == gen {
-		in.status.PID = 0
 		if stopErr == nil {
+			in.status.PID = 0
+			in.serverID = ""
 			m.dropRunSecretsLocked(in)
 		}
 		m.setLocked(in, Failed, reason)
@@ -381,6 +451,7 @@ func (m *Manager) exited(in *rt, r *run, pr supervisor.Proc) {
 	in.cur = nil
 	in.status.PID = 0
 	in.status.ExitCode = pr.ExitCode
+	in.serverID = ""
 	m.dropRunSecretsLocked(in)
 	desc := "exited (exit code unknown)"
 	if pr.ExitCode != nil {
@@ -499,7 +570,11 @@ func (m *Manager) mustStatus(name string) Status {
 	return st
 }
 
-// Stop stops an instance: politely, then by force after stop_timeout.
+// Stop stops an instance: one polite stop request (Linux: one SIGINT),
+// then a wait of up to stop_timeout. A server still running then is left
+// running, the instance is failed with a reason that says so, and the
+// error has the code stop_timeout. A later stop waits again without a
+// second signal.
 func (m *Manager) Stop(ctx context.Context, name string) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -535,6 +610,13 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 		m.setLocked(in, Stopping, reason)
 		in.mu.Unlock()
 		if err := m.sup.Stop(ctx, in.name, m.cfg.StopTimeout.D()); err != nil {
+			if errors.Is(err, supervisor.ErrStopTimeout) {
+				why := m.stopTimeoutReason()
+				in.mu.Lock()
+				m.setLocked(in, Failed, why)
+				in.mu.Unlock()
+				return fault.New(fault.Failed, "stop_timeout", "instance %s: %s", in.name, why)
+			}
 			in.mu.Lock()
 			m.setLocked(in, Failed, "stop failed: "+err.Error())
 			in.mu.Unlock()
@@ -543,6 +625,7 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 	}
 	in.mu.Lock()
 	in.status.PID = 0
+	in.serverID = ""
 	// No server of this instance runs now: its secrets file goes.
 	m.dropRunSecretsLocked(in)
 	if alive || prev != Stopped {
@@ -550,6 +633,13 @@ func (m *Manager) stopLocked(ctx context.Context, in *rt, reason string) error {
 	}
 	in.mu.Unlock()
 	return nil
+}
+
+// stopTimeoutReason says what happened when a server did not exit in time
+// after its stop request.
+func (m *Manager) stopTimeoutReason() string {
+	return fmt.Sprintf("stop timed out: the server did not exit within %s after its stop signal; it was left running "+
+		"and gets no second signal (stop again to wait again)", m.cfg.StopTimeout.D())
 }
 
 // Restart stops and starts an instance. why is recorded as the reason.
@@ -604,6 +694,14 @@ func (m *Manager) followLogs(in *rt, w *watchState) {
 	for _, line := range m.follow(&w.server) {
 		if !w.logReady && gameserver.IsReadyLine(line) {
 			w.logReady = true
+		}
+		if id, ok := gameserver.ServerID(line); ok {
+			// The first id line of a run is the server's; a start clears it.
+			in.mu.Lock()
+			if in.serverID == "" {
+				in.serverID = id
+			}
+			in.mu.Unlock()
 		}
 		publish(SourceServer, line)
 	}

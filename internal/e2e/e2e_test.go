@@ -99,7 +99,7 @@ func lifecycle(t *testing.T, h *harness, name string) {
 	if c := h.liveCounter(name, name); c < 1 {
 		t.Fatalf("no world save after the stop (counter %d)", c)
 	}
-	b, _ := os.ReadFile(gameserver.ServerLogPath(h.dataDir(name)))
+	b, _ := os.ReadFile(h.serverLog(name))
 	if !strings.Contains(string(b), "Stop requested") {
 		t.Fatalf("server was not stopped politely:\n%s", b)
 	}
@@ -233,12 +233,17 @@ func TestBackupRestore(t *testing.T) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
 	h.create("alpha", "", nil)
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
+	// The save and both older copies exist once the fake saved three
+	// times; wait for that instead of assuming it.
+	testkit.Eventually(t, 10*time.Second, func() bool { return h.liveCounter("alpha", "alpha") >= 3 }, "fewer than three saves")
 	var b instances.Backup
 	h.must(http.StatusCreated, "POST", "/api/v1/instances/alpha/backup", struct{}{}, &b)
-	if !b.SaveConfirmed || !slices.Equal(b.Files, []string{"SaveGames/alpha.sav"}) || b.Reason != "manual" || b.SizeBytes == 0 {
+	// The whole save folder: the save, its metadata and its older copies.
+	if !b.SaveConfirmed || !slices.Equal(b.Files, []string{fakeSave("alpha"), fakeSave("alpha") + ".bak1", fakeSave("alpha") + ".bak2",
+		strings.TrimSuffix(fakeSave("alpha"), ".json") + ".meta.json"}) || b.Reason != "manual" || b.SizeBytes == 0 {
 		t.Fatalf("backup %+v", b)
 	}
-	saved, err := os.ReadFile(filepath.Join(h.root, "backups", "alpha", b.ID, "SaveGames", "alpha.sav"))
+	saved, err := os.ReadFile(filepath.Join(h.root, "backups", "alpha", b.ID, filepath.FromSlash(fakeSave("alpha"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +260,7 @@ func TestBackupRestore(t *testing.T) {
 	if len(list.Backups) != 2 || list.Backups[0].Reason != instances.ReasonPreRestore {
 		t.Fatalf("backups after restore: %+v", list.Backups)
 	}
-	pre, _ := os.ReadFile(filepath.Join(h.root, "backups", "alpha", list.Backups[0].ID, "SaveGames", "alpha.sav"))
+	pre, _ := os.ReadFile(filepath.Join(h.root, "backups", "alpha", list.Backups[0].ID, filepath.FromSlash(fakeSave("alpha"))))
 	if c := h.liveCounter("alpha", "alpha"); c >= saveCounter(pre) {
 		t.Fatalf("the restored world went on from %d, the pre-restore world was at %d", c, saveCounter(pre))
 	}
@@ -265,7 +270,7 @@ func TestBackupRestore(t *testing.T) {
 	if st.State != instances.Stopped {
 		t.Fatalf("restore of a stopped instance started it: %+v", st)
 	}
-	got, _ := os.ReadFile(filepath.Join(h.dataDir("alpha"), "SaveGames", "alpha.sav"))
+	got, _ := os.ReadFile(filepath.Join(h.dataDir("alpha"), filepath.FromSlash(fakeSave("alpha"))))
 	if !bytes.Equal(got, saved) {
 		t.Fatalf("restored save %q, backup %q", got, saved)
 	}

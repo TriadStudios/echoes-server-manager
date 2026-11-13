@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,9 @@ type pidRecord struct {
 	Executable  string    `json:"executable"`
 	StopFile    string    `json:"stop_file,omitempty"`
 	StartedAt   time.Time `json:"started_at"`
+	// StopSentAt is when this process was sent its one stop signal. Set,
+	// no further signal is ever sent to it.
+	StopSentAt time.Time `json:"stop_sent_at,omitzero"`
 }
 
 // procState is the result of checking a recorded pid.
@@ -33,14 +37,24 @@ const (
 	procForeign                  // alive, but a different process now owns the pid
 )
 
+// entry is one server this supervisor watches. rec is set when the entry
+// is made and never changed after it is shared, so any goroutine may read
+// it without a lock. stopSentAt is guarded by Process.mu. exitCode and
+// exitedAt are written once, under Process.mu, before done is closed, and
+// read only after done is closed.
+//
+// Lock order: the store's per-instance stop lock (stopLockKey), then
+// Process.mu. Process.mu is held only for short reads and writes of
+// fields, never across file I/O, a signal or a wait.
 type entry struct {
-	name     string
-	rec      pidRecord
-	proc     *os.Process
-	child    bool          // started by this supervisor (a goroutine Waits)
-	done     chan struct{} // closed once the process has exited
-	exitCode *int
-	exitedAt time.Time
+	name       string
+	rec        pidRecord
+	proc       *os.Process
+	child      bool          // started by this supervisor (a goroutine Waits)
+	done       chan struct{} // closed once the process has exited
+	exitCode   *int
+	exitedAt   time.Time
+	stopSentAt time.Time // when this process was sent its one stop signal
 }
 
 func (e *entry) exited() bool {
@@ -138,13 +152,23 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	if err != nil {
 		return fmt.Errorf("supervisor: open output: %w", err)
 	}
-	cmd := exec.Command(exe, spec.Args...)
-	cmd.Dir = spec.Dir
-	cmd.Env = spec.Env
-	cmd.Stdout = out
-	cmd.Stderr = out
-	cmd.SysProcAttr = detachedAttr()
-	err = cmd.Start()
+	var cmd *exec.Cmd
+	// A binary still open for writing somewhere (a build being installed,
+	// or a descriptor a child forked in that moment holds until it runs
+	// its own program) cannot be run yet on Linux; that passes quickly.
+	for deadline := time.Now().Add(busyWait); ; {
+		cmd = exec.Command(exe, spec.Args...)
+		cmd.Dir = spec.Dir
+		cmd.Env = mergeEnv(os.Environ(), spec.Env)
+		cmd.Stdout = out
+		cmd.Stderr = out
+		cmd.SysProcAttr = detachedAttr()
+		err = cmd.Start()
+		if err == nil || !textBusy(err) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	out.Close()
 	if err != nil {
 		// The error names the executable, not the arguments.
@@ -172,6 +196,39 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	p.log.Info("server started", "instance", spec.Name, "pid", pid, "mode", KindProcess)
 	go p.waitChild(spec.Name, e, cmd)
 	return nil
+}
+
+// busyWait is how long a start retries a binary that is busy (see
+// textBusy).
+const busyWait = 3 * time.Second
+
+// mergeEnv returns base with the KEY=VALUE pairs of set added, each
+// replacing what base had for its key.
+func mergeEnv(base, set []string) []string {
+	if len(set) == 0 {
+		return nil // inherit
+	}
+	keys := map[string]bool{}
+	for _, kv := range set {
+		k, _, _ := strings.Cut(kv, "=")
+		keys[envKey(k)] = true
+	}
+	out := make([]string, 0, len(base)+len(set))
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if !keys[envKey(k)] {
+			out = append(out, kv)
+		}
+	}
+	return append(out, set...)
+}
+
+// envKey is a variable name as the OS compares it.
+func envKey(k string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(k)
+	}
+	return k
 }
 
 func (p *Process) waitChild(name string, e *entry, cmd *exec.Cmd) {
@@ -342,11 +399,21 @@ func (p *Process) adoptOne(name string, rec pidRecord) (*entry, procState) {
 		proc.Release()
 		return nil, state
 	}
-	return &entry{name: name, rec: rec, proc: proc, done: make(chan struct{})}, procOurs
+	return &entry{name: name, rec: rec, proc: proc, done: make(chan struct{}), stopSentAt: rec.StopSentAt}, procOurs
 }
 
-// Stop asks the process to stop, waits up to timeout (or until ctx ends),
-// then kills it.
+// Stop asks the process to stop and waits up to timeout (or until ctx
+// ends).
+//
+// Where signals exist (Linux) that is exactly one SIGINT. A process that
+// was sent it already (by an earlier stop that ran out of time, even one
+// of an earlier ESM) is not sent another: the stop only waits again. A
+// process that is still running when the wait ends is left alone, and
+// Stop returns ErrStopTimeout: a second signal or a kill could end the
+// server before its world is saved.
+//
+// On Windows (development only) the stop request file is written, and a
+// process that is still running after timeout is killed.
 func (p *Process) Stop(ctx context.Context, name string, timeout time.Duration) error {
 	if !ValidName(name) {
 		return ErrBadName
@@ -391,6 +458,9 @@ func (p *Process) stopEntry(ctx context.Context, name string, e *entry, timeout 
 	case procForeign:
 		return fmt.Errorf("%w (instance %s, pid %d)", ErrNotOurs, name, e.rec.PID)
 	}
+	if signalsAvailable {
+		return p.interruptOnce(ctx, name, e, timeout)
+	}
 	if err := p.polite(name, e); err != nil {
 		p.log.Warn("polite stop failed; killing", "instance", name, "err", err)
 	} else {
@@ -425,12 +495,80 @@ func (p *Process) stopEntry(ctx context.Context, name string, e *entry, timeout 
 	return nil
 }
 
-// polite sends the polite stop request: SIGTERM where signals exist,
-// otherwise the stop file.
-func (p *Process) polite(name string, e *entry) error {
-	if signalsAvailable {
-		return terminate(e.proc)
+// interruptOnce sends e its one SIGINT, unless it was sent already, and
+// waits up to timeout for it to exit. It never sends a second signal and
+// never kills.
+func (p *Process) interruptOnce(ctx context.Context, name string, e *entry, timeout time.Duration) error {
+	gone, err := p.signalOnce(name, e)
+	if err != nil || gone {
+		return err
 	}
+	if p.waitExitUntil(ctx, e, timeout) {
+		return nil
+	}
+	p.log.Warn("server did not exit in time after its stop signal; leaving it running", "instance", name, "pid", e.rec.PID,
+		"timeout", timeout)
+	return fmt.Errorf("%w (instance %s, pid %d, waited %s)", ErrStopTimeout, name, e.rec.PID, timeout)
+}
+
+// signalOnce sends e its one SIGINT unless it was sent already. The check,
+// the record and the signal happen under one lock per instance, shared by
+// every supervisor on this root, so stops that run at the same time send
+// one signal between them. gone reports a process that is no longer there.
+func (p *Process) signalOnce(name string, e *entry) (gone bool, err error) {
+	unlock := p.st.Lock(stopLockKey(name))
+	defer unlock()
+	p.mu.Lock()
+	sent := e.stopSentAt
+	p.mu.Unlock()
+	// Another supervisor on this root may have sent it: its record is in
+	// the pid file.
+	var onDisk pidRecord
+	if sent.IsZero() && p.st.ReadJSON(pidFile(name), &onDisk) == nil && onDisk.PID == e.rec.PID &&
+		onDisk.StartMarker == e.rec.StartMarker {
+		sent = onDisk.StopSentAt
+	}
+	if !sent.IsZero() {
+		p.mu.Lock()
+		e.stopSentAt = sent
+		p.mu.Unlock()
+		p.log.Info("the server has had its stop signal already; waiting again, sending none", "instance", name,
+			"pid", e.rec.PID, "sent", sent)
+		return false, nil
+	}
+	if testHookBeforeStopSignal != nil {
+		testHookBeforeStopSignal(name)
+	}
+	// Recorded before it is sent: whatever happens next, this process
+	// never gets a second one from ESM. The record on disk is a copy of
+	// rec with the time; rec itself stays as it was.
+	now := time.Now().UTC()
+	p.mu.Lock()
+	e.stopSentAt = now
+	p.mu.Unlock()
+	rec := e.rec
+	rec.StopSentAt = now
+	if err := p.st.WriteJSON(pidFile(name), rec, 0o600); err != nil {
+		return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
+	}
+	// Re-check right before signalling.
+	switch checkProc(e.rec) {
+	case procGone:
+		p.waitExit(e, 2*time.Second)
+		return true, nil
+	case procForeign:
+		return false, fmt.Errorf("%w (instance %s, pid %d)", ErrNotOurs, name, e.rec.PID)
+	}
+	if err := interrupt(e.proc); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return false, fmt.Errorf("supervisor: stop %s (pid %d): %w", name, e.rec.PID, err)
+	}
+	p.log.Info("stop signal sent", "instance", name, "pid", e.rec.PID, "signal", "SIGINT")
+	return false, nil
+}
+
+// polite sends the polite stop request where signals do not exist: the
+// stop file.
+func (p *Process) polite(name string, e *entry) error {
 	if e.rec.StopFile == "" {
 		return errors.New("no stop file configured")
 	}
@@ -444,6 +582,11 @@ func (p *Process) polite(name string, e *entry) error {
 // waitExit waits until e is known to have exited; for adopted processes it
 // polls directly as well.
 func (p *Process) waitExit(e *entry, d time.Duration) bool {
+	return p.waitExitUntil(context.Background(), e, d)
+}
+
+// waitExitUntil is waitExit that gives up when ctx ends.
+func (p *Process) waitExitUntil(ctx context.Context, e *entry, d time.Duration) bool {
 	deadline := time.After(d)
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
@@ -452,7 +595,9 @@ func (p *Process) waitExit(e *entry, d time.Duration) bool {
 		case <-e.done:
 			return true
 		case <-deadline:
-			return false
+			return e.exited()
+		case <-ctx.Done():
+			return e.exited()
 		case <-t.C:
 			if !e.child && checkProc(e.rec) != procOurs {
 				p.markExited(e.name, e, nil)

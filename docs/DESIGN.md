@@ -68,16 +68,25 @@ return the JSON 404 error.
     setup.json                 hash and expiry of the one-time setup code
     users.json                 users with PBKDF2 password hashes
     tokens.json                API tokens (SHA-256 only)
+  steam/linux64/               the 64-bit Steam client libraries (put there
+                               by the box owner; see steam_runtime_dir)
   builds/
-    <version>/                 one installed build, read-only
+    <version>/                 one installed build, read-only, shared by
+                               every instance that runs it
       manifest.json
+      .../steam_appid.txt      next to the server binary, when
+                               steam_app_id is set
       ...
     .info/<version>.json       install time, file count, size
   instances/
     <name>/
       instance.json            settings
       secrets.json             server and admin passwords (0600)
-      data/                    the server's data folder (saves, logs)
+      data/                    the server's own folder (-UserDir)
+        Saved/SaveGames/...    its world saves (what backups copy)
+      logs/
+        server.log             the server log (-abslog), new at every start
+        server.previous.log    the log of the start before
       console.log              the server's stdout and stderr
       run/
         pid.json               process supervisor record
@@ -106,11 +115,13 @@ are refused, so typos are reported.
 | `query_ports`          | `27015-27024`     | Range for query ports. |
 | `supervisor`           | `auto`            | `auto`, `systemd` or `process`. |
 | `backoff`              | `5s`, `5m`, `10m`, `5` | Crash restarts: `base`, `max`, `window`, `max_crashes`. |
-| `stop_timeout`         | `30s`             | Polite stop wait before a forced stop. |
+| `stop_timeout`         | `120s`            | How long a stop waits for the server to exit after its one stop signal. ESM never sends a second one (see [Life cycle](#life-cycle)). |
 | `ready_timeout`        | `120s`            | How long a start may take to become ready. |
 | `keep_previous_builds` | `2`               | Previous builds per instance that pruning keeps. |
 | `backup_save_wait`     | `2m`              | How long a backup of a running server waits for a world save. |
 | `log_level`            | `info`            | `debug`, `info`, `warn` or `error`. |
+| `steam_app_id`         | (none)            | The game's Steam app id (digits). Written to `steam_appid.txt` next to the server binary of every build installed from then on. No default; `esm doctor` warns while it is unset. |
+| `steam_runtime_dir`    | `<root>/steam/linux64` | Folder with the 64-bit `steamclient.so` and `libsteamwebrtc.so`; put first on every server's `LD_LIBRARY_PATH`. A relative path is taken from the root. |
 
 ## Instances
 
@@ -121,13 +132,13 @@ are refused, so typos are reported.
 | `cluster`          | Optional label. |
 | `channel`          | `live` or `test`; must match the build. |
 | `build`            | Current build. Changed only by an update. |
-| `map`              | Map to load; empty means the server's default. |
+| `map`              | Map to load; empty means the build's `default_map`. A start without either is refused (409 `no_map`). |
 | `world`            | World (save) name; defaults to the instance name. |
 | `ports`            | `game` and `query`. Picked from the ranges when not given. |
-| `bind_ip`          | Address to bind; empty means all interfaces. |
+| `bind_ip`          | Where ESM checks that the ports are free and probes the query port; empty means all interfaces. It is **not** given to the server (no `-MULTIHOME`), which listens on every address: the box's firewall decides where its query port is reachable. |
 | `max_players`      | 1 to 200. |
 | `rules`            | Server settings; each becomes `-Key=Value` on the command line. |
-| `listed`           | Whether the server should be publicly listed (default: true for live, false for test). Stored; not yet passed to the server. |
+| `listed`           | Whether the server shows in the in-game server list (default: true for live, false for test); passed as `-ListInBrowser=True` or `False`. |
 | `autostart`        | Start when ESM starts. |
 | `restart_on_crash` | Restart after a crash, with back-off (default true). |
 | `schedule.restart_at` | Daily restart times, `HH:MM` local time. |
@@ -138,16 +149,33 @@ are refused, so typos are reported.
 | `previous_builds`  | Builds this instance ran before, newest first. |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
-names, passwords, the secrets file, the data folder and so on), and may not
+names, passwords, the secrets file, `-UserDir`, `-abslog` and so on), may
+not be `-MULTIHOME` (see [The real server](#the-real-server)), and may not
 name a secret (see [Passwords](#passwords)). Values may not contain control
 characters. The command line is always built as an argument list, never as
 a shell string, and ESM never writes it anywhere: not into its log, an
 error, the state or an audit entry.
 
+The server joins its arguments back into one command line and searches it
+for switches, so separate arguments are no boundary. Every setting that
+goes onto the command line (the display name, world, map, rule keys and
+values, extra arguments) is refused with 422 `unsafe_argument` when it
+holds a double quote, the name `MULTIHOME` in any case, or white space
+followed by `-` and more (a lone ` - ` is fine): any of those could add a
+switch of its own. The answer names the setting, never its value.
+
+The command line, in this order: the map, `-unattended`, `-Port=`,
+`-QueryPort=`, `-ServerName=` (the display name, or the instance name),
+`-WorldName=`, `-MaxPlayers=`, `-ListInBrowser=`, `-UserDir=<instance>/data`,
+`-abslog=<instance>/logs/server.log`, then the rules (`-Key=Value`, sorted by
+key), the password switch or switches, and the extra arguments.
+
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
 Ports given explicitly are checked the same way, and all ports are checked
-again before every start.
+again before every start. The game port is reserved and given to the server
+although the server opens no socket on it (players join through Steam's
+relay); only the query port is reachable from outside.
 
 ## Passwords
 
@@ -307,31 +335,73 @@ States: `stopped`, `starting`, `running`, `stopping`, `crashed`, `failed`,
 `updating`. The state, a reason and timestamps are kept in memory, written
 to `run/state.json` and published as events.
 
-**Start.** ESM checks the build and the ports, writes the secrets file,
-builds the command line, and asks the supervisor to start the server. The
-instance is `starting` until it is ready. A start returns once the server is
-launched; with `wait=true` (the command line always waits) it returns once
-the server is running or has failed.
+**Start.** ESM checks the build, the map and the ports, writes the secrets
+file, moves the last server log to `logs/server.previous.log` (every start
+begins a new log), builds the command line, and asks the supervisor to start
+the server: with the build's top folder as its working folder and the Steam
+runtime folder first on `LD_LIBRARY_PATH`. The instance is `starting` until
+it is ready. A start returns once the server is launched; with `wait=true`
+(the command line always waits) it returns once the server is running or has
+failed.
 
 **Ready.** The first of these sources that confirms wins, checked in this
 order: (1) the server's status file, written by the process that is running
-now, says `ready`; (2) the server log has the ready line; (3) the query port
-answers. If none confirms within `ready_timeout`, ESM stops the server and
-the instance is `failed`.
+now, says `ready` (a real server writes none today); (2) the server log has
+the ready line; (3) the query port answers ESM's probe. If none confirms
+within `ready_timeout`, ESM stops the server and the instance is `failed`.
 
-The ready line, like the world-saved line that backups wait for, is a fixed
-marker of the adapter (`Server is ready`, `World saved`) that must stand at
-the very start of a log line, after nothing but the server's own time prefix
-(`[2026-01-02T03:04:05.678Z] `). The same words anywhere else in a line do
-not count. A server repeats text that users chose (its command line with
-the server name, rule values and extra arguments; names; chat), but none of
-it can hold a line break, so none of it can stand at the start of a line.
-ESM reads the log in whole lines, as the server wrote them and before
-anything is masked or cut; the rest of an unfinished or over-long line is
-dropped, never taken for a line of its own.
+The probe speaks A2S_INFO, the public Source server query protocol, which
+the real server answers on its query port: the request (`0xFFFFFFFF 'T'
+"Source Engine Query\0"`), the challenge step (a `0x41` reply is answered
+by sending the request again with its 4-byte challenge, at most twice), and
+the `0x49` info reply, of which ESM reads the name, map, players and max
+players. Every field is bounds-checked; a reply longer than one packet,
+split over packets, cut short or of another type is no answer. The probe
+asks the instance's `bind_ip`, or 127.0.0.1 when that is empty, and is
+bounded by a short timeout (200 ms by default). It is also how a server
+that ESM finds running at its start is checked again.
 
-**Stop.** A polite stop (SIGTERM on Linux; a stop request file on Windows),
-then a forced stop after `stop_timeout`. Restart is stop then start.
+The ready line is the server saying it registered its dedicated session
+(`[SESSION] Dedicated session '<name>' registered (map <map>, <n> slots)`):
+from then on it is in the server list and can be joined. The Steam logon
+line comes a moment earlier but is not taken: logged on without a session,
+the server cannot be joined yet. Backups wait for a world-saved line: the
+server wrote its save (`Wrote save ...`, at start, at every autosave and at
+a stop) or confirmed its last write at a stop (`... Synchronous write after
+the flush succeeded.`). The logon line names the server's Steam id, which
+is new at every start; ESM shows it in the instance's `live` view while the
+server runs and never stores it.
+
+Each of these lines counts only when its words start the message, right
+after the engine's prefix, which the line must have in full: the time and
+frame in square brackets, exactly one log category, and at most one
+verbosity word (`Fatal`, `Error`, `Warning`, `Display`, `Log`, `Verbose`,
+`VeryVerbose`), as in `[2026.01.02-03.04.05:678][  0]LogExample: Display: `.
+A chat line, which has the player's name or a tag between the category and
+the text, never counts; neither do the same words anywhere else in a line.
+The flush line counts only with its `[SHUTDOWN]` or `[EXIT]` tag. The
+server id of a run is the first one its log names. A server repeats text that users chose (its command
+line with the server name, rule values and extra arguments; names; chat),
+but none of it can hold a line break, so none of it can stand at the start
+of a line. ESM reads the log in whole lines, as the server wrote them and
+before anything is masked or cut; the rest of an unfinished or over-long
+line is dropped, never taken for a line of its own. The patterns live in
+`internal/gameserver`, and nowhere else.
+
+**Stop.** On Linux a stop is exactly **one SIGINT**: the server saves its
+world and exits (exit code 130) within seconds. ESM then waits up to
+`stop_timeout` (default 120 s). It never sends a second signal and never
+kills the server: a second signal while the server shuts down may end it
+before its save is written, and a kill certainly does. A server still
+running when the wait ends is left running; the instance becomes `failed`
+with a reason that says so, and the stop answers 422 `stop_timeout`. A
+later stop of the same server waits again without sending anything (ESM
+records the signal it sent, in `run/pid.json` or `run/stop-signal.json`, so
+this holds across ESM restarts). Ending such a server by force is left to
+the box owner, who knows it may lose the last minutes of the world. Restart,
+update, restore, a ready timeout and the crash back-off all stop the same
+way. On Windows (process mode, for development) ESM writes a stop request
+file and kills the server after `stop_timeout`.
 
 **Crash.** A server that goes away without a stop request has crashed. With
 `restart_on_crash`, ESM restarts it after `base * 2^(n-1)` (capped at
@@ -345,8 +415,20 @@ count).
 - *systemd* (Linux, preferred): each server is a transient user unit
   `esm-<name>` started with `systemd-run --user`, which applies memory and
   CPU limits. ESM only touches units named for instances in its root and
-  marked with its root in the description. The box owner turns on lingering
-  once (`loginctl enable-linger <account>`) so units survive logouts.
+  marked with its root in the description. Every unit has
+  `KillSignal=SIGINT`, `KillMode=mixed`, `SendSIGKILL=no` and
+  `TimeoutStopSec=infinity`, and ESM stops a unit with `systemctl --user
+  stop --no-block` (the main process gets the one SIGINT) and then waits
+  `stop_timeout` itself. The unit is then deactivating, so a `systemctl
+  --user stop` from outside ESM, before or after ESM's own, sends nothing
+  more; with a stop timeout on the unit, systemd would send the kill signal
+  again when it ran out, even with `SendSIGKILL=no`. (So an outside
+  `systemctl --user stop` waits for as long as the server takes.) A stop by
+  ESM while the unit is already being stopped sends nothing. The
+  check, the record and the signal of a stop happen under one lock per
+  instance, so stops at the same time send one signal between them.
+  The box owner turns on lingering once (`loginctl enable-linger
+  <account>`) so units survive logouts.
 - *process* (Linux and Windows): a detached child process. ESM records its
   pid, start time and executable, and checks all three before it signals or
   kills anything, so it never touches a process that reused the pid. Limits
@@ -372,13 +454,18 @@ A build folder has a `manifest.json`:
   "version": "1.2.0",
   "commit": "abc1234",
   "channel": "live",
-  "executables": { "linux": "server/linux/start", "windows": "server/windows/start.exe" },
-  "files": { "server/linux/start": "<sha256>", "...": "..." }
+  "default_map": "/Levels/Example/Example",
+  "executables": { "linux": "Game/Binaries/Linux/GameServer", "windows": "Game/Binaries/Win64/GameServer.exe" },
+  "files": { "Game/Binaries/Linux/GameServer": "<sha256>", "...": "..." }
 }
 ```
 
 Every file except the manifest must be listed with its SHA-256, and the
-executable for the box's operating system must be listed. A build is
+server binary for the box's operating system must be listed.
+`executables` names the server binary for each system, wherever the game
+keeps it inside the build; ESM writes no game path of its own. The server
+runs with the build's top folder as its working folder. `default_map`
+(optional) is the map an instance loads when it names none. A build is
 installed from:
 
 - a folder inside the import folder (copied; links and special files
@@ -408,7 +495,18 @@ ESM's files is an open item (see [Open items](#open-items)).
 
 Everything is unpacked into `tmp/`, the manifest and every hash are checked,
 and only then is the folder moved into `builds/<version>/`. Files are made
-read-only. An existing version is never replaced.
+read-only. An existing version is never replaced. One build is shared by
+every instance that runs it; nothing an instance writes goes into it.
+
+**`steam_appid.txt`.** A real server writes this file next to its binary
+when it starts (the Steam app id, in builds that are not Shipping builds).
+That would be a write into a shared, read-only build. So when `steam_app_id`
+is set, ESM writes the file there itself at install, after the hashes are
+checked and before the build is moved into place, read-only like the rest
+(a build that brings the file keeps its own). Builds installed while it was
+unset get none; `esm doctor` names them. Whether the server accepts a file
+that is already there and read-only, instead of writing its own, is
+UNCONFIRMED.
 
 **Update** switches an instance to another build of its channel: back up
 the saves, stop the server if it runs, switch the build, start, and wait for
@@ -427,9 +525,13 @@ Later, builds will also come from Steam, with the app ids as configuration.
 ESM never changes firewall rules. It shows the ports of every instance
 (create, list, status, the API) and the configured ranges (doctor, box
 status), and `GET /api/v1/box/firewall` (the Box screen's "Show firewall
-commands") gives the ufw and firewalld commands that open the ranges for
-the protocols the adapter names (UDP, UNCONFIRMED). Opening them, and only
-them, is up to the box owner.
+commands") gives the ufw and firewalld commands that open the **query**
+port range for UDP. Only the query ports need to be reachable from outside:
+a server opens no socket on its game port, and players join through Steam's
+relay over outbound UDP. A server is never given a bind address, so its
+query socket listens on every address of the box; the firewall decides
+where it is reachable. Opening the query ports, and only them, is up to the
+box owner.
 
 To find out whether a port is free, ESM binds it for UDP and TCP for a
 moment on the instance's `bind_ip`, or on all interfaces when that is
@@ -466,7 +568,9 @@ needs a valid login.
 
 ## Backups
 
-A backup copies the server's save files (the adapter's save glob) into
+A backup copies the server's whole save folder (every file below
+`data/Saved/SaveGames/`: the world saves, their metadata and the game's own
+older copies) into
 `backups/<name>/<UTC time>-<reason>/` with a `meta.json` (time, reason,
 build, files, size). If the server runs, ESM first waits up to
 `backup_save_wait` for its next world-saved log line (the fixed marker at
@@ -480,8 +584,9 @@ backup the oldest ones beyond `backup.keep` are removed; the backup being
 restored is always kept.
 
 **Restore** stops a running server, backs up the current saves, puts the
-backup's save files in place, and starts the server again if it was
-running.
+backup's save files in place (files below the save folder that the backup
+does not have are removed), and starts the server again if it was running.
+A restore refuses a backup that names any file outside the save folder.
 
 Scheduled restarts (`schedule.restart_at`) restart running instances at
 the given local times; a time that passes while an instance is stopped is
@@ -521,7 +626,9 @@ skipped.
 - An instance also carries `live`, read when it is asked for and never
   stored: the server's memory (its systemd unit's cgroup under systemd,
   the resident memory of the process otherwise; not measured on Windows
-  yet), and the player count and last save from its status file. A value
+  yet), the player count and last save from its status file, and the
+  Steam server id the running server logged (`steam_server_id`, new at
+  every start). A value
   that cannot be known is null, and `unknown` says why. `scheduled` names
   the next timed restart and scheduled backup.
 - `GET /api/v1/box` also reports the box's memory, CPUs, load average and
@@ -741,45 +848,86 @@ audit log, removes the socket, and leaves game servers running.
 7. Never change the firewall.
 8. Stopping ESM never stops game servers.
 
-## What is still unknown about the real server
+## The real server
 
 Everything ESM assumes about the Echoes of Durinn dedicated server is in
-[`internal/gameserver`](../internal/gameserver/gameserver.go). None of it is
-confirmed on a real host yet:
+[`internal/gameserver`](../internal/gameserver/gameserver.go); values there
+are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
+(one server on the box) and confirmed the following.
 
-- the switch names on the command line, the position of the map argument,
-  and the default map;
-- the switch that points the server at its data folder;
-- the secrets file: the real server does not read one yet, so the switch
+**Confirmed**
+
+- The command line: the map first, then exactly `-unattended -Port=
+  -QueryPort= -ServerName= -WorldName= -MaxPlayers= -ListInBrowser=
+  -UserDir= -abslog=`, with the build folder as working folder. Every game
+  setting also works as `-Key=Value`.
+- **Never `-MULTIHOME`.** With it the server advertises its bind address
+  where its Steam identity belongs; players see it in the server list but
+  cannot join. ESM never passes it, refuses it as a rule or extra argument,
+  and does not give a configured `bind_ip` to the server. Without it the
+  query socket listens on every address; the firewall filters.
+- Ports: only the query port (UDP) needs to be reachable from outside. The
+  game port has no socket; joins go through Steam's relay, outbound.
+- The Steam client libraries (`steamclient.so`, 64-bit, and
+  `libsteamwebrtc.so`) are not part of a server build; the server finds
+  them through `LD_LIBRARY_PATH` (`steam_runtime_dir`).
+- The server logs on to Steam anonymously and logs a server id that is
+  new at every start.
+- A non-Shipping server writes `steam_appid.txt` next to its binary at
+  start, so a shared read-only build needs the file put there first.
+- `-UserDir` is honoured: saves go below `<UserDir>/Saved/SaveGames/`, with
+  the game's own older copies beside them, and an autosave every 5
+  minutes. A new build never touches them.
+- One SIGINT: the server saves and exits cleanly within 2 to 3 seconds
+  (exit code 130), with or without players; the next start resumes the
+  world, players' characters included.
+- The ready (session registered), save and logon lines described in
+  [Life cycle](#life-cycle).
+- `systemctl --user` works for the server's account, but user units stop at
+  logout unless lingering is on.
+- Memory and files: about 0.6 GB resident while idle and up to about 2.2 GB
+  at peak with one player; about 60 open files. Plan at least 3 GB of memory
+  per server (a `limits.memory_max` well below that will end it), and more
+  for more players: how it grows with players is not measured yet.
+
+**Still UNCONFIRMED**
+
+- What SIGTERM does (ESM never sends it).
+- Whether the server accepts a pre-placed, read-only `steam_appid.txt`.
+- Two or more servers on one box (told apart by their ports only), and a
+  query port other than the default.
+- Whether a loose per-server config file next to the build is read; ESM
+  passes every setting on the command line instead.
+- The admin and password switches, and which other switches take secrets
+  (the test server ran with neither password).
+- The secrets file: the real server does not read one yet, so the switch
   that names it and the format of the file are ESM's proposal for the game
-  side, and until the game has it a real server gets passwords only in the
-  compatibility mode;
-- the switches that carry the passwords in the compatibility mode, and
-  which other switches take secrets;
-- the log file location, the "ready" and "world saved" log lines and the
-  time prefix of a log line (a real server must write those two lines so
-  that no player-chosen text can stand in front of them or imitate them);
-- whether the server writes a status file at all (ESM then relies on the
-  log line and the query port), and whether it says there which passwords
-  it took;
-- the query protocol used to probe the query port;
-- where save files live (the backup glob);
-- how to ask the server politely to stop on Windows;
-- how a server is marked as publicly listed.
+  side. Until the game has it, an instance whose server needs a password
+  must use `secret_delivery: command_line`, which is unsafe on a shared box
+  (see [Passwords](#passwords)).
+- The exact place of the save line's words in their line, and the log
+  categories of the lines ESM reads.
+- The status file (the real server writes none; ESM relies on the log
+  line, then the query probe).
+- Whether the server answers A2S_INFO before it has registered its session
+  (ESM checks the log line first), and whether it answers on the box's
+  loopback address (seen answering from outside the box).
+- How to stop a server politely on Windows, and Windows hosts at all.
+- Long uptimes, more than one player, admin login, and an automatic warning
+  to players before a stop (there is none; a stop is immediate).
 
-The fake server used by the tests follows exactly these assumptions, with
-one difference on purpose: it binds loopback addresses only (127.0.0.1
-without `-MULTIHOME`, and it refuses any other address), where a real
-server without `-MULTIHOME` binds all interfaces. When a real host proves
-an assumption wrong, it changes in the adapter and the fake, and nowhere
-else.
+The fake server used by the tests follows these assumptions, with one
+difference on purpose: it binds the query port on 127.0.0.1 only, where a
+real server listens on every address. When a real host proves an assumption
+wrong, it changes in the adapter and the fake, and nowhere else.
 
 ## Phases
 
 - **Phase 0 (this):** the service, the command line, the API, builds,
   instances, backups, and tests against the fake server.
-- **Phase 1:** the web page (server-rendered HTML over the API) and the
-  real server facts confirmed on a real host.
+- **Phase 1:** the web page (server-rendered HTML over the API).
+- **Phase 2:** the real server: the adapter follows the facts confirmed on
+  a real host (see [The real server](#the-real-server)).
 - **Later:** player controls, Steam installs, Windows hosts (planned for
   the first public release).
 
@@ -793,10 +941,32 @@ else.
   or to end other sessions; restarting ESM ends every session.
 - **The socket on Windows.** Windows has no mode 0600 for the socket file
   and ESM sets no ACLs, so the socket is as private as its folder's ACL.
+- **A server that does not stop is left running.** After `stop_timeout` ESM
+  reports `stop_timeout` and does nothing more; ending the server by force
+  is the box owner's call. While it runs, a new start of its instance is
+  refused.
+- **The status file is the fake's.** A real server is seen ready through
+  its log line or, failing that, its answer to A2S_INFO.
+- **A stop from outside ESM counts as a crash.** A server stopped with
+  `systemctl --user stop` (or ended any other way ESM did not ask for) has
+  crashed as far as ESM can tell, and with `restart_on_crash` it is started
+  again.
+- **Nothing watches a server after a stop timeout.** The instance stays
+  `failed` until someone stops it again, even if the server exits on its
+  own in the meantime.
+- **`bind_ip` limits ESM's port checks only.** A port free on that address
+  may still be taken on another one, where the server also listens.
 - **Separate arguments are not a boundary for the real server.** ESM hands
   a server each setting as its own argument, but an Unreal server joins its
-  command line back together and searches it for switches. A display name
-  or rule value such as `x -SecretsFile=...` could then act as a switch.
+  command line back together and searches it for switches. ESM refuses
+  quotes, `MULTIHOME` and white space followed by `-` in every setting that
+  goes onto the command line (see [Instances](#instances)); a value that
+  holds another switch's name without a space before it (`x-Port=1`) is
+  left to the server's own parsing.
+- **Chat that imitates a log line.** ESM only takes lines that carry the
+  engine's full prefix with the words right after the category (and an
+  optional verbosity). Should the game ever log what a player types right
+  after the category, such text could pass for one of those lines.
 
 ## Open items
 
@@ -809,14 +979,12 @@ else.
 
 ## Open questions
 
-- Which of the adapter's assumptions hold for the real server, and what the
-  real ready and save signals are.
+- The UNCONFIRMED items in [The real server](#the-real-server).
 - Whether the server can save on request, so backups need not wait for the
   next periodic save.
 - When the game server reads its passwords from the secrets file. That is
   what lets the command-line compatibility mode be removed.
 - Whether a server that does not confirm its passwords should be refused
   instead of only flagged.
-- How public listing is switched on and off.
-- How Steam app ids and branches map to ESM channels.
+- How Steam branches map to ESM channels.
 - Whether several boxes should be managed from one page, and how.

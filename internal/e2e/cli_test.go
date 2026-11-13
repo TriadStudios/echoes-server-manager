@@ -59,39 +59,39 @@ func TestCLIOverSocket(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(oneLine(t, "start", out), "alpha running") {
 		t.Fatalf("start: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("status", "alpha")
+	code, out, errOut = h.runCLI("status", "alpha")
 	if code != 0 || !strings.Contains(oneLine(t, "status", out), "ready via") {
-		t.Fatalf("status: %d %q", code, out)
+		t.Fatalf("status: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("backup", "alpha")
+	code, out, errOut = h.runCLI("backup", "alpha")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "backup", out), "backup ") {
-		t.Fatalf("backup: %d %q", code, out)
+		t.Fatalf("backup: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("logs", "alpha", "-n", "3")
+	code, out, errOut = h.runCLI("logs", "alpha", "-n", "3")
 	if code != 0 || strings.Count(out, "\n") != 3 {
-		t.Fatalf("logs -n 3: %d %q", code, out)
+		t.Fatalf("logs -n 3: %d %q %q", code, out, errOut)
 	}
 	code, out, errOut = h.runCLI("stop", "alpha")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "stop", out), "alpha stopped") {
 		t.Fatalf("stop: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("status")
+	code, out, errOut = h.runCLI("status")
 	if code != 0 || !strings.Contains(oneLine(t, "status", out), "process supervisor (limits not enforced)") {
-		t.Fatalf("box status: %d %q", code, out)
+		t.Fatalf("box status: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("build", "list")
+	code, out, errOut = h.runCLI("build", "list")
 	if code != 0 || oneLine(t, "build list", out) != "1 build: 1.0 (live, used by alpha)" {
-		t.Fatalf("build list: %d %q", code, out)
+		t.Fatalf("build list: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("token", "create", "--role", "read", "--name", "page")
+	code, out, errOut = h.runCLI("token", "create", "--role", "read", "--name", "page")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "token create", out), "esm_") {
-		t.Fatalf("token create: %d %q", code, out)
+		t.Fatalf("token create: %d %q %q", code, out, errOut)
 	}
 	tok := strings.Fields(out)[0]
 	// The same API over TCP with --url and the new token.
-	code, out, _ = h.runCLI("--url", h.base, "--token", tok, "list")
+	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "list")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "list --url", out), "1 instance: alpha stopped") {
-		t.Fatalf("list over --url: %d %q", code, out)
+		t.Fatalf("list over --url: %d %q %q", code, out, errOut)
 	}
 	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "start", "alpha")
 	if code != 1 || out != "" || !strings.Contains(errOut, "operator") {
@@ -101,17 +101,17 @@ func TestCLIOverSocket(t *testing.T) {
 	if code != 1 || out != "" || oneLine(t, "error", errOut) != `esm: instance "ghost" not found` {
 		t.Fatalf("start of a missing instance: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("--json", "start", "ghost")
+	code, out, errOut = h.runCLI("--json", "start", "ghost")
 	var eb api.ErrorBody
 	if code != 1 || json.Unmarshal([]byte(oneLine(t, "--json error", out)), &eb) != nil || eb.Error.Code != "not_found" {
 		t.Fatalf("--json error: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("version")
+	code, out, errOut = h.runCLI("version")
 	if code != 0 || oneLine(t, "version", out) != "esm test" {
 		t.Fatalf("version: %d %q", code, out)
 	}
 	// --bind keeps the port checks on loopback, as every test must.
-	code, out, _ = h.runCLI("doctor", "--bind", "127.0.0.1")
+	code, out, errOut = h.runCLI("doctor", "--bind", "127.0.0.1")
 	if !strings.HasPrefix(oneLine(t, "doctor", out), "doctor: ") || !strings.Contains(out, "service checked too") {
 		t.Fatalf("doctor: %d %q", code, out)
 	}
@@ -151,28 +151,28 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 		t.Fatalf("create with an unknown delivery: %d %q %q", code, out, errOut)
 	}
 
-	code, out, _ = h.runCLI("list")
+	code, out, errOut = h.runCLI("list")
 	line := oneLine(t, "list", out)
 	if code != 0 || !strings.Contains(line, "risky stopped (") || strings.Count(line, short) != 1 ||
 		!strings.Contains(line[strings.Index(line, "risky"):strings.Index(line, "safe")], short) {
 		t.Fatalf("list: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("--json", "list")
+	code, out, errOut = h.runCLI("--json", "list")
 	var list api.InstanceList
 	if err := json.Unmarshal([]byte(oneLine(t, "list --json", out)), &list); code != 0 || err != nil || len(list.Instances) != 2 ||
 		len(list.Instances[0].Warnings) != 1 || list.Instances[0].Warnings[0] != "secrets_on_command_line" || len(list.Instances[1].Warnings) != 0 ||
 		list.Instances[0].SecretDelivery != "command_line" || list.Instances[1].SecretDelivery != "file" {
 		t.Fatalf("list --json: %d %v %q", code, err, out)
 	}
-	code, out, _ = h.runCLI("status", "risky")
+	code, out, errOut = h.runCLI("status", "risky")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "status", out), "risky stopped") || !strings.Contains(out, "; warning: "+long) {
 		t.Fatalf("status of the unsafe instance: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("status", "safe")
+	code, out, errOut = h.runCLI("status", "safe")
 	if code != 0 || !strings.HasPrefix(oneLine(t, "status", out), "safe stopped") || strings.Contains(out, "UNSAFE") {
 		t.Fatalf("status of the other instance: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("--json", "status", "risky")
+	code, out, errOut = h.runCLI("--json", "status", "risky")
 	var view struct {
 		Name     string   `json:"name"`
 		Warnings []string `json:"warnings"`
@@ -184,9 +184,9 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 		view.Status.State != "stopped" || len(view.Warnings) != 1 {
 		t.Fatalf("status --json: %d %v %q", code, err, out)
 	}
-	code, out, _ = h.runCLI("status")
+	code, out, errOut = h.runCLI("status")
 	if code != 0 || !strings.Contains(oneLine(t, "box status", out), "; "+short+" (risky)") {
-		t.Fatalf("box status: %d %q", code, out)
+		t.Fatalf("box status: %d %q %q", code, out, errOut)
 	}
 	_, out, _ = h.runCLI("doctor", "--bind", "127.0.0.1")
 	if line := oneLine(t, "doctor", out); !strings.Contains(line, "; secret_delivery: UNSAFE on a shared box: 1 instance (risky)") ||
@@ -200,13 +200,13 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(oneLine(t, "start", out), "risky running") {
 		t.Fatalf("start: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("logs", "risky", "-n", "3")
+	code, out, errOut = h.runCLI("logs", "risky", "-n", "3")
 	if code != 0 || strings.Count(out, "\n") != 3 {
 		t.Fatalf("logs over the socket: %d %q", code, out)
 	}
-	code, out, _ = h.runCLI("token", "create", "--role", "read")
+	code, out, errOut = h.runCLI("token", "create", "--role", "read")
 	if code != 0 {
-		t.Fatalf("token create: %d %q", code, out)
+		t.Fatalf("token create: %d %q %q", code, out, errOut)
 	}
 	tok := strings.Fields(out)[0]
 	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "logs", "risky")
@@ -218,7 +218,7 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 	if code != 1 || json.Unmarshal([]byte(oneLine(t, "--json error", out)), &eb) != nil || eb.Error.Code != "hidden_unsafe_secrets" {
 		t.Fatalf("logs --json with a read token: %d %q %q", code, out, errOut)
 	}
-	code, out, _ = h.runCLI("--url", h.base, "--token", tok, "logs", "safe")
+	code, out, errOut = h.runCLI("--url", h.base, "--token", tok, "logs", "safe")
 	if code != 0 {
 		t.Fatalf("logs of the other instance with a read token: %d %q", code, out)
 	}

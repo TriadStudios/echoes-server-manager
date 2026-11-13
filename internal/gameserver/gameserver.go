@@ -2,49 +2,88 @@
 //
 // Everything ESM assumes about the Echoes of Durinn dedicated server is in
 // this package. Values marked UNCONFIRMED are not yet proven on a real host.
+// Values marked CONFIRMED were seen on a real Linux host running one
+// server.
 //
 // The fake server (cmd/esm-fakeserver) follows exactly these assumptions, so
 // tests that run the fake exercise this code. When a real host proves a value
 // wrong, it is changed here and in the fake, and nowhere else.
+//
+// Nothing game-specific is written into ESM: the path of the server binary
+// inside a build and the build's default map come from the build manifest,
+// and the map of an instance from its settings.
 package gameserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
-
-// DefaultMap is used when an instance does not name a map.
-// UNCONFIRMED: placeholder; the real default map name is not known yet.
-const DefaultMap = "Default"
-
-// DataDirSwitch is the command-line switch that points the server at its
-// data (saved) folder. UNCONFIRMED.
-const DataDirSwitch = "-SavedDir"
 
 // Mask stands in for a secret value in text that ESM shows.
 const Mask = "********"
 
+// The switches ESM puts on every server command line. CONFIRMED: a real
+// server started with exactly these (and no others) ran, was listed and
+// was joined.
+const (
+	UnattendedSwitch    = "-unattended"
+	PortSwitch          = "-Port"
+	QueryPortSwitch     = "-QueryPort"
+	ServerNameSwitch    = "-ServerName"
+	WorldNameSwitch     = "-WorldName"
+	MaxPlayersSwitch    = "-MaxPlayers"
+	ListInBrowserSwitch = "-ListInBrowser"
+	// UserDirSwitch points the server at its own folder: it keeps its saves
+	// (and its other written files) below it, so a new build never touches
+	// them. CONFIRMED.
+	UserDirSwitch = "-UserDir"
+	// LogFileSwitch names the file the server writes its log to (an
+	// absolute path). CONFIRMED.
+	LogFileSwitch = "-abslog"
+)
+
+// MultihomeSwitch is the engine's bind-address switch. ESM never passes it
+// and refuses it as a rule or an extra argument. CONFIRMED on a real host:
+// with it the server advertises the bind address where its Steam identity
+// belongs, and players who pick it from the server list cannot join.
+// Without it the query socket listens on every address of the box; the
+// box's firewall decides where the query port is reachable from.
+const MultihomeSwitch = "-MULTIHOME"
+
 // Launch is everything needed to build a server command line.
 type Launch struct {
-	Map        string // empty means DefaultMap
+	// Map is the map the server loads: the instance's map, or the build's
+	// default map. The command line needs one; ESM refuses to start an
+	// instance without either.
+	Map        string
 	GamePort   int
 	QueryPort  int
-	BindIP     string // empty means all interfaces (no -MULTIHOME)
 	MaxPlayers int
 	ServerName string
 	WorldName  string
-	Rules      map[string]string // each becomes -Key=Value, sorted by key
-	DataDir    string            // absolute path of the instance data folder
+	// Listed says whether the server shows in the in-game server list.
+	Listed bool
+	// UserDir is the absolute path of the instance's data folder.
+	UserDir string
+	// LogFile is the absolute path of the server log file.
+	LogFile string
+	// Rules are game settings; each becomes -Key=Value, sorted by key.
+	// CONFIRMED: every key of the game's server settings works as a switch.
+	// UNCONFIRMED: whether a loose settings file next to the build would be
+	// read instead; ESM does not rely on one.
+	Rules map[string]string
 	// Delivery is how the passwords reach the server: DeliveryFile or
 	// DeliveryCommandLine. Empty means SecretDelivery.
 	Delivery string
@@ -59,30 +98,25 @@ type Launch struct {
 }
 
 // Args builds the argument list (without the executable). It never builds a
-// shell string. Order: map, -Port, -QueryPort, -MULTIHOME (when BindIP is
-// set), -MaxPlayers, -ServerName, -WorldName, rules sorted by key, the
-// passwords (the secrets file switch; or, with DeliveryCommandLine,
-// -ServerPassword and -AdminPassword when set), -log, the data folder
-// switch, extra args.
-// UNCONFIRMED: every switch name and the positional map argument.
+// shell string. Order: the map, -unattended, -Port, -QueryPort,
+// -ServerName, -WorldName, -MaxPlayers, -ListInBrowser, -UserDir, -abslog,
+// the rules sorted by key, the passwords (the secrets file switch; or, with
+// DeliveryCommandLine, -ServerPassword and -AdminPassword when set), then
+// the extra args. -MULTIHOME is never part of it: a bind address configured
+// for an instance is not given to the server.
 func (l Launch) Args() []string {
-	m := l.Map
-	if m == "" {
-		m = DefaultMap
-	}
 	argv := []string{
-		m,
-		"-Port=" + strconv.Itoa(l.GamePort),
-		"-QueryPort=" + strconv.Itoa(l.QueryPort),
+		l.Map,
+		UnattendedSwitch,
+		PortSwitch + "=" + strconv.Itoa(l.GamePort),
+		QueryPortSwitch + "=" + strconv.Itoa(l.QueryPort),
+		ServerNameSwitch + "=" + l.ServerName,
+		WorldNameSwitch + "=" + l.WorldName,
+		MaxPlayersSwitch + "=" + strconv.Itoa(l.MaxPlayers),
+		ListInBrowserSwitch + "=" + boolWord(l.Listed),
+		UserDirSwitch + "=" + l.UserDir,
+		LogFileSwitch + "=" + l.LogFile,
 	}
-	if l.BindIP != "" {
-		argv = append(argv, "-MULTIHOME="+l.BindIP)
-	}
-	argv = append(argv,
-		"-MaxPlayers="+strconv.Itoa(l.MaxPlayers),
-		"-ServerName="+l.ServerName,
-		"-WorldName="+l.WorldName,
-	)
 	keys := make([]string, 0, len(l.Rules))
 	for k := range l.Rules {
 		keys = append(keys, k)
@@ -101,67 +135,192 @@ func (l Launch) Args() []string {
 	} else if l.SecretsFile != "" {
 		argv = append(argv, SecretsFileSwitch+"="+l.SecretsFile)
 	}
-	argv = append(argv, "-log", DataDirSwitch+"="+l.DataDir)
 	return append(argv, l.ExtraArgs...)
+}
+
+// boolWord writes a switch value the way the engine's own switches are
+// written: True or False.
+func boolWord(b bool) string {
+	if b {
+		return "True"
+	}
+	return "False"
 }
 
 // reserved are the switches ESM sets itself; rules and extra args must not
 // repeat them.
-var reserved = []string{"port", "queryport", "multihome", "maxplayers", "servername", "worldname", "log",
-	switchName(ServerPasswordSwitch), switchName(AdminPasswordSwitch), switchName(SecretsFileSwitch), switchName(DataDirSwitch)}
+var reserved = []string{
+	switchName(UnattendedSwitch), switchName(PortSwitch), switchName(QueryPortSwitch),
+	switchName(ServerNameSwitch), switchName(WorldNameSwitch), switchName(MaxPlayersSwitch),
+	switchName(ListInBrowserSwitch), switchName(UserDirSwitch), switchName(LogFileSwitch),
+	switchName(ServerPasswordSwitch), switchName(AdminPasswordSwitch), switchName(SecretsFileSwitch),
+}
 
 // switchName is a switch name as it is compared: lower case, no dashes in
 // front.
 func switchName(name string) string { return strings.ToLower(strings.TrimLeft(name, "-")) }
 
-// IsReservedSwitch reports whether key (without the leading "-") names a
-// switch ESM sets itself.
+// IsReservedSwitch reports whether key (with or without the leading "-")
+// names a switch ESM sets itself.
 func IsReservedSwitch(key string) bool {
 	return slices.Contains(reserved, switchName(key))
 }
 
-// ReadyMarker is the fixed text that starts the server log line saying the
-// server accepts players. UNCONFIRMED.
-const ReadyMarker = "Server is ready"
+// RefusedSwitch reports whether key (with or without the leading "-") names
+// a switch that must never reach the server, and says why.
+func RefusedSwitch(key string) (why string, refused bool) {
+	if switchName(key) == switchName(MultihomeSwitch) {
+		return MultihomeSwitch + " is never passed: with it the server advertises the bind address instead of its Steam identity and players cannot join; the box's firewall decides where the query port is reachable", true
+	}
+	return "", false
+}
 
-// WorldSavedMarker is the fixed text that starts the server log line
-// written after each world save. UNCONFIRMED.
-const WorldSavedMarker = "World saved"
+// UnsafeArgument reports whether value, a setting that goes onto the
+// server command line (the server name, the world name, a rule key or
+// value, an extra argument), could smuggle a switch past ESM, and says
+// why. The server joins its arguments back into one command line and
+// searches that for switches, so separate arguments are no boundary: a
+// double quote can end a quoted value, white space followed by "-" and a
+// name starts a new switch (a lone " - " does not), and -MULTIHOME is
+// found wherever its name stands. Such values are refused.
+func UnsafeArgument(value string) (why string, unsafe bool) {
+	switch {
+	case strings.Contains(value, `"`):
+		return `has a double quote ("), which the server's command line parsing takes for the end of a quoted value`, true
+	case strings.Contains(strings.ToLower(value), switchName(MultihomeSwitch)):
+		return `names MULTIHOME: ` + MultihomeSwitch + ` is never passed`, true
+	}
+	rs := []rune(value)
+	for i := 1; i+1 < len(rs); i++ {
+		if rs[i] == '-' && unicode.IsSpace(rs[i-1]) && !unicode.IsSpace(rs[i+1]) {
+			return `has white space followed by "-" and more, which the server would read as a switch of its own`, true
+		}
+	}
+	return "", false
+}
 
-// logTimePrefix is the only thing that may stand in front of a marker: the
-// time the server puts at the start of its log lines, as UTC in square
-// brackets followed by one space, such as "[2026-01-02T03:04:05.678Z] ".
-// UNCONFIRMED.
-const logTimePrefix = `(?:\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z\] )?`
+// The engine puts this in front of every message in its log file (the
+// -abslog file ESM reads): the time and frame number
+// ("[2026.01.02-03.04.05:678][  0]"), then exactly one log category, then
+// optionally one verbosity word, each followed by ": "
+// ("LogExample: Display: "). All of it is required but the verbosity, so
+// nothing a player types can stand where the words of a line ESM reads
+// start: a chat line has the player's name, or a tag, between the
+// category and the text. UNCONFIRMED: the categories the real lines carry;
+// any name of letters, digits and "_" is accepted.
+const logPrefix = logStamp + `[A-Za-z][A-Za-z0-9_]*: ` + logVerbosity
 
+// logStamp is the time and frame at the start of every line of the log
+// file, and logVerbosity the optional verbosity word after the category.
+const (
+	logStamp     = `^\[[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}:[0-9]{3}\]\[ *[0-9]+\]`
+	logVerbosity = `(?:(?:Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose): )?`
+)
+
+// ServerIDCategory is the log category of the Steam logon line.
+const ServerIDCategory = "LogOnline"
+
+// The shapes of the server log lines ESM reads. Only the fixed words are
+// matched; names and numbers in them are the server's own. Each must start
+// its message: the same words later in a line (a repeated command line, a
+// server name, a chat message) never count.
 var (
-	readyLine      = regexp.MustCompile(`^` + logTimePrefix + regexp.QuoteMeta(ReadyMarker) + `\b`)
-	worldSavedLine = regexp.MustCompile(`^` + logTimePrefix + regexp.QuoteMeta(WorldSavedMarker) + `\b`)
+	// readyLine: the server registered its dedicated session, so it is in
+	// the server list and accepts players. CONFIRMED (every real run).
+	// Chosen over the Steam logon line, which comes a moment earlier: a
+	// server that is logged on but has no session yet cannot be joined.
+	readyLine = regexp.MustCompile(logPrefix + `\[SESSION\] Dedicated session '.*' registered \(map `)
+	// worldSavedLine: the server wrote its world save (at start, at every
+	// autosave and at a stop), or confirmed at a stop, tagged [SHUTDOWN]
+	// or [EXIT], that its last write went through. CONFIRMED for the
+	// words; UNCONFIRMED whether "Wrote save" starts its message.
+	worldSavedLine = regexp.MustCompile(logPrefix + `(?:Wrote save |\[(?:SHUTDOWN|EXIT)\] Synchronous write after the flush succeeded)`)
+	// serverIDLine: the server logged on to Steam anonymously and names
+	// the Steam id it got. CONFIRMED: the id is new at every start, and
+	// the line comes from the online subsystem, under the LogOnline
+	// category with the subsystem's tag ("STEAM: ") before the words. Both
+	// are pinned here (the tag may also read "OSS: "), so a chat line,
+	// which has the player's name after its own category, never matches.
+	serverIDLine = regexp.MustCompile(logStamp + ServerIDCategory + `: ` + logVerbosity +
+		`(?:STEAM|OSS): Steam game server logged on with UID: ([0-9]{1,20})(?:[^0-9A-Za-z_]|$)`)
+	// resumedLine: the server found a save of its world and carries on
+	// with it (instead of a new world). CONFIRMED for the words.
+	resumedLine = regexp.MustCompile(logPrefix + `\[SERVER\] Resuming world `)
 )
 
 // IsReadyLine reports whether line, one whole line of the server log, is
-// the server saying it accepts players: ReadyMarker at the very start of the
-// line, after nothing but the optional time prefix. The marker anywhere
-// else in a line does not count, so text that the server only repeats (its
-// command line, a server name, a rule value) can never look like it.
+// the server saying it accepts players.
 func IsReadyLine(line string) bool { return readyLine.MatchString(line) }
 
 // IsWorldSavedLine reports whether line, one whole line of the server log,
-// is the server saying it saved the world: WorldSavedMarker at the very
-// start of the line, after nothing but the optional time prefix.
+// is the server saying it saved the world.
 func IsWorldSavedLine(line string) bool { return worldSavedLine.MatchString(line) }
 
-// ServerLogRel is the server log path inside the data folder. UNCONFIRMED.
-const ServerLogRel = "Logs/server.log"
+// IsWorldResumedLine reports whether line, one whole line of the server
+// log, is the server saying it carries on with a saved world.
+func IsWorldResumedLine(line string) bool { return resumedLine.MatchString(line) }
 
-// ServerLogPath returns the server log path for a data folder.
-func ServerLogPath(dataDir string) string {
-	return filepath.Join(dataDir, filepath.FromSlash(ServerLogRel))
+// ServerID returns the Steam server id that line, one whole line of the
+// server log, names, if it is the server's logon line. The id changes every
+// time the server starts, so ESM shows it for the running server only and
+// never keeps it.
+func ServerID(line string) (id string, ok bool) {
+	m := serverIDLine.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// Lines of the shapes above, as the fake server writes them. Tests and the
+// fake use these; ESM itself only matches lines.
+
+// ReadyLine is a ready line for a session named name on map m with slots
+// player slots.
+func ReadyLine(name, m string, slots int) string {
+	return fmt.Sprintf("[SESSION] Dedicated session '%s' registered (map %s, %d slots)", name, m, slots)
+}
+
+// WorldSavedLine is a save-written line for a save file of size bytes.
+func WorldSavedLine(file string, size int) string {
+	return fmt.Sprintf("Wrote save %s (%d bytes)", file, size)
+}
+
+// FlushedLine is the line that confirms the last write at a stop.
+const FlushedLine = "[SHUTDOWN] Synchronous write after the flush succeeded."
+
+// ServerIDLine is the message of the logon line naming the Steam id id,
+// as it follows the ServerIDCategory category.
+func ServerIDLine(id string) string { return "STEAM: Steam game server logged on with UID: " + id }
+
+// ResumedLine is the line of a server that carries on with a saved world.
+func ResumedLine(world string) string { return "[SERVER] Resuming world '" + world + "'" }
+
+// NewWorldLine is the line of a server that starts a new world.
+func NewWorldLine(world string) string { return "[SERVER] New world '" + world + "'" }
+
+// ServerLogRel is where ESM points the server log (LogFileSwitch), as a
+// slash path inside the instance folder. The log is outside the data
+// folder, so a backup never copies it.
+const ServerLogRel = "logs/server.log"
+
+// ServerLogPath returns the server log path of an instance folder.
+func ServerLogPath(instanceDir string) string {
+	return filepath.Join(instanceDir, filepath.FromSlash(ServerLogRel))
+}
+
+// DataDirRel is the instance's data folder (UserDirSwitch) as a slash path
+// inside the instance folder.
+const DataDirRel = "data"
+
+// DataDirPath returns the data folder of an instance folder.
+func DataDirPath(instanceDir string) string {
+	return filepath.Join(instanceDir, DataDirRel)
 }
 
 // StatusFileRel is the status file inside the data folder.
-// UNCONFIRMED: the real server may not write a status file at all; ESM then
-// falls back to the ready log line and the query port.
+// UNCONFIRMED: the real server writes no status file today; ESM then
+// relies on the ready log line and the query port.
 const StatusFileRel = "esm-status.json"
 
 // StatusFilePath returns the status file path for a data folder.
@@ -209,38 +368,54 @@ func ReadStatus(dataDir string) (Status, error) {
 	return s, nil
 }
 
-// SaveGlob matches the world save files inside the data folder; backups copy
-// exactly these. UNCONFIRMED.
-const SaveGlob = "SaveGames/*.sav"
+// SaveDirRel is the folder, as a slash path inside the data folder, that
+// holds the world saves. Every file below it belongs to the saves (the
+// game keeps each world's save, its metadata and older copies there), so
+// backups copy the whole folder and restores put back the whole folder.
+// CONFIRMED: a real server honours UserDirSwitch and saves below this
+// folder; a new build never touches it.
+const SaveDirRel = "Saved/SaveGames"
 
-// SaveFileRel is where the save of world lives inside the data folder.
-func SaveFileRel(world string) string { return "SaveGames/" + world + ".sav" }
+// IsSaveFile reports whether rel, a slash path inside the data folder, is
+// a clean path of a file below SaveDirRel.
+func IsSaveFile(rel string) bool {
+	return strings.HasPrefix(rel, SaveDirRel+"/") && path.Clean(rel) == rel && !strings.ContainsAny(rel, `\:`) &&
+		filepath.IsLocal(filepath.FromSlash(rel))
+}
 
-// SaveFiles lists the save files of a data folder as slash paths relative
-// to it, sorted.
+// SaveFiles lists the save files of a data folder (every regular file
+// below SaveDirRel; links are skipped) as slash paths relative to the data
+// folder, sorted.
 func SaveFiles(dataDir string) ([]string, error) {
-	matches, err := filepath.Glob(filepath.Join(dataDir, filepath.FromSlash(SaveGlob)))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		fi, err := os.Lstat(m)
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		rel, err := filepath.Rel(dataDir, m)
+	top := filepath.Join(dataDir, filepath.FromSlash(SaveDirRel))
+	out := []string{}
+	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil, err
+			if p == top && errors.Is(err, fs.ErrNotExist) {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dataDir, p)
+		if err != nil {
+			return err
 		}
 		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	slices.Sort(out)
 	return out, nil
 }
 
-// ControlDirRel is the folder inside the data folder that the server polls
-// for request files. UNCONFIRMED.
+// ControlDirRel is the folder inside the data folder that the fake server
+// polls for request files; the stop request file is how ESM stops a server
+// on Windows. UNCONFIRMED for a real server on Windows.
 const ControlDirRel = "control"
 
 // ControlStop is the request file that asks for a polite stop.
@@ -251,8 +426,8 @@ type StopMethod int
 
 // Polite stop methods.
 const (
-	// StopSignal sends SIGTERM.
-	StopSignal StopMethod = iota
+	// StopInterrupt sends exactly one SIGINT.
+	StopInterrupt StopMethod = iota
 	// StopFile writes <data>/control/stop.
 	StopFile
 )
@@ -261,16 +436,52 @@ func (m StopMethod) String() string {
 	if m == StopFile {
 		return "stop request file"
 	}
-	return "SIGTERM"
+	return "SIGINT"
 }
 
-// PoliteStop returns the polite stop method for an OS: SIGTERM on Linux,
-// the stop request file on Windows (UNCONFIRMED for the real server).
+// PoliteStop returns the polite stop method for an OS: one SIGINT on Linux,
+// the stop request file on Windows.
+//
+// CONFIRMED on Linux: one SIGINT makes the server save and exit cleanly
+// within a few seconds (StopExitCode). A second signal while it shuts down
+// may end it before the save is written, and a kill certainly does, so ESM
+// sends one signal and waits; it never sends a second one and never kills
+// a server on Linux. UNCONFIRMED: what SIGTERM does (never sent by ESM).
 func PoliteStop(goos string) StopMethod {
 	if goos == "windows" {
 		return StopFile
 	}
-	return StopSignal
+	return StopInterrupt
+}
+
+// StopExitCode is the exit code of a server that stopped cleanly after
+// SIGINT. CONFIRMED.
+const StopExitCode = 130
+
+// SteamAppIDFile is the file that names the game's Steam app id. CONFIRMED:
+// a real (non-Shipping) server writes it next to its binary when it starts,
+// so it needs to write into the build. ESM places it there when it installs
+// a build (from the configured app id), before the build is made read-only.
+// UNCONFIRMED: whether the server accepts a file that is already there and
+// read-only, instead of writing its own.
+const SteamAppIDFile = "steam_appid.txt"
+
+// SteamLibraries are the Steam client libraries the server loads at start.
+// CONFIRMED: they are not part of a server build; the 64-bit copies from
+// the Steamworks SDK redistributable sit in one folder, which the server
+// finds through LD_LIBRARY_PATH.
+var SteamLibraries = []string{"steamclient.so", "libsteamwebrtc.so"}
+
+// LibraryPathVar is the variable the server finds SteamLibraries through.
+const LibraryPathVar = "LD_LIBRARY_PATH"
+
+// LibraryPath returns the LD_LIBRARY_PATH value for a server: the Steam
+// runtime folder first, then what was set before (if anything).
+func LibraryPath(runtimeDir, inherited string) string {
+	if inherited == "" {
+		return runtimeDir
+	}
+	return strings.Join([]string{runtimeDir, inherited}, ":")
 }
 
 // LoopbackLocalAddr returns the local UDP address to send from when talking
@@ -290,46 +501,14 @@ func StopRequestPath(dataDir string) string {
 	return filepath.Join(dataDir, ControlDirRel, ControlStop)
 }
 
-// PortProtocols are the protocols that players and server browsers reach a
-// server's game and query ports with, so the ones a firewall must let in.
-// UNCONFIRMED: UDP for both, as for the query probe; the real server may
-// need TCP as well.
+// PortProtocols are the protocols the query port is reached with.
+// CONFIRMED: UDP.
 var PortProtocols = []string{"udp"}
 
-// Probe asks the query port whether the server answers: it sends "PING" over
-// UDP and expects "PONG". A server on all interfaces (host empty, 0.0.0.0
-// or ::) is asked on 127.0.0.1. UNCONFIRMED: the real query protocol is
-// unknown.
-func Probe(ctx context.Context, host string, port int) error {
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(time.Second)
-	}
-	var d net.Dialer
-	if la := LoopbackLocalAddr(host); la != nil {
-		d.LocalAddr = la
-	}
-	c, err := d.DialContext(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(port)))
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	if err := c.SetDeadline(deadline); err != nil {
-		return err
-	}
-	if _, err := c.Write([]byte("PING")); err != nil {
-		return err
-	}
-	buf := make([]byte, 64)
-	n, err := c.Read(buf)
-	if err != nil {
-		return err
-	}
-	if string(buf[:n]) != "PONG" {
-		return errors.New("gameserver: unexpected query answer")
-	}
-	return nil
-}
+// InboundPorts says which of an instance's ports must be reachable from
+// outside the box. CONFIRMED: only the query port. The game port has no
+// socket at all: players join through Steam's relay, over outbound UDP.
+// ESM still gives every instance its own game port, which the server is
+// told and puts in its advert. UNCONFIRMED: two or more servers on one box,
+// told apart by their ports only, and a query port other than the default.
+const InboundPorts = "query"

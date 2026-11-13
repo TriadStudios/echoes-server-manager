@@ -141,7 +141,7 @@ func Start(o Options) (_ *Service, err error) {
 	s.bus = events.NewBus(4096)
 	s.audit.SetNotify(func(e audit.Entry) { s.bus.Publish(events.TypeAudit, "", e) })
 
-	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, StopTimeout: cfg.StopTimeout.D(), Logger: log}); err != nil {
+	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, Logger: log}); err != nil {
 		return nil, err
 	}
 	cleanups = append(cleanups, func() { s.sup.Close() })
@@ -150,7 +150,8 @@ func Start(o Options) (_ *Service, err error) {
 	if err := os.MkdirAll(importDir, 0o700); err != nil {
 		log.Warn("cannot create the build import folder", "path", importDir, "err", err)
 	}
-	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient, ImportDir: importDir})
+	bm := builds.New(st, builds.Options{Bus: s.bus, Logger: log, Limits: o.BuildLimits, HTTPClient: o.HTTPClient, ImportDir: importDir,
+		SteamAppID: cfg.SteamAppID})
 	if err := bm.CleanTemp(); err != nil {
 		log.Warn("cannot clean the tmp folder", "err", err)
 	}

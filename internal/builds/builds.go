@@ -33,6 +33,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -53,7 +54,11 @@ type Limits struct {
 
 // Options configure a Manager.
 type Options struct {
-	GOOS       string       // default runtime.GOOS
+	GOOS string // default runtime.GOOS
+	// SteamAppID, when set, is written to gameserver.SteamAppIDFile next to
+	// the server binary of every build installed from now on, before the
+	// build is made read-only (see gameserver.SteamAppIDFile).
+	SteamAppID string
 	Limits     Limits       // zero fields take the defaults
 	ImportDir  string       // absolute path of the folder local sources must be in
 	HTTPClient *http.Client // for https sources; default: no overall timeout, https-only redirects
@@ -63,10 +68,13 @@ type Options struct {
 
 // Build describes an installed build.
 type Build struct {
-	Version    string    `json:"version"`
-	Commit     string    `json:"commit"`
-	Channel    string    `json:"channel"`
-	Executable string    `json:"executable"` // slash path inside the build for this OS
+	Version    string `json:"version"`
+	Commit     string `json:"commit"`
+	Channel    string `json:"channel"`
+	DefaultMap string `json:"default_map"` // empty: instances must name their map
+	// Executable is the server binary for this OS: a slash path inside the
+	// build.
+	Executable string    `json:"executable"`
 	Installed  time.Time `json:"installed"`
 	Files      int       `json:"files"`
 	SizeBytes  int64     `json:"size_bytes"`
@@ -175,7 +183,7 @@ func (m *Manager) Get(version string) (Build, error) {
 	if err != nil {
 		return Build{}, err
 	}
-	out := Build{Version: version, Commit: man.Commit, Channel: man.Channel,
+	out := Build{Version: version, Commit: man.Commit, Channel: man.Channel, DefaultMap: man.DefaultMap,
 		Executable: man.Executables[m.opts.GOOS], Files: len(man.Files) + 1}
 	var in info
 	if err := m.st.ReadJSON(infoDir+"/"+version+".json", &in); err == nil {
@@ -184,6 +192,15 @@ func (m *Manager) Get(version string) (Build, error) {
 		out.Installed = fi.ModTime().UTC()
 	}
 	return out, nil
+}
+
+// Path returns the absolute path of an installed build's top folder: the
+// working folder of its servers.
+func (m *Manager) Path(version string) (string, error) {
+	if _, err := m.Get(version); err != nil {
+		return "", err
+	}
+	return m.st.Abs(buildDir(version))
 }
 
 // ExecutablePath returns the absolute path of the executable of a build
@@ -453,6 +470,10 @@ func (m *Manager) finish(tree string) (Build, error) {
 	if err != nil {
 		return Build{}, err
 	}
+	placed, err := m.placeSteamAppID(top, man)
+	if err != nil {
+		return Build{}, err
+	}
 	if m.opts.GOOS != "windows" {
 		if err := m.st.Chmod(top+"/"+man.Executables[m.opts.GOOS], 0o500); err != nil {
 			return Build{}, err
@@ -470,12 +491,45 @@ func (m *Manager) finish(tree string) (Build, error) {
 		return Build{}, err
 	}
 	in := info{Installed: time.Now().UTC(), Files: files + 1, SizeBytes: size + int64(len(b))}
+	if placed {
+		// The app id file ESM added counts like any file of the build.
+		in.Files++
+		in.SizeBytes += int64(len(m.opts.SteamAppID))
+	}
 	if err := m.st.WriteJSON(infoDir+"/"+man.Version+".json", in, 0o600); err != nil {
 		m.log.Warn("cannot write build info", "version", man.Version, "err", err)
 	}
 	m.log.Info("build installed", "version", man.Version, "channel", man.Channel, "files", in.Files)
 	m.publish("installed", man.Version)
 	return m.Get(man.Version)
+}
+
+// placeSteamAppID writes the configured Steam app id next to the server
+// binary for this OS, as a read-only file like every file of the build,
+// and reports whether it did. A build that brings the file along keeps its
+// own. Nothing is written when no app id is configured (doctor warns
+// about that).
+func (m *Manager) placeSteamAppID(top string, man *Manifest) (bool, error) {
+	if m.opts.SteamAppID == "" {
+		return false, nil
+	}
+	rel := path.Join(path.Dir(man.Executables[m.opts.GOOS]), gameserver.SteamAppIDFile)
+	if m.st.Exists(top + "/" + rel) {
+		m.log.Info("the build has its own Steam app id file; leaving it", "version", man.Version, "file", rel)
+		return false, nil
+	}
+	f, err := m.st.Create(top+"/"+rel, 0o400)
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", rel, err)
+	}
+	_, err = f.WriteString(m.opts.SteamAppID)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", rel, err)
+	}
+	return true, nil
 }
 
 // verify checks that the folder holds exactly the files the manifest lists

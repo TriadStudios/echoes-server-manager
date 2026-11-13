@@ -76,7 +76,7 @@ func TestCommandLineDelivery(t *testing.T) {
 		t.Fatal("the server does not have exactly the passwords of its command line")
 	}
 	raw := r.rawOutput("alpha")
-	if !strings.Contains(raw, "-ServerPassword="+serverPW+" -AdminPassword="+adminPW+" -log") || strings.Contains(raw, gameserver.SecretsFileSwitch) {
+	if !strings.Contains(raw, "-ServerPassword="+serverPW+" -AdminPassword="+adminPW+"\n") || strings.Contains(raw, gameserver.SecretsFileSwitch) {
 		t.Fatalf("the server's command line:\n%s", raw)
 	}
 	// The file records what the running server was given.
@@ -108,7 +108,7 @@ func TestCommandLineDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := strings.Join(lines, "\n")
-		if !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+" -log") ||
+		if !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") ||
 			strings.Contains(text, serverPW) || strings.Contains(text, adminPW) {
 			t.Fatalf("the %s log for an operator:\n%s", source, text)
 		}

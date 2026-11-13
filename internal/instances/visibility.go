@@ -77,14 +77,14 @@ func WarningText(code string) string {
 const unsafeSuffix = ".unsafe"
 
 // setAsideOutput moves the files that hold the output of an instance's
-// server (the console output and the server log) out of the way, to the
-// same name with unsafeSuffix, replacing what was set aside before. ESM
-// never shows the files set aside. It is done when an instance stops
-// passing its passwords on the command line: what its server wrote until
-// then holds them, and from then on the read role may see the output
-// again.
+// server (the console output, the server log and the one before it) out
+// of the way, to the same name with unsafeSuffix, replacing what was set
+// aside before. ESM never shows the files set aside. It is done when an
+// instance stops passing its passwords on the command line: what its
+// server wrote until then holds them, and from then on the read role may
+// see the output again.
 func (m *Manager) setAsideOutput(name string) error {
-	for _, rel := range []string{consoleFile(name), serverLog(name)} {
+	for _, rel := range []string{consoleFile(name), serverLog(name), previousServerLog(name)} {
 		if !m.st.Exists(rel) {
 			continue
 		}

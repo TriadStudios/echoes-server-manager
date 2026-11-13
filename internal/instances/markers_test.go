@@ -12,6 +12,13 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
+// Text of the ready and world-saved lines, as a user could put it into
+// settings the server repeats.
+var (
+	readyMarker = gameserver.ReadyLine("S", "M", 1)
+	savedMarker = gameserver.WorldSavedLine("x.json", 1)
+)
+
 // bothDeliveries runs a test once for each way a server gets its passwords.
 func bothDeliveries(t *testing.T, run func(t *testing.T, delivery string)) {
 	for _, delivery := range []string{gameserver.DeliveryFile, gameserver.DeliveryCommandLine} {
@@ -81,12 +88,12 @@ func TestReadyOnlyFromTheRealLine(t *testing.T) {
 		r.install(testkit.BuildOptions{Version: "1.0"})
 		// No status file and no query answers: only the log can show ready,
 		// and the server writes the ready line only when told to.
-		r.createWithMarker(gameserver.ReadyMarker, delivery,
+		r.createWithMarker(readyMarker, delivery,
 			map[string]string{"FakeNoStatusFile": "true", "FakeNoQuery": "true", "FakeReadyDelay": "1h"})
 		if _, err := r.m.Start(context.Background(), "alpha", false); err != nil {
 			t.Fatal(err)
 		}
-		r.waitCommandLine("alpha", gameserver.ReadyMarker, delivery)
+		r.waitCommandLine("alpha", readyMarker, delivery)
 		time.Sleep(500 * time.Millisecond) // ten checks of the log
 		if st, _ := r.m.Status("alpha"); st.State != Starting {
 			t.Fatalf("ready from text the server only repeated: %+v", st)
@@ -108,12 +115,12 @@ func TestRepeatedMarkerNeverMakesReady(t *testing.T) {
 	bothDeliveries(t, func(t *testing.T, delivery string) {
 		r := newRig(t, func(c *config.Config) { c.ReadyTimeout = config.Duration(1500 * time.Millisecond) })
 		r.install(testkit.BuildOptions{Version: "1.0"})
-		r.createWithMarker(gameserver.ReadyMarker, delivery, map[string]string{"FakeNoStatusFile": "true", "FakeNoReady": "true"})
+		r.createWithMarker(readyMarker, delivery, map[string]string{"FakeNoStatusFile": "true", "FakeNoReady": "true"})
 		_, err := r.m.Start(context.Background(), "alpha", true)
 		if fault.CodeOf(err) != "not_ready" {
 			t.Fatalf("start: %v", err)
 		}
-		r.waitCommandLine("alpha", gameserver.ReadyMarker, delivery)
+		r.waitCommandLine("alpha", readyMarker, delivery)
 		if st, _ := r.m.Status("alpha"); st.State != Failed || st.ReadySource != "" || !strings.HasPrefix(st.Reason, "not ready within") {
 			t.Fatalf("after the ready timeout: %+v", st)
 		}
@@ -126,12 +133,12 @@ func TestWorldSavedOnlyFromTheRealLine(t *testing.T) {
 	bothDeliveries(t, func(t *testing.T, delivery string) {
 		r := newRig(t, func(c *config.Config) { c.BackupSaveWait = config.Duration(1500 * time.Millisecond) })
 		r.install(testkit.BuildOptions{Version: "1.0"})
-		r.createWithMarker(gameserver.WorldSavedMarker, delivery, map[string]string{"FakeSaveInterval": "1h"})
+		r.createWithMarker(savedMarker, delivery, map[string]string{"FakeSaveInterval": "1h"})
 		ctx := context.Background()
 		if _, err := r.m.Start(ctx, "alpha", true); err != nil {
 			t.Fatal(err)
 		}
-		r.waitCommandLine("alpha", gameserver.WorldSavedMarker, delivery)
+		r.waitCommandLine("alpha", savedMarker, delivery)
 		data, _ := r.st.Abs(dataDir("alpha"))
 		done := make(chan Backup, 1)
 		go func() {

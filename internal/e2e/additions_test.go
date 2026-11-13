@@ -64,11 +64,13 @@ func TestBoxFactsAndFirewall(t *testing.T) {
 	if st := h.call("GET", "/api/v1/box/firewall", read, nil, &fw); st != http.StatusOK {
 		t.Fatalf("firewall: %d", st)
 	}
-	game := fmt.Sprintf("%d:%d/udp", h.gameLo, h.gameLo+9)
-	query := fmt.Sprintf("%d-%d/udp", h.queryLo, h.queryLo+9)
-	if len(fw.UFW) != 2 || fw.UFW[0] != "sudo ufw allow "+game ||
-		len(fw.Firewalld) != 3 || fw.Firewalld[1] != "sudo firewall-cmd --permanent --add-port="+query ||
-		fw.Firewalld[2] != "sudo firewall-cmd --reload" || !strings.Contains(fw.Note, "never runs") {
+	// Only the query ports need opening; the game ports have no socket.
+	query := fmt.Sprintf("%d:%d/udp", h.queryLo, h.queryLo+9)
+	query2 := fmt.Sprintf("%d-%d/udp", h.queryLo, h.queryLo+9)
+	if len(fw.UFW) != 1 || fw.UFW[0] != "sudo ufw allow "+query ||
+		len(fw.Firewalld) != 2 || fw.Firewalld[0] != "sudo firewall-cmd --permanent --add-port="+query2 ||
+		!strings.Contains(fw.Note, "Only the query ports") ||
+		fw.Firewalld[1] != "sudo firewall-cmd --reload" || !strings.Contains(fw.Note, "never runs") {
 		t.Fatalf("firewall %+v", fw)
 	}
 }
@@ -122,7 +124,7 @@ func TestLogDownload(t *testing.T) {
 		resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || resp.Header.Get("Content-Security-Policy") != web.CSP {
 		t.Fatalf("console download: %d %v", resp.StatusCode, resp.Header)
 	}
-	if !bytes.Contains(body, []byte("ready")) {
+	if !bytes.Contains(body, []byte("Dedicated session")) {
 		t.Fatalf("server log download: %.200q", body)
 	}
 	for _, source := range []string{"server", "console"} {

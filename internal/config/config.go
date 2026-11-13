@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -26,11 +27,13 @@ const FileName = "esm.json"
 
 // Default values.
 const (
-	DefaultListen             = "127.0.0.1:8740"
-	DefaultGamePorts          = "7777-7786"
-	DefaultQueryPorts         = "27015-27024"
-	DefaultSupervisor         = "auto"
-	DefaultStopTimeout        = 30 * time.Second
+	DefaultListen     = "127.0.0.1:8740"
+	DefaultGamePorts  = "7777-7786"
+	DefaultQueryPorts = "27015-27024"
+	DefaultSupervisor = "auto"
+	// DefaultStopTimeout is how long a stop waits for the server to exit
+	// after its one SIGINT.
+	DefaultStopTimeout        = 120 * time.Second
 	DefaultReadyTimeout       = 120 * time.Second
 	DefaultKeepPreviousBuilds = 2
 	DefaultLogLevel           = "info"
@@ -122,6 +125,15 @@ type Config struct {
 	KeepPreviousBuilds int      `json:"keep_previous_builds"`
 	BackupSaveWait     Duration `json:"backup_save_wait"`
 	LogLevel           string   `json:"log_level"`
+	// SteamAppID is the game's Steam app id, written next to the server
+	// binary of every build ESM installs (see gameserver.SteamAppIDFile).
+	// There is no default: unset, nothing is written and doctor warns.
+	SteamAppID string `json:"steam_app_id,omitempty"`
+	// SteamRuntimeDir is the folder that holds the 64-bit Steam client
+	// libraries (gameserver.SteamLibraries); it goes first on every
+	// server's LD_LIBRARY_PATH. Empty means <root>/steam/linux64; a
+	// relative path is taken from the root.
+	SteamRuntimeDir string `json:"steam_runtime_dir,omitempty"`
 
 	// Root is the ESM root this config was loaded from. Not stored.
 	Root string `json:"-"`
@@ -227,6 +239,22 @@ func (c *Config) ImportDir() string {
 	return filepath.Clean(dir)
 }
 
+// DefaultSteamRuntimeDir is the Steam runtime folder inside the root.
+const DefaultSteamRuntimeDir = "steam/linux64"
+
+// SteamRuntime returns the absolute Steam runtime folder (see
+// SteamRuntimeDir).
+func (c *Config) SteamRuntime() string {
+	dir := c.SteamRuntimeDir
+	if dir == "" {
+		dir = filepath.FromSlash(DefaultSteamRuntimeDir)
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(c.Root, dir)
+	}
+	return filepath.Clean(dir)
+}
+
 // Validate checks every field and returns the first problem found.
 func (c *Config) Validate() error {
 	if _, _, err := SplitListen(c.Listen); err != nil {
@@ -276,6 +304,13 @@ func (c *Config) Validate() error {
 	if c.BackupSaveWait < 0 {
 		return errors.New("config: backup_save_wait must not be negative")
 	}
+	if c.SteamAppID != "" && !steamAppIDRe.MatchString(c.SteamAppID) {
+		return errors.New("config: steam_app_id must be the app id's digits (1 to 10 of them)")
+	}
+	if strings.ContainsFunc(c.SteamRuntimeDir, func(r rune) bool { return r < 0x20 || r == 0x7f }) ||
+		runtime.GOOS != "windows" && strings.Contains(c.SteamRuntimeDir, ":") {
+		return errors.New(`config: steam_runtime_dir must be a folder path without control characters or ":"`)
+	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -283,6 +318,8 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+var steamAppIDRe = regexp.MustCompile(`^[1-9][0-9]{0,9}$`)
 
 // checkPublicHost checks one public_hosts entry: a host name or address,
 // with an optional port.

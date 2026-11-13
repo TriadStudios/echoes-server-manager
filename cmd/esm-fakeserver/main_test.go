@@ -24,8 +24,9 @@ func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
 
 func TestParseArgs(t *testing.T) {
 	kv := map[string]string{"FakeReadyDelay": "5s", "FakeNoReady": "true"}
-	argv := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S", WorldName: "W",
-		DataDir: "data", Rules: map[string]string{"PvP": "true"}, ExtraArgs: []string{"-FakeReadyDelay=10ms", "-FakeIgnoreStop"}}.Args()
+	argv := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S", WorldName: "W", Listed: true,
+		UserDir: "data", LogFile: "logs/server.log", Rules: map[string]string{"PvP": "true"},
+		ExtraArgs: []string{"-FakeReadyDelay=10ms", "-FakeIgnoreStop"}}.Args()
 	m, err := parseArgs(argv, kv)
 	if err != nil {
 		t.Fatal(err)
@@ -34,9 +35,10 @@ func TestParseArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S" ||
-		o.worldName != "W" || !filepath.IsAbs(o.dataDir) || o.readyDelay != 10*time.Millisecond ||
-		!o.noReady || !o.ignoreStop || o.exitCode != 1 || o.saveInterval != time.Second {
+	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S" || !o.listed ||
+		o.worldName != "W" || !filepath.IsAbs(o.userDir) || !filepath.IsAbs(o.logFile) || filepath.Base(o.logFile) != "server.log" ||
+		o.readyDelay != 10*time.Millisecond || !o.noReady || !o.ignoreStop || o.exitCode != 1 || o.saveInterval != time.Second ||
+		o.stopDelay != 200*time.Millisecond {
 		t.Fatalf("options %+v", o)
 	}
 	if _, err := parseArgs([]string{"-A=1", "stray"}, map[string]string{}); err == nil {
@@ -45,11 +47,17 @@ func TestParseArgs(t *testing.T) {
 	if _, err := buildOptions("", map[string]string{"Port": "x"}); err == nil {
 		t.Fatal("bad port accepted")
 	}
+	for _, a := range []string{"-MULTIHOME=127.0.0.1", "-multihome=192.0.2.10", "-MultiHome"} {
+		if _, err := parseArgs([]string{"M", a}, map[string]string{}); err == nil || !strings.Contains(err.Error(), "refused") {
+			t.Errorf("%s accepted: %v", a, err)
+		}
+	}
 }
 
 type fakeRun struct {
 	cmd  *exec.Cmd
 	data string
+	log  string
 	done chan error
 }
 
@@ -61,19 +69,26 @@ func startFake(t *testing.T, exe string, extra ...string) *fakeRun {
 	return startFakeIn(t, exe, filepath.Join(t.TempDir(), "data"), extra...)
 }
 
+// testLaunch is the adapter's launch for a fake with data folder data and
+// its log next to it.
+func testLaunch(data string) gameserver.Launch {
+	return gameserver.Launch{Map: "TestMap", GamePort: 7777, QueryPort: 0, MaxPlayers: 8, ServerName: "T", WorldName: "w",
+		UserDir: data, LogFile: filepath.Join(filepath.Dir(data), "logs", "server.log")}
+}
+
 // startFakeIn starts a fake with the adapter's command line, its passwords
 // in a secrets file.
 func startFakeIn(t *testing.T, exe, data string, extra ...string) *fakeRun {
 	t.Helper()
-	l := gameserver.Launch{GamePort: 0, QueryPort: 0, BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T",
-		WorldName: "w", DataDir: data, SecretsFile: filepath.Join(t.TempDir(), gameserver.SecretsFileName), Secrets: fakeSecrets}
+	l := testLaunch(data)
+	l.SecretsFile, l.Secrets = filepath.Join(t.TempDir(), gameserver.SecretsFileName), fakeSecrets
 	if err := os.WriteFile(l.SecretsFile, fakeSecrets.File(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return startFakeWith(t, exe, data, l, extra...)
+	return startFakeWith(t, exe, l, extra...)
 }
 
-func startFakeWith(t *testing.T, exe, data string, l gameserver.Launch, extra ...string) *fakeRun {
+func startFakeWith(t *testing.T, exe string, l gameserver.Launch, extra ...string) *fakeRun {
 	t.Helper()
 	argv := l.Args()
 	argv = append(argv, "-FakeSaveInterval=200ms", "-FakeReadyDelay=100ms")
@@ -82,13 +97,18 @@ func startFakeWith(t *testing.T, exe, data string, l gameserver.Launch, extra ..
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	r := &fakeRun{cmd: cmd, data: data, done: make(chan error, 1)}
+	r := &fakeRun{cmd: cmd, data: l.UserDir, log: l.LogFile, done: make(chan error, 1)}
 	go func() { r.done <- cmd.Wait() }()
 	t.Cleanup(func() {
 		cmd.Process.Kill()
 		<-r.done
 	})
 	return r
+}
+
+func (r *fakeRun) logText() string {
+	b, _ := os.ReadFile(r.log)
+	return string(b)
 }
 
 func (r *fakeRun) wait(t *testing.T, timeout time.Duration) int {
@@ -123,11 +143,43 @@ func waitReady(t *testing.T, data string) gameserver.Status {
 	return st
 }
 
+// countLines counts the log lines match takes.
+func countLines(text string, match func(string) bool) int {
+	n := 0
+	for _, line := range strings.Split(text, "\n") {
+		if match(line) {
+			n++
+		}
+	}
+	return n
+}
+
+func serverID(text string) []string {
+	var ids []string
+	for _, line := range strings.Split(text, "\n") {
+		if id, ok := gameserver.ServerID(line); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func TestFakeLifecycle(t *testing.T) {
 	r := startFake(t, testkit.FakeServer(t))
 	st := waitReady(t, r.data)
-	if st.PID != r.cmd.Process.Pid || st.Ports.Game == 0 || st.Ports.Query == 0 || st.Ports.Game == st.Ports.Query {
+	if st.PID != r.cmd.Process.Pid || st.Ports.Game != 7777 || st.Ports.Query == 0 {
 		t.Fatalf("status %+v", st)
+	}
+	// Like a real server: a socket on the query port only, none on the
+	// game port.
+	if socks, err := testkit.ProcessSockets(st.PID); err == nil {
+		for _, s := range socks {
+			if s.Port == 7777 || s.Port != st.Ports.Query {
+				t.Errorf("socket %s: the fake has a socket other than the query port", s)
+			}
+		}
+	} else if !errors.Is(err, testkit.ErrSocketsUnsupported) {
+		t.Fatal(err)
 	}
 	// The passwords came from the secrets file.
 	if st.ServerPasswordSet || !st.AdminPasswordSet {
@@ -139,14 +191,31 @@ func TestFakeLifecycle(t *testing.T) {
 	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
 		t.Fatalf("query probe: %v", err)
 	}
-	save := filepath.Join(r.data, filepath.FromSlash(gameserver.SaveFileRel("w")))
-	testkit.Eventually(t, 5*time.Second, func() bool { _, err := os.Stat(save); return err == nil }, "no save file")
+	// A2S_INFO: the challenge step, then the server's name, map and slots.
+	info, err := gameserver.QueryInfo(ctx, "127.0.0.1", st.Ports.Query)
+	if err != nil || info.Name != "T" || info.Map != "TestMap" || info.MaxPlayers != 8 || info.Players != 0 || info.ServerType != 'd' {
+		t.Fatalf("A2S_INFO: %+v %v", info, err)
+	}
+	// Sent from loopback, like every socket of a test.
+	conn, err := net.DialUDP("udp", gameserver.LoopbackLocalAddr("127.0.0.1"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: st.Ports.Query})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.Write(gameserver.InfoRequest(nil))
+	reply := make([]byte, 2048)
+	n, err := conn.Read(reply)
+	if ch, _, perr := gameserver.ParseQueryReply(reply[:n]); err != nil || perr != nil || len(ch) != 4 {
+		t.Fatalf("a request without the challenge got %q (%v %v), want the challenge", reply[:n], err, perr)
+	}
+	save := testkit.FakeSavePath(r.data, "TestMap", "w")
+	testkit.Eventually(t, 5*time.Second, func() bool { _, err := os.Stat(save + ".bak2"); return err == nil }, "no rotated save files")
 	if err := testkit.WriteControl(r.data, testkit.ControlCommandLine); err != nil {
 		t.Fatal(err)
 	}
 	testkit.Eventually(t, 5*time.Second, func() bool {
-		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
-		return strings.Count(string(b), "Command line: ") == 2
+		return strings.Count(r.logText(), "Command line: ") == 2
 	}, "the command line was not printed again")
 	if err := testkit.WriteControl(r.data, testkit.ControlStop); err != nil {
 		t.Fatal(err)
@@ -158,18 +227,13 @@ func TestFakeLifecycle(t *testing.T) {
 	if st2.State != gameserver.StateStopping {
 		t.Fatalf("final state %q", st2.State)
 	}
-	log, err := os.ReadFile(gameserver.ServerLogPath(r.data))
-	if err != nil {
-		t.Fatal(err)
+	text := r.logText()
+	if countLines(text, gameserver.IsReadyLine) != 1 || countLines(text, gameserver.IsWorldSavedLine) < 3 ||
+		countLines(text, gameserver.IsWorldResumedLine) != 0 || len(serverID(text)) != 1 {
+		t.Fatalf("log misses ready, saved or server id lines, or says resumed:\n%s", text)
 	}
-	text := string(log)
-	ready, saved := false, false
-	for _, line := range strings.Split(text, "\n") {
-		ready = ready || gameserver.IsReadyLine(line)
-		saved = saved || gameserver.IsWorldSavedLine(line)
-	}
-	if !ready || !saved {
-		t.Fatalf("log misses ready or saved lines:\n%s", text)
+	if !strings.Contains(text, gameserver.FlushedLine) || !strings.Contains(text, gameserver.NewWorldLine("w")) {
+		t.Fatalf("log misses the flush or new world line:\n%s", text)
 	}
 	// Like a real server, the fake prints its whole command line. With a
 	// secrets file there is no password on it.
@@ -180,7 +244,9 @@ func TestFakeLifecycle(t *testing.T) {
 		t.Fatalf("the log has a password or a password switch:\n%s", text)
 	}
 	files, _ := gameserver.SaveFiles(r.data)
-	if len(files) != 1 {
+	want := []string{"Saved/SaveGames/Fake/TestMap__w.json", "Saved/SaveGames/Fake/TestMap__w.json.bak1",
+		"Saved/SaveGames/Fake/TestMap__w.json.bak2", "Saved/SaveGames/Fake/TestMap__w.meta.json"}
+	if !slices.Equal(files, want) {
 		t.Fatalf("save files %v", files)
 	}
 }
@@ -205,18 +271,17 @@ func checkPasswords(t *testing.T, queryPort int, want gameserver.Secrets) {
 // switches, and prints them with its command line: that is what makes this
 // way unsafe.
 func TestFakePasswordsOnCommandLine(t *testing.T) {
-	data := filepath.Join(t.TempDir(), "data")
 	secrets := gameserver.Secrets{ServerPassword: "join me 7", AdminPassword: "adm1n-pw"}
-	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w",
-		DataDir: data, Delivery: gameserver.DeliveryCommandLine, Secrets: secrets})
+	l := testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.Delivery, l.Secrets = gameserver.DeliveryCommandLine, secrets
+	r := startFakeWith(t, testkit.FakeServer(t), l)
 	st := waitReady(t, r.data)
 	if !st.ServerPasswordSet || !st.AdminPasswordSet {
 		t.Fatalf("status %+v", st)
 	}
 	checkPasswords(t, st.Ports.Query, secrets)
-	log, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
-	if !strings.Contains(string(log), "-ServerPassword=join me 7 -AdminPassword=adm1n-pw -log") {
-		t.Fatalf("the command line in the log:\n%s", log)
+	if !strings.Contains(r.logText(), "-ServerPassword=join me 7 -AdminPassword=adm1n-pw -FakeSaveInterval") {
+		t.Fatalf("the command line in the log:\n%s", r.logText())
 	}
 	status, _ := os.ReadFile(gameserver.StatusFilePath(r.data))
 	if strings.Contains(string(status), "join me") || strings.Contains(string(status), "adm1n") {
@@ -226,13 +291,13 @@ func TestFakePasswordsOnCommandLine(t *testing.T) {
 
 // A fake without any password lets everybody in.
 func TestFakeWithoutPasswords(t *testing.T) {
-	data := filepath.Join(t.TempDir(), "data")
 	file := filepath.Join(t.TempDir(), gameserver.SecretsFileName)
 	if err := os.WriteFile(file, gameserver.Secrets{}.File(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w",
-		DataDir: data, SecretsFile: file})
+	l := testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.SecretsFile = file
+	r := startFakeWith(t, testkit.FakeServer(t), l)
 	st := waitReady(t, r.data)
 	if st.ServerPasswordSet || st.AdminPasswordSet {
 		t.Fatalf("status %+v", st)
@@ -264,7 +329,7 @@ func TestFakeRefusesBadSecrets(t *testing.T) {
 	if err := os.WriteFile(bad, []byte(`{"server_password": Zq7-not-json`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	base := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 8, ServerName: "T", WorldName: "w", DataDir: filepath.Join(dir, "data")}.Args()
+	base := testLaunch(filepath.Join(dir, "data")).Args()
 	for what, extra := range map[string][]string{
 		"server password next to the file": {gameserver.SecretsFileSwitch + "=" + good, gameserver.ServerPasswordSwitch + "=Zq7-on-argv"},
 		"admin password next to the file":  {gameserver.AdminPasswordSwitch + "=Zq7-on-argv", gameserver.SecretsFileSwitch + "=" + good},
@@ -286,20 +351,24 @@ func TestFakeRefusesBadSecrets(t *testing.T) {
 	}
 }
 
-func TestFakeCounterContinues(t *testing.T) {
+// A fake that finds a save of its world says it resumes it and carries on
+// with its counter.
+func TestFakeResumesSavedWorld(t *testing.T) {
 	data := filepath.Join(t.TempDir(), "data")
-	save := filepath.Join(data, filepath.FromSlash(gameserver.SaveFileRel("w")))
-	os.MkdirAll(filepath.Dir(save), 0o700)
-	if err := os.WriteFile(save, []byte("fake-save world=w counter=41\n"), 0o600); err != nil {
+	if err := testkit.WriteFakeSave(data, "TestMap", "w", 41); err != nil {
 		t.Fatal(err)
 	}
 	r := startFakeIn(t, testkit.FakeServer(t), data, "-FakeSaveInterval=1h")
 	waitReady(t, r.data)
 	testkit.WriteControl(r.data, testkit.ControlStop)
 	r.wait(t, 10*time.Second)
-	b, _ := os.ReadFile(save)
-	if !strings.Contains(string(b), "counter=42") {
-		t.Fatalf("final save did not continue the counter: %q", b)
+	// One save at start, one at the stop.
+	if n := testkit.FakeSaveCounter(data, "TestMap", "w"); n != 43 {
+		t.Fatalf("final save counter %d, want 43", n)
+	}
+	text := r.logText()
+	if countLines(text, gameserver.IsWorldResumedLine) != 1 || strings.Contains(text, gameserver.NewWorldLine("w")) {
+		t.Fatalf("the fake did not say it resumed the world:\n%s", text)
 	}
 }
 
@@ -330,9 +399,8 @@ func TestFakeHangIgnoresStop(t *testing.T) {
 		t.Fatal("fake stopped while hanging")
 	case <-time.After(700 * time.Millisecond):
 	}
-	log, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
-	if !strings.Contains(string(log), "Ignoring stop request") {
-		t.Fatalf("no ignore line:\n%s", log)
+	if !strings.Contains(r.logText(), "Ignoring stop request") {
+		t.Fatalf("no ignore line:\n%s", r.logText())
 	}
 }
 
@@ -351,17 +419,72 @@ func TestFakeJSONBreaksBuild(t *testing.T) {
 	}
 }
 
-func TestFakeSIGTERM(t *testing.T) {
+// One SIGINT: the fake saves, confirms the flush and exits with the real
+// server's code after its stop delay.
+func TestFakeSIGINT(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("SIGTERM cannot be sent on Windows; the stop file is used there")
+		t.Skip("signals cannot be sent on Windows; the stop file is used there")
 	}
-	r := startFake(t, testkit.FakeServer(t))
+	r := startFake(t, testkit.FakeServer(t), "-FakeSaveInterval=1h")
 	waitReady(t, r.data)
-	if err := r.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := r.cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if code := r.wait(t, 10*time.Second); code != 0 {
+	if code := r.wait(t, 10*time.Second); code != gameserver.StopExitCode {
+		t.Fatalf("exit %d after SIGINT", code)
+	}
+	text := r.logText()
+	if testkit.SecondSignal(r.data) || testkit.FakeSaveCounter(r.data, "TestMap", "w") != 2 || !strings.Contains(text, gameserver.FlushedLine) {
+		t.Fatalf("not one clean stop:\n%s", text)
+	}
+	// SIGTERM is treated the same, with the shell's code for it.
+	r = startFake(t, testkit.FakeServer(t))
+	waitReady(t, r.data)
+	r.cmd.Process.Signal(syscall.SIGTERM)
+	if code := r.wait(t, 10*time.Second); code != 143 {
 		t.Fatalf("exit %d after SIGTERM", code)
+	}
+}
+
+// A second signal is recorded and ends the fake at once with its own code,
+// so a test that sent one fails loudly.
+func TestFakeSecondSignal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signals cannot be sent on Windows; the stop file is used there")
+	}
+	for _, extra := range [][]string{{"-FakeStopDelay=5s"}, {"-FakeIgnoreStop"}} {
+		r := startFake(t, testkit.FakeServer(t), extra...)
+		waitReady(t, r.data)
+		r.cmd.Process.Signal(syscall.SIGINT)
+		testkit.Eventually(t, 5*time.Second, func() bool {
+			return strings.Contains(r.logText(), "Stop requested (interrupt)") || strings.Contains(r.logText(), "Ignoring stop request (interrupt)")
+		}, "%v: the first signal did not arrive", extra)
+		if testkit.SecondSignal(r.data) {
+			t.Fatalf("%v: one signal recorded as two", extra)
+		}
+		r.cmd.Process.Signal(syscall.SIGINT)
+		if code := r.wait(t, 10*time.Second); code != testkit.SecondSignalExitCode {
+			t.Fatalf("%v: exit %d after a second signal", extra, code)
+		}
+		if !testkit.SecondSignal(r.data) {
+			t.Fatalf("%v: the second signal is not recorded", extra)
+		}
+	}
+}
+
+// Every start logs a new Steam server id.
+func TestFakeNewServerIDEachStart(t *testing.T) {
+	data := filepath.Join(t.TempDir(), "data")
+	var ids []string
+	for range 2 {
+		r := startFakeIn(t, testkit.FakeServer(t), data)
+		waitReady(t, r.data)
+		testkit.WriteControl(r.data, testkit.ControlStop)
+		r.wait(t, 10*time.Second)
+		ids = serverID(r.logText())
+	}
+	if len(ids) != 2 || ids[0] == ids[1] || len(ids[0]) != 17 {
+		t.Fatalf("server ids of two starts: %q", ids)
 	}
 }
 
@@ -376,19 +499,9 @@ func TestFakeReadyOnRequest(t *testing.T) {
 	port := pc.LocalAddr().(*net.UDPAddr).Port
 	pc.Close()
 	r := startFake(t, testkit.FakeServer(t), "-FakeReadyDelay=1h", "-FakeNoStatusFile", "-FakeNoQuery", "-QueryPort="+strconv.Itoa(port))
-	readyLines := func() int {
-		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
-		n := 0
-		for _, line := range strings.Split(string(b), "\n") {
-			if gameserver.IsReadyLine(line) {
-				n++
-			}
-		}
-		return n
-	}
+	readyLines := func() int { return countLines(r.logText(), gameserver.IsReadyLine) }
 	testkit.Eventually(t, 10*time.Second, func() bool {
-		b, _ := os.ReadFile(gameserver.ServerLogPath(r.data))
-		return strings.Contains(string(b), "Command line: ")
+		return strings.Contains(r.logText(), "Command line: ")
 	}, "the fake did not start")
 	time.Sleep(300 * time.Millisecond)
 	if readyLines() != 0 {
@@ -409,6 +522,21 @@ func TestFakeReadyOnRequest(t *testing.T) {
 	testkit.WriteControl(r.data, testkit.ControlStop)
 	if code := r.wait(t, 10*time.Second); code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// Told to, the fake becomes ready without its ready line: only the query
+// port says so.
+func TestFakeReadyWithoutLine(t *testing.T) {
+	r := startFake(t, testkit.FakeServer(t), "-FakeNoReadyLine")
+	st := waitReady(t, r.data)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
+		t.Fatalf("query probe: %v", err)
+	}
+	if n := countLines(r.logText(), gameserver.IsReadyLine); n != 0 {
+		t.Fatalf("%d ready lines", n)
 	}
 }
 
@@ -436,35 +564,17 @@ func TestFakeUnready(t *testing.T) {
 	}
 }
 
-// The fake binds loopback only: 127.0.0.1 without -MULTIHOME, and any
-// address that is not loopback is refused before anything is bound.
-func TestFakeBindsLoopbackOnly(t *testing.T) {
-	for host, want := range map[string]string{"": "127.0.0.1", "127.0.0.1": "127.0.0.1", "::1": "::1", "127.0.0.2": "127.0.0.2"} {
-		o, err := buildOptions("", map[string]string{"MULTIHOME": host})
-		if err != nil || o.multihome != want {
-			t.Errorf("-MULTIHOME=%q: %q %v, want %q", host, o.multihome, err, want)
-		}
-	}
-	for _, host := range []string{"0.0.0.0", "::", "192.0.2.10", "example.com"} {
-		if _, err := buildOptions("", map[string]string{"MULTIHOME": host}); err == nil || !strings.Contains(err.Error(), "loopback addresses only") {
-			t.Errorf("-MULTIHOME=%q accepted: %v", host, err)
-		}
-	}
-	// Without -MULTIHOME it runs and answers on 127.0.0.1.
+// -MULTIHOME stops the fake with exit code 2 before anything is written or
+// bound: ESM must never pass it.
+func TestFakeRefusesMultihome(t *testing.T) {
 	data := filepath.Join(t.TempDir(), "data")
-	r := startFakeWith(t, testkit.FakeServer(t), data, gameserver.Launch{MaxPlayers: 8, ServerName: "T", WorldName: "w", DataDir: data})
-	st := waitReady(t, r.data)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := gameserver.Probe(ctx, "127.0.0.1", st.Ports.Query); err != nil {
-		t.Fatalf("query port on 127.0.0.1: %v", err)
-	}
-	// An address that is not loopback stops it with exit code 2. (Were the
-	// refusal gone, binding this documentation address would fail anyway.)
-	out, err := exec.Command(testkit.FakeServer(t), gameserver.Launch{BindIP: "192.0.2.10", MaxPlayers: 8, ServerName: "T", WorldName: "w",
-		DataDir: filepath.Join(t.TempDir(), "data")}.Args()...).CombinedOutput()
+	argv := append(testLaunch(data).Args(), "-MULTIHOME=127.0.0.1")
+	out, err := exec.Command(testkit.FakeServer(t), argv...).CombinedOutput()
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) || ee.ExitCode() != 2 || !strings.Contains(string(out), "-MULTIHOME=192.0.2.10: the fake server binds loopback addresses only") {
-		t.Fatalf("-MULTIHOME=192.0.2.10: %v\n%s", err, out)
+	if !errors.As(err, &ee) || ee.ExitCode() != 2 || !strings.Contains(string(out), "-MULTIHOME is refused") {
+		t.Fatalf("-MULTIHOME: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(data); !os.IsNotExist(err) {
+		t.Fatalf("a refused start wrote a data folder: %v", err)
 	}
 }

@@ -232,8 +232,18 @@ func (s *Systemd) Start(ctx context.Context, spec Spec) error {
 		"--user", "--quiet", "--collect",
 		"--unit=" + "esm-" + spec.Name,
 		"-p", "Description=" + s.description(spec.Name),
-		"-p", "KillSignal=SIGTERM",
-		"-p", "TimeoutStopSec=" + strconv.Itoa(int(s.opts.StopTimeout.Round(time.Second)/time.Second)),
+		// Even a stop from outside ESM (systemctl --user stop) sends the
+		// server exactly one SIGINT, to the main process only. No stop
+		// timeout on the unit: when one runs out, systemd sends the kill
+		// signal again (and SIGKILL unless SendSIGKILL=no), which could
+		// end the server before its save is written. ESM stops the unit
+		// the same way (systemctl stop --no-block), so a later stop from
+		// outside sends nothing more, and waits stop_timeout itself.
+		"-p", "KillSignal=SIGINT",
+		"-p", "KillMode=mixed",
+		"-p", "SendSIGKILL=no",
+		"-p", "TimeoutStopSec=infinity",
+		"-p", "SuccessExitStatus=" + strconv.Itoa(gameserver.StopExitCode),
 		"-p", "StandardOutput=append:" + spec.OutputFile,
 		"-p", "StandardError=append:" + spec.OutputFile,
 		"--working-directory=" + spec.Dir,
@@ -329,8 +339,23 @@ func (s *Systemd) Adopt() ([]Proc, error) {
 	return procs, nil
 }
 
-// Stop stops the unit: systemctl --user stop, waiting up to timeout, then
-// SIGKILL through systemd.
+// stopRecord is instances/<name>/run/stop-signal.json: which run of the
+// unit was sent its one stop signal.
+type stopRecord struct {
+	PID     int       `json:"pid"`
+	Started time.Time `json:"started"`
+	SentAt  time.Time `json:"sent_at"`
+}
+
+func stopRecordFile(name string) string { return runDir(name) + "/stop-signal.json" }
+
+// Stop stops the unit with systemctl --user stop --no-block, which sends
+// its main process exactly one SIGINT (KillSignal=SIGINT,
+// KillMode=mixed), and waits up to timeout for the unit to end. A run that
+// was sent its signal already (an earlier stop that ran out of time, even
+// one of an earlier ESM, or a stop from outside ESM) is not sent another:
+// the stop only waits again. A server still running when the wait ends is
+// left alone and ErrStopTimeout is returned. ESM never sends SIGKILL.
 func (s *Systemd) Stop(ctx context.Context, name string, timeout time.Duration) error {
 	if err := checkName(s.st, name); err != nil {
 		return err
@@ -348,23 +373,67 @@ func (s *Systemd) Stop(ctx context.Context, name string, timeout time.Duration) 
 	if !u.running() {
 		return nil
 	}
-	if _, err := s.systemctl(ctx, "systemctl", "--user", "stop", "--no-block", unitName(name)); err != nil {
+	if gone, err := s.signalOnce(ctx, name); err != nil || gone {
 		return err
 	}
 	if s.waitStopped(ctx, name, timeout) {
 		return nil
 	}
-	s.log.Warn("server did not stop in time; killing it", "instance", name, "unit", unitName(name))
-	if _, err := s.systemctl(context.Background(), "systemctl", "--user", "kill", "--signal=SIGKILL", unitName(name)); err != nil {
-		if u, serr := s.show(name); serr == nil && !u.running() {
-			return nil
+	s.log.Warn("server did not exit in time after its stop signal; leaving it running", "instance", name,
+		"unit", unitName(name), "timeout", timeout)
+	return fmt.Errorf("%w (unit %s, waited %s)", ErrStopTimeout, unitName(name), timeout)
+}
+
+// signalOnce sends the unit's main process its one SIGINT unless this run
+// of the unit had it already: from ESM (run/stop-signal.json) or from a
+// stop outside ESM (the unit is deactivating, so systemd sent its kill
+// signal). The check, the record and the signal happen under one lock per
+// instance, so stops that run at the same time send one signal between
+// them. gone reports a unit that is no longer running.
+func (s *Systemd) signalOnce(ctx context.Context, name string) (gone bool, err error) {
+	unlock := s.st.Lock(stopLockKey(name))
+	defer unlock()
+	u, err := s.show(name)
+	if err != nil {
+		return false, err
+	}
+	if !u.loaded || !s.ours(name, u) || !u.running() {
+		return true, nil
+	}
+	var rec stopRecord
+	if err := s.st.ReadJSON(stopRecordFile(name), &rec); err == nil && rec.PID == u.pid && rec.Started.Equal(u.started) {
+		s.log.Info("the server has had its stop signal already; waiting again, sending none", "instance", name,
+			"unit", unitName(name), "sent", rec.SentAt)
+		return false, nil
+	}
+	rec = stopRecord{PID: u.pid, Started: u.started, SentAt: time.Now().UTC()}
+	if u.active == "deactivating" {
+		// Stopped from outside ESM: systemd sent the kill signal already.
+		if err := s.st.WriteJSON(stopRecordFile(name), rec, 0o600); err != nil {
+			return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
 		}
-		return err
+		s.log.Info("the unit is being stopped already; waiting, sending no signal", "instance", name, "unit", unitName(name))
+		return false, nil
 	}
-	if s.waitStopped(context.Background(), name, 10*time.Second) {
-		return nil
+	if testHookBeforeStopSignal != nil {
+		testHookBeforeStopSignal(name)
 	}
-	return fmt.Errorf("%w (unit %s)", ErrStillRunning, unitName(name))
+	// Recorded before it is sent: whatever happens next, this run never
+	// gets a second one from ESM.
+	if err := s.st.WriteJSON(stopRecordFile(name), rec, 0o600); err != nil {
+		return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
+	}
+	// Stopped the way systemd stops a unit, so the unit is deactivating
+	// from now on and a later stop from outside sends nothing more; with
+	// KillMode=mixed the SIGINT goes to the main process only.
+	if _, err := s.systemctl(ctx, "systemctl", "--user", "stop", "--no-block", unitName(name)); err != nil {
+		if u, serr := s.show(name); serr == nil && !u.running() {
+			return true, nil
+		}
+		return false, err
+	}
+	s.log.Info("stop signal sent", "instance", name, "unit", unitName(name), "pid", u.pid, "signal", "SIGINT")
+	return false, nil
 }
 
 func (s *Systemd) waitStopped(ctx context.Context, name string, d time.Duration) bool {

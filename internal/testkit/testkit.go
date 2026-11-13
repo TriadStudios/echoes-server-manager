@@ -52,7 +52,51 @@ const (
 	ControlUnready = "unready"
 	// ControlCommandLine makes the fake print its command line again.
 	ControlCommandLine = "cmdline"
+	// ControlSecondSignal is the file the fake writes (and never takes)
+	// when it gets a second stop signal: a test that finds it failed to
+	// stop with exactly one signal.
+	ControlSecondSignal = "second-signal"
 )
+
+// SecondSignalExitCode is the fake's exit code after a second stop signal.
+const SecondSignalExitCode = 98
+
+// SecondSignal reports whether the fake with this data folder ever got a
+// second stop signal.
+func SecondSignal(dataDir string) bool {
+	_, err := os.Stat(filepath.Join(dataDir, "control", ControlSecondSignal))
+	return err == nil
+}
+
+// FakeSavePath is the save file of the fake with this data folder for a map
+// and world.
+func FakeSavePath(dataDir, mapName, world string) string {
+	return filepath.Join(dataDir, "Saved", "SaveGames", "Fake", mapName+"__"+world+".json")
+}
+
+// FakeSaveCounter reads the save counter of the fake's save file (0 when
+// there is none).
+func FakeSaveCounter(dataDir, mapName, world string) int {
+	b, err := os.ReadFile(FakeSavePath(dataDir, mapName, world))
+	if err != nil {
+		return 0
+	}
+	var f struct {
+		Counter int `json:"counter"`
+	}
+	json.Unmarshal(b, &f)
+	return f.Counter
+}
+
+// WriteFakeSave writes a save file with counter for the fake.
+func WriteFakeSave(dataDir, mapName, world string, counter int) error {
+	p := FakeSavePath(dataDir, mapName, world)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]any{"world": world, "counter": counter})
+	return os.WriteFile(p, append(b, '\n'), 0o600)
+}
 
 var (
 	fakeOnce sync.Once
@@ -122,6 +166,9 @@ func Run(m *testing.M) int {
 	return code
 }
 
+// DefaultMap is the default map of builds made by MakeBuild.
+const DefaultMap = "TestMap"
+
 // Executable paths inside a build made by MakeBuild.
 const (
 	LinuxExe   = "linux/esm-fakeserver"
@@ -138,6 +185,9 @@ type BuildOptions struct {
 	// ThisOSOnly lists only this OS's executable in the manifest. Otherwise
 	// both linux and windows are listed and the other one is a placeholder.
 	ThisOSOnly bool
+	// DefaultMap is the manifest's default map: DefaultMap when empty,
+	// none when "-".
+	DefaultMap string
 }
 
 // MakeBuild creates <parent>/<version>/ holding the fake server for this OS,
@@ -159,7 +209,13 @@ func MakeBuild(t testing.TB, parent string, o BuildOptions) string {
 		t.Fatal(err)
 	}
 	fake := FakeServer(t)
-	m := builds.Manifest{Version: o.Version, Commit: o.Commit, Channel: o.Channel,
+	switch o.DefaultMap {
+	case "":
+		o.DefaultMap = DefaultMap
+	case "-":
+		o.DefaultMap = ""
+	}
+	m := builds.Manifest{Version: o.Version, Commit: o.Commit, Channel: o.Channel, DefaultMap: o.DefaultMap,
 		Executables: map[string]string{}, Files: map[string]string{}}
 	for goos, rel := range map[string]string{"linux": LinuxExe, "windows": WindowsExe} {
 		if goos != runtime.GOOS && o.ThisOSOnly {
