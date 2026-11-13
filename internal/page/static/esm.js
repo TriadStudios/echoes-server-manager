@@ -315,8 +315,9 @@
           say('A rule name starts with a letter and has only letters, digits and _.', true);
           return;
         }
-        if (f.elements['rule:' + key]) {
-          say('Rule ' + key + ' is set already; change its value in the list.', true);
+        var known = f.elements['rule:' + key];
+        if (known) {
+          say(known.hasAttribute('data-game') ? key + ' has a field of its own above; set it there.' : 'Rule ' + key + ' is set already; change its value in the list.', true);
           return;
         }
         var row = document.createElement('div');
@@ -363,7 +364,9 @@
           var key = n.slice(5);
           var drop = f.elements['drop:' + key];
           if (changed(el) || el.closest('[data-added]')) { rulesChanged = true; }
-          if (!(drop && drop.checked)) { rules[key] = el.value; }
+          // A game setting left empty is not set: the server uses its
+          // default. Another rule is kept unless it is removed.
+          if (el.hasAttribute('data-game') ? el.value !== '' : !(drop && drop.checked)) { rules[key] = el.value; }
           return;
         }
         if (n.indexOf('drop:') === 0) {
@@ -371,13 +374,18 @@
           return;
         }
         if (!changed(el)) { return; }
+        // Passwords and tokens: a new value, or cleared.
+        if (el.hasAttribute('data-secret')) {
+          if (el.value !== '') { secrets[n] = el.value; }
+          return;
+        }
+        if (n.indexOf('clear_') === 0) {
+          if (el.checked) { secrets[n.slice(6)] = ''; }
+          return;
+        }
         switch (n) {
           case 'max_players': b.max_players = parseInt(el.value, 10) || 0; break;
           case 'listed': b.listed = el.checked; break;
-          case 'server_password': if (el.value !== '') { secrets.server_password = el.value; } break;
-          case 'admin_password': if (el.value !== '') { secrets.admin_password = el.value; } break;
-          case 'clear_server_password': if (el.checked) { secrets.server_password = ''; } break;
-          case 'clear_admin_password': if (el.checked) { secrets.admin_password = ''; } break;
           default: b[n] = el.value;
         }
       });
