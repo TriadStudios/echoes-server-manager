@@ -90,6 +90,11 @@ func TestSettingsScreenShowsTheCatalog(t *testing.T) {
 			t.Errorf("%s: %q is missing", what, want)
 		}
 	}
+	// A field whose rule is set says so, so that a rule stored with an
+	// empty value is kept by a save that leaves it alone.
+	if !regexp.MustCompile(`name="rule:HarvestRate"[^>]*data-set>`).MatchString(body) || regexp.MustCompile(`name="rule:XPRate"[^>]*data-set`).MatchString(body) {
+		t.Error("data-set marks exactly the rules that are set")
+	}
 	other := fieldset(body, "rules")
 	if strings.Contains(other, `name="rule:HarvestRate"`) || !strings.Contains(other, `name="rule:Banner"`) {
 		t.Error("the other settings list rules outside the catalog, and only those")

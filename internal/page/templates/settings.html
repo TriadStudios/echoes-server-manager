@@ -58,12 +58,12 @@
 <input type="password" name="{{$f.SecretField}}" maxlength="256" autocomplete="new-password" value="" data-orig="" data-label="{{$f.Label}}" data-secret></label>
 {{if $f.Set}}<label class="check"><input type="checkbox" name="clear_{{$f.SecretField}}" data-orig="false" data-label="Remove the {{$f.Label}}"><span>Remove the token</span></label>{{end}}
 {{else}}<label class="field"><span>{{$f.Label}} <span class="mono">{{$f.Key}}</span>{{if $f.Caution}} <span class="badge bad">Caution</span>{{end}}</span>
-{{if eq $f.Input "select"}}<select name="rule:{{$f.Key}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{if eq $f.Input "select"}}<select name="rule:{{$f.Key}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game{{if $f.Stored}} data-set{{end}}>
 {{range $f.Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
 {{end}}</select>
-{{else if eq $f.Input "number"}}<input type="number" class="mono" name="rule:{{$f.Key}}"{{if $f.Min}} min="{{$f.Min}}"{{end}}{{if $f.Max}} max="{{$f.Max}}"{{end}} step="{{$f.Step}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{$f.DefaultText}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
-{{else if eq $f.Input "date"}}<input type="date" class="mono" name="rule:{{$f.Key}}" max="{{$f.Max}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
-{{else}}<input type="{{if eq $f.Input "url"}}url{{else}}text{{end}}" class="mono" name="rule:{{$f.Key}}" maxlength="{{if $f.MaxLength}}{{$f.MaxLength}}{{else}}256{{end}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{if $f.DefaultText}}{{$f.DefaultText}}{{else}}not set{{end}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{else if eq $f.Input "number"}}<input type="number" class="mono" name="rule:{{$f.Key}}"{{if $f.Min}} min="{{$f.Min}}"{{end}}{{if $f.Max}} max="{{$f.Max}}"{{end}} step="{{$f.Step}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{$f.DefaultText}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game{{if $f.Stored}} data-set{{end}}>
+{{else if eq $f.Input "date"}}<input type="date" class="mono" name="rule:{{$f.Key}}" max="{{$f.Max}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game{{if $f.Stored}} data-set{{end}}>
+{{else}}<input type="{{if eq $f.Input "url"}}url{{else}}text{{end}}" class="mono" name="rule:{{$f.Key}}" maxlength="{{if $f.MaxLength}}{{$f.MaxLength}}{{else}}256{{end}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{if $f.DefaultText}}{{$f.DefaultText}}{{else}}not set{{end}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game{{if $f.Stored}} data-set{{end}}>
 {{end}}</label>
 {{end}}<p class="note">{{$f.Help}}{{if $f.Limits}} {{$f.Limits}}.{{end}}{{if $f.DefaultText}} Default: {{$f.DefaultText}}.{{end}}</p>
 {{if $f.Bad}}<p class="alert small">The value set is not one the game reads as given ({{$f.Bad}}). It is kept until it is changed.</p>{{end}}

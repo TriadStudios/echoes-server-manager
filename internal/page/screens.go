@@ -265,6 +265,8 @@ type settingField struct {
 	// value from before the catalog): it is shown in a text field so that
 	// saving keeps it until it is changed.
 	Bad string
+	// Stored says whether the rule is set (also to an empty value).
+	Stored bool
 	// Set says whether a secret is set.
 	Set bool
 }
@@ -291,7 +293,8 @@ func settingFields(cat api.GameSettingList, rules map[string]string, secrets ins
 }
 
 func newSettingField(s gameserver.GameSetting, rules map[string]string, secrets instances.SecretFlags, now time.Time) settingField {
-	f := settingField{GameSetting: s, Value: rules[s.Key]}
+	f := settingField{GameSetting: s}
+	f.Value, f.Stored = rules[s.Key]
 	num := func(p *float64) string {
 		if p == nil {
 			return ""
