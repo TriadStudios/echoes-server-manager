@@ -62,6 +62,11 @@
 {{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning .}}</p>{{end}}
 {{end}}
 
+{{define "update-note"}}{{if .UpdateAvailable}}<p class="note"><span class="badge changed">Update</span> Build <span class="mono">{{.Update.Target}}</span> is available.
+{{if .Update.Pending}}{{if .Update.Waiting}}Waiting: {{.Update.Waiting}}.{{else}}It is put in place at the next check.{{end}}{{else if .Update.Waiting}}{{.Update.Waiting}}.{{else}}auto_update is {{.AutoUpdate}}: update by hand.{{end}}
+{{if .Update.Overdue}}<span class="warnword">Waiting longer than {{.UpdateMaxWait}}.</span>{{end}}</p>{{end}}
+{{if .Update.LastError}}<p class="alert small">The last automatic update failed: {{.Update.LastError}}</p>{{end}}{{end}}
+
 {{define "pill"}}<span class="pill" data-state="{{.Status.State}}" data-state-of="{{.Name}}"><span class="dot" aria-hidden="true"></span><span class="word">{{state .Status.State}}</span></span>{{end}}
 
 {{define "lifecycle"}}<button type="button" class="btn primary" data-act="start" data-name="{{.Name}}" data-when="idle"{{if not (idle .Status.State)}} hidden{{end}}>Start</button>

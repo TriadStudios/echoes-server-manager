@@ -37,6 +37,7 @@
 <div><dt>Build</dt><dd class="mono">{{.Build}} {{.Channel}}</dd></div>
 </dl>
 {{if has .Warnings "secrets_on_command_line"}}<p class="alert danger small">UNSAFE: passwords on the command line.</p>{{end}}
+{{template "update-note" .}}
 <p class="note"><span data-reason-of="{{.Name}}">{{if .Status.Reason}}{{.Status.Reason}}{{else}}{{state .Status.State}}{{end}}</span>{{if not .Status.Since.IsZero}} (since <time datetime="{{iso .Status.Since}}">{{when .Status.Since}}</time>){{end}}</p>
 <div class="actions">
 {{if $v.Operator}}{{template "lifecycle" .}}{{end}}
