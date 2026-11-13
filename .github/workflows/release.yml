@@ -5,8 +5,9 @@ name: release
 # of both binaries) and SHA256SUMS.sig, the Ed25519 signature of SHA256SUMS.
 #
 # Three jobs, so that the signing key meets as little code as possible:
-#   build    no secrets, read-only token: checks the tag, runs vet and the
-#            tests, builds the binaries and esm-sign, writes SHA256SUMS.
+#   build    no secrets, read-only token: checks the tag, runs vet, the
+#            tests and govulncheck (a known vulnerability stops the
+#            release), builds the binaries and esm-sign, writes SHA256SUMS.
 #   sign     the only job with the key. It runs in the environment "release"
 #            (its secret ESM_RELEASE_KEY, the base64 of the 32-byte private
 #            seed) and runs nothing but the esm-sign binary the build job
@@ -46,17 +47,25 @@ jobs:
         with:
           persist-credentials: false
 
-      # No cache: the release is built from a clean module and build
-      # cache, never from one saved by another run.
+      # The newest patch release of Go 1.27, as in ci.yml. No cache: the
+      # release is built from a clean module and build cache, never from
+      # one saved by another run.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: '1.27.x'
+          check-latest: true
           cache: false
+
+      - name: go version
+        run: go version
 
       - name: vet and test
         run: |
           go vet ./...
           go test ./...
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: build
         env:
