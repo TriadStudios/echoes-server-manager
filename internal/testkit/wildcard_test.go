@@ -42,8 +42,6 @@ var wildcardAllowed = []struct{ file, line, why string }{
 	{"internal/netbind/netbind_test.go", `PortFree("", 1)`, "refused before binding: the guard under test"},
 	{"internal/netbind/netbind_test.go", `Listen("tcp", ":3")`, "refused before binding: the guard under test"},
 	{"internal/netbind/netbind_test.go", `[]string{"0.0.0.0:1", "192.0.2.10:2", ":3"}`, "the refusals listed"},
-	{"cmd/esm-fakeserver/main_test.go", `[]string{"0.0.0.0", "::", "192.0.2.10", "example.com"}`,
-		"refused by the fake's option parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `net.ParseIP("0.0.0.0")`, "socket table parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `net.ParseIP("::")`, "socket table parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `"tcp 0.0.0.0:8081"`, "socket table parsing; nothing is bound"},

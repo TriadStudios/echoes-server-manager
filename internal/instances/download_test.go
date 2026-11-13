@@ -57,7 +57,7 @@ func TestBackupArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := r.m.Backup(ctx, "alpha", ReasonManual)
-	if err != nil || len(b.Files) != 1 {
+	if err != nil || len(b.Files) != 4 {
 		t.Fatalf("backup %+v %v", b, err)
 	}
 	got, write, err := r.m.BackupArchive("alpha", b.ID)
@@ -74,7 +74,7 @@ func TestBackupArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 2 || files[top+b.Files[0]] != string(save) || !strings.Contains(files[top+"meta.json"], b.ID) {
+	if len(files) != 1+len(b.Files) || files[top+b.Files[0]] != string(save) || !strings.Contains(files[top+"meta.json"], b.ID) {
 		names := []string{}
 		for n := range files {
 			names = append(names, n)

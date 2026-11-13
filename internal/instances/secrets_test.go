@@ -213,9 +213,10 @@ func TestPasswordsAreNeverOnTheCommandLine(t *testing.T) {
 // disk: its log and its console output.
 func (r *rig) rawOutput(name string) string {
 	r.t.Helper()
+	previous, _ := r.st.ReadFile(previousServerLog(name))
 	log, _ := r.st.ReadFile(serverLog(name))
 	console, _ := r.st.ReadFile(consoleFile(name))
-	return string(log) + "\n" + string(console)
+	return string(previous) + "\n" + string(log) + "\n" + string(console)
 }
 
 // has asks the running fake of an instance whether these are its
@@ -343,8 +344,9 @@ func TestSecretsFileLifecycle(t *testing.T) {
 	// masked, but never there.
 	secret := pieces(first.ServerPassword, first.AdminPassword, next.ServerPassword, next.AdminPassword)
 	raw := r.rawOutput("alpha")
-	if strings.Count(raw, "Command line: ") != 8 {
-		t.Fatalf("the server printed its command line %d times, want 4 in its log and 4 in its output", strings.Count(raw, "Command line: "))
+	if strings.Count(raw, "Command line: ") != 6 {
+		t.Fatalf("the server printed its command line %d times, want 2 in its logs (the last two starts) and 4 in its output",
+			strings.Count(raw, "Command line: "))
 	}
 	if strings.Contains(strings.ToLower(raw), "password") || !strings.Contains(raw, " "+gameserver.SecretsFileSwitch+"=") {
 		t.Fatalf("the server's own files show a password switch, or no secrets file switch:\n%s", raw)
@@ -369,7 +371,7 @@ func TestSecretsFileLifecycle(t *testing.T) {
 	noPieces(t, "service log", r.log.String(), secret)
 	// ESM itself never writes a command line anywhere.
 	for what, text := range map[string]string{"service log": r.log.String(), "state.json": string(state)} {
-		for _, part := range []string{"-Port=", "-QueryPort=", gameserver.SecretsFileSwitch, gameserver.DataDirSwitch + "=", "-log"} {
+		for _, part := range []string{"-Port=", "-QueryPort=", gameserver.SecretsFileSwitch, gameserver.UserDirSwitch + "=", gameserver.LogFileSwitch + "="} {
 			if strings.Contains(text, part) {
 				t.Errorf("the %s has %q of a command line:\n%s", what, part, text)
 			}

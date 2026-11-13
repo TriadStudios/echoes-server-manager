@@ -305,8 +305,8 @@ func (m *Manager) checkBackupFiles(name, id string, files []string) error {
 		if f == "" || strings.ContainsAny(f, `\:`) || path.Clean(f) != f || !filepath.IsLocal(filepath.FromSlash(f)) {
 			return damaged("%q is not a clean relative path", f)
 		}
-		if ok, err := path.Match(gameserver.SaveGlob, f); err != nil || !ok {
-			return damaged("%q is not a save file (%s)", f, gameserver.SaveGlob)
+		if !gameserver.IsSaveFile(f) {
+			return damaged("%q is not a save file (a file below %s)", f, gameserver.SaveDirRel)
 		}
 		fi, err := m.st.Lstat(backupDir(name, id) + "/" + f)
 		if err != nil || !fi.Mode().IsRegular() {

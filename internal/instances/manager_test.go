@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,7 +17,6 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
-	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
@@ -112,7 +110,15 @@ func newRig(t *testing.T, tune func(*config.Config)) *rig {
 		testkit.CheckLoopback(t, os.Getpid())
 		for _, v := range r.m.List() {
 			testkit.CheckLoopback(t, v.Status.PID)
-			r.m.Stop(ctx, v.Name)
+			if _, err := r.m.Stop(ctx, v.Name); err != nil {
+				// ESM leaves a server that does not stop in time; the test
+				// does not.
+				if st, _ := r.m.Status(v.Name); st.PID > 0 {
+					if p, err := os.FindProcess(st.PID); err == nil {
+						p.Kill()
+					}
+				}
+			}
 		}
 		r.m.Close()
 		sup.Close()
@@ -262,8 +268,8 @@ func TestLifecycleCrashAndGiveUp(t *testing.T) {
 	if st, err = r.m.Stop(ctx, "alpha"); err != nil || st.State != Stopped {
 		t.Fatalf("stop: %+v %v", st, err)
 	}
-	if b, err := r.st.ReadFile(dataDir("alpha") + "/" + gameserver.SaveFileRel("alpha")); err != nil || !strings.Contains(string(b), "counter=") {
-		t.Fatalf("world file after stop: %q %v", b, err)
+	if data, _ := r.st.Abs(dataDir("alpha")); testkit.FakeSaveCounter(data, testkit.DefaultMap, "alpha") < 2 {
+		t.Fatal("no world file after stop")
 	}
 
 	// A server that always crashes is given up on.
@@ -411,7 +417,7 @@ func TestRestoreRefusesDamagedBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := r.m.Backup(ctx, "alpha", ReasonManual)
-	if err != nil || len(b.Files) != 1 {
+	if err != nil || len(b.Files) != 4 {
 		t.Fatalf("backup %+v %v", b, err)
 	}
 	if err := r.st.WriteFile("outside.sav", []byte("not a save"), 0o600); err != nil {
@@ -422,11 +428,13 @@ func TestRestoreRefusesDamagedBackups(t *testing.T) {
 	}
 	for _, files := range [][]string{
 		{"../../../outside.sav"},
-		{"SaveGames/../../../outside.sav"},
-		{"/SaveGames/alpha.sav"},
-		{`SaveGames\alpha.sav`},
+		{"Saved/SaveGames/../../../outside.sav"},
+		{"/Saved/SaveGames/alpha.sav"},
+		{`Saved\SaveGames\alpha.sav`},
 		{"notes.txt"},
-		{"SaveGames/missing.sav"},
+		{"Saved/notes.txt"},
+		{"Saved/SaveGames"},
+		{"Saved/SaveGames/missing.sav"},
 	} {
 		meta := b
 		meta.Files = files

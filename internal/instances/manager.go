@@ -33,7 +33,11 @@ func secretsFile(name string) string { return instDir(name) + "/secrets.json" }
 func dataDir(name string) string     { return instDir(name) + "/data" }
 func consoleFile(name string) string { return instDir(name) + "/console.log" }
 func stateFile(name string) string   { return instDir(name) + "/run/state.json" }
-func serverLog(name string) string   { return dataDir(name) + "/" + gameserver.ServerLogRel }
+func serverLog(name string) string   { return instDir(name) + "/" + gameserver.ServerLogRel }
+
+// previousServerLog is where the server log of the run before the current
+// one is kept: each start begins a new server log.
+func previousServerLog(name string) string { return instDir(name) + "/logs/server.previous.log" }
 
 // runSecretsFile is the secrets file a server is started with (the
 // adapter's format). It is written before each start and removed once the
@@ -130,6 +134,9 @@ type rt struct {
 	// passwords on the command line. A reader of its output for the read
 	// role checks that it did not change while it read.
 	hiddenGen uint64
+	// serverID is the Steam server id the running server logged, "" while
+	// none is known. It changes at every start and is never stored.
+	serverID string
 }
 
 // setFilterLocked rebuilds the filter for server output. in.mu must be
@@ -448,9 +455,10 @@ func (m *Manager) publishState(name string, st Status, hidden bool) {
 func (m *Manager) view(in *rt) View {
 	in.mu.Lock()
 	v := View{Instance: in.cfg.clone(), Status: in.status, Scheduled: m.scheduledLocked(in)}
+	serverID := in.serverID
 	in.mu.Unlock()
 	v.Secrets = m.secretFlags(in.name)
-	v.Live = m.live(v)
+	v.Live = m.live(v, serverID)
 	v.Warnings = m.warnings(v)
 	return v
 }

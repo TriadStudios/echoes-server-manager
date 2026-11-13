@@ -232,7 +232,10 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 }
 
 // Firewall answers GET /box/firewall: commands that open the configured
-// port ranges in two common Linux firewalls. ESM never runs them.
+// query port range in two common Linux firewalls. ESM never runs them.
+// Only the query ports need to be reachable from outside
+// (gameserver.InboundPorts): the game port has no socket. GamePorts is
+// listed for reference only.
 type Firewall struct {
 	GamePorts  string   `json:"game_ports"`
 	QueryPorts string   `json:"query_ports"`
@@ -247,9 +250,10 @@ func (s *Server) firewall(w http.ResponseWriter, r *http.Request, c *call) error
 	out := Firewall{GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Protocols: slices.Clone(gameserver.PortProtocols),
 		UFW: []string{}, Firewalld: []string{},
 		Note: "ESM never runs these and never changes the firewall; run them as an account that may. " +
-			"Each server uses one game port and one query port from these ranges. " +
-			"The protocols are not yet confirmed for the real server."}
-	for _, spec := range []string{cfg.GamePorts, cfg.QueryPorts} {
+			"Only the query ports need to be open inbound (UDP): each server gets one game port too, but has no socket on it, " +
+			"because players join through Steam's relay over outbound UDP. " +
+			"ESM never gives a server a bind address, so its query port listens on every address of the box; the firewall decides where it is reachable."}
+	for _, spec := range []string{cfg.QueryPorts} {
 		pr, err := config.ParsePortRange(spec)
 		if err != nil {
 			return err

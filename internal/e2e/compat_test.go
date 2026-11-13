@@ -129,7 +129,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 				t.Fatalf("%s log for an %s: %d", source, who, code)
 			}
 			text := strings.Join(logs.Lines, "\n")
-			if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+" -log") {
+			if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") {
 				t.Fatalf("the %s log for an %s has no command line with masked passwords:\n%s", source, who, text)
 			}
 			noPieces(t, source+" log for an "+who, []byte(text), pieces)
@@ -184,7 +184,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 	// What the server wrote so far is set aside, whole, and served to
 	// nobody.
 	instDir := filepath.Join(h.root, "instances", name)
-	for _, p := range []string{filepath.Join(instDir, "console.log"), gameserver.ServerLogPath(h.dataDir(name))} {
+	for _, p := range []string{filepath.Join(instDir, "console.log"), h.serverLog(name)} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s is still in place: %v", p, err)
 		}

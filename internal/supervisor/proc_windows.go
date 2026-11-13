@@ -35,7 +35,7 @@ func detachedAttr() *syscall.SysProcAttr {
 	}
 }
 
-func terminate(*os.Process) error {
+func interrupt(*os.Process) error {
 	return errors.New("signals are not available on Windows")
 }
 

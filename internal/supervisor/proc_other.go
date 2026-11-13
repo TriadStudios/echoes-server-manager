@@ -17,7 +17,7 @@ var errUnsupported = errors.New("supervisor: process mode is only supported on L
 
 func detachedAttr() *syscall.SysProcAttr { return nil }
 
-func terminate(*os.Process) error { return errUnsupported }
+func interrupt(*os.Process) error { return errUnsupported }
 
 func startMarker(int) (string, error) { return "", errUnsupported }
 

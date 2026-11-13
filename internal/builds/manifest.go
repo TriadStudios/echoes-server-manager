@@ -22,13 +22,17 @@ const (
 )
 
 // Manifest is the content of manifest.json. Every file of the build except
-// the manifest itself is listed in Files with its SHA-256; the executable
-// to run on each operating system is named in Executables (keys are Go OS
-// names: "linux", "windows").
+// the manifest itself is listed in Files with its SHA-256; the server
+// binary to run on each operating system is named in Executables (keys are
+// Go OS names: "linux", "windows"; values are slash paths inside the build,
+// wherever the game keeps the binary). The server runs with the build's
+// top folder as its working folder. DefaultMap is the map a server of this
+// build loads when its instance names none (optional).
 type Manifest struct {
 	Version     string            `json:"version"`
 	Commit      string            `json:"commit"`
 	Channel     string            `json:"channel"`
+	DefaultMap  string            `json:"default_map,omitempty"`
 	Executables map[string]string `json:"executables"`
 	Files       map[string]string `json:"files"`
 }
@@ -36,7 +40,16 @@ type Manifest struct {
 var (
 	versionRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$`)
 	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	mapRe     = regexp.MustCompile(`^[A-Za-z0-9_/][A-Za-z0-9_./-]{0,127}$`)
 )
+
+// ValidMap reports whether m is an acceptable map name: a plain name or an
+// asset path of letters, digits, "_", ".", "/" and "-" (not first), up to
+// 128 characters, without "..".
+func ValidMap(m string) bool { return mapRe.MatchString(m) && !strings.Contains(m, "..") }
+
+// MapRule describes ValidMap for messages.
+const MapRule = `letters, digits, "_", ".", "/" and "-" (not first), at most 128 characters, and no ".."`
 
 // ValidVersion reports whether v is an acceptable build version.
 func ValidVersion(v string) bool { return versionRe.MatchString(v) && v != "." && v != ".." }
@@ -71,6 +84,9 @@ func (m *Manifest) Check(goos string) error {
 	}
 	if len(m.Commit) > 128 || strings.ContainsFunc(m.Commit, isControl) {
 		return bad("commit must be at most 128 printable characters")
+	}
+	if m.DefaultMap != "" && !ValidMap(m.DefaultMap) {
+		return bad("default_map may only have %s", MapRule)
 	}
 	if len(m.Files) == 0 {
 		return bad("no files listed")

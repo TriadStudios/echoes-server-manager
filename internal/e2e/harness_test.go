@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/service"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
@@ -152,8 +154,13 @@ func (h *harness) cleanup() {
 		if h.call("GET", "/api/v1/instances", h.admin, nil, &list) == http.StatusOK {
 			for _, v := range list.Instances {
 				testkit.CheckLoopback(h.t, v.Status.PID)
-				h.call("POST", "/api/v1/instances/"+v.Name+"/stop", h.admin, struct{}{}, nil)
+				if h.call("POST", "/api/v1/instances/"+v.Name+"/stop", h.admin, struct{}{}, nil) != http.StatusOK {
+					// ESM leaves a server that does not stop in time
+					// running; the test does not.
+					h.kill(v.Name)
+				}
 				if h.supervisor == "systemd" {
+					exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", "esm-"+v.Name+".service").Run()
 					exec.Command("systemctl", "--user", "stop", "esm-"+v.Name+".service").Run()
 				}
 			}
@@ -161,6 +168,22 @@ func (h *harness) cleanup() {
 		h.stopService()
 	}
 	os.RemoveAll(h.root)
+}
+
+// kill ends the server of an instance with a kill, as a test may and ESM
+// never does on Linux.
+func (h *harness) kill(name string) {
+	var st instances.Status
+	if h.call("GET", "/api/v1/instances/"+name+"/status", h.admin, nil, &st) != http.StatusOK || st.PID <= 0 {
+		return
+	}
+	if h.supervisor == "systemd" {
+		exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", "esm-"+name+".service").Run()
+		return
+	}
+	if p, err := os.FindProcess(st.PID); err == nil {
+		p.Kill()
+	}
 }
 
 func (h *harness) send(c *http.Client, req *http.Request, out any) int {
@@ -287,21 +310,34 @@ func (h *harness) dataDir(name string) string {
 	return strings.Join([]string{h.root, "instances", name, "data"}, string(os.PathSeparator))
 }
 
-// saveCounter reads the fake's save counter of a world (-1 when unreadable).
+// instDir is the absolute folder of an instance.
+func (h *harness) instDir(name string) string {
+	return strings.Join([]string{h.root, "instances", name}, string(os.PathSeparator))
+}
+
+// serverLog is the server log of an instance.
+func (h *harness) serverLog(name string) string { return gameserver.ServerLogPath(h.instDir(name)) }
+
+// saveCounter reads the fake's save counter from a save file's content (-1
+// when unreadable).
 func saveCounter(b []byte) int {
-	for _, f := range strings.Fields(string(b)) {
-		if v, ok := strings.CutPrefix(f, "counter="); ok {
-			n, err := strconv.Atoi(v)
-			if err == nil {
-				return n
-			}
-		}
+	var f struct {
+		Counter *int `json:"counter"`
 	}
-	return -1
+	if json.Unmarshal(b, &f) != nil || f.Counter == nil {
+		return -1
+	}
+	return *f.Counter
+}
+
+// fakeSave is the slash path of the fake's save of a world, inside a data
+// folder or a backup.
+func fakeSave(world string) string {
+	return "Saved/SaveGames/Fake/" + testkit.DefaultMap + "__" + world + ".json"
 }
 
 func (h *harness) liveCounter(name, world string) int {
-	b, err := os.ReadFile(h.dataDir(name) + string(os.PathSeparator) + "SaveGames" + string(os.PathSeparator) + world + ".sav")
+	b, err := os.ReadFile(filepath.Join(h.dataDir(name), filepath.FromSlash(fakeSave(world))))
 	if err != nil {
 		return -1
 	}

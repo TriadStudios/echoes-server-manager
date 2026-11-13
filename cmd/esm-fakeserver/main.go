@@ -1,12 +1,19 @@
 // Command esm-fakeserver stands in for the Echoes of Durinn dedicated server
 // in tests. It follows the assumptions in internal/gameserver exactly: it
-// takes the same command line, writes the same server log lines, status
-// file and save files, answers the query port, and stops the same way.
+// takes the same command line, writes log lines of the same shape, keeps
+// its saves in the same folder, answers the query port, and stops the same
+// way.
+//
+// Like the real server it takes the map first, then -unattended, -Port=,
+// -QueryPort=, -ServerName=, -WorldName=, -MaxPlayers=, -ListInBrowser=,
+// -UserDir=<data folder> and -abslog=<log file>, plus any -Key=Value. It
+// refuses -MULTIHOME (exit code 2): ESM must never pass it.
 //
 // Extra switches, only for tests:
 //
 //	-FakeSaveInterval=1s   time between world saves
 //	-FakeReadyDelay=300ms  time before the server reports ready
+//	-FakeStopDelay=200ms   time between the stop signal and the exit
 //	-FakeCrashAfter=<dur>  exit with the crash code after this long
 //	-FakeIgnoreStop        ignore stop requests (only a kill ends it)
 //	-FakeNoReady           never report ready
@@ -17,14 +24,20 @@
 //	-FakeFailStart         exit with code 3 at once
 //	-FakeExitCode=N        exit code used for crashes (default 1)
 //
-// Unlike a real server, the fake binds loopback addresses only: 127.0.0.1
-// without -MULTIHOME, and any -MULTIHOME that is not a loopback address is
-// refused (exit code 2), so no test ever opens a listener a desktop
-// firewall would ask about.
+// Unlike a real server, the fake binds loopback addresses only (the query
+// port on 127.0.0.1), so no test ever opens a listener a desktop firewall
+// would ask about. Like a real server it opens no socket on the game port.
 //
 // The same switches may be set in fake.json next to the executable (for
 // example {"FakeFailStart": true}), so a whole build can be made broken.
 // Command-line values win over fake.json.
+//
+// Stopping: the first SIGINT (or SIGTERM) makes it save, write the flush
+// line and exit with gameserver.StopExitCode after -FakeStopDelay. A
+// SECOND signal is a mistake ESM must never make: the fake then records it
+// in the request file "second-signal" (in <data>/control/, never taken by
+// the fake itself) and exits at once with SecondSignalExitCode, so tests
+// fail loudly. The stop request file (Windows) saves and exits with 0.
 //
 // Request files in <data>/control/: "stop" (polite stop), "crash" (exit with
 // the crash code now), "hang" (ignore stop requests from now on),
@@ -37,7 +50,9 @@
 // line. The status file says which passwords are set, never what they are.
 //
 // Like a real server it prints its whole command line, with any passwords
-// on it, to its log and its output when it starts.
+// on it, to its log and its output when it starts, and a new Steam server
+// id at every start. Only for tests it also prints its working folder and
+// its LD_LIBRARY_PATH.
 //
 // The query port answers PING with PONG only once the server is ready. Only
 // for tests it also says whether a password is the right one: "JOIN <server
@@ -45,6 +60,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,7 +80,6 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
-	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 )
 
 // Test-only request file names in <data>/control/.
@@ -78,7 +94,17 @@ const (
 	controlUnready = "unready"
 	// controlCommandLine prints the command line again.
 	controlCommandLine = "cmdline"
+	// controlSecondSignal is written (never read) when a second stop
+	// signal arrives.
+	controlSecondSignal = "second-signal"
 )
+
+// SecondSignalExitCode is the exit code after a second stop signal.
+const SecondSignalExitCode = 98
+
+// saveFolder is the folder below gameserver.SaveDirRel the fake keeps its
+// save in, like a game keeps its saves in a folder of its own.
+const saveFolder = "Fake"
 
 // Test-only questions on the query port: each is followed by a password and
 // answered with answerOK or answerDenied.
@@ -93,14 +119,16 @@ type options struct {
 	mapName      string
 	port         int
 	queryPort    int
-	multihome    string
 	serverName   string
 	worldName    string
 	maxPlayers   int
-	dataDir      string
+	listed       bool
+	userDir      string
+	logFile      string
 	secrets      gameserver.Secrets
 	saveInterval time.Duration
 	readyDelay   time.Duration
+	stopDelay    time.Duration
 	crashAfter   time.Duration
 	ignoreStop   bool
 	noReady      bool
@@ -162,20 +190,26 @@ func parseArgs(args []string, kv map[string]string) (mapName string, err error) 
 		if !ok {
 			v = "true"
 		}
+		if strings.EqualFold(k, strings.TrimLeft(gameserver.MultihomeSwitch, "-")) {
+			return "", fmt.Errorf("%s is refused: ESM must never pass it", gameserver.MultihomeSwitch)
+		}
 		kv[k] = v
 	}
 	return mapName, nil
 }
 
+func key(name string) string { return strings.TrimLeft(name, "-") }
+
 func buildOptions(mapName string, kv map[string]string) (options, error) {
 	o := options{
 		mapName:      mapName,
-		multihome:    kv["MULTIHOME"],
-		serverName:   kv["ServerName"],
-		worldName:    kv["WorldName"],
-		dataDir:      kv[strings.TrimPrefix(gameserver.DataDirSwitch, "-")],
+		serverName:   kv[key(gameserver.ServerNameSwitch)],
+		worldName:    kv[key(gameserver.WorldNameSwitch)],
+		userDir:      kv[key(gameserver.UserDirSwitch)],
+		logFile:      kv[key(gameserver.LogFileSwitch)],
 		saveInterval: time.Second,
 		readyDelay:   300 * time.Millisecond,
+		stopDelay:    200 * time.Millisecond,
 		exitCode:     1,
 	}
 	var err error
@@ -203,12 +237,14 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 			}
 		}
 	}
-	num("Port", &o.port)
-	num("QueryPort", &o.queryPort)
-	num("MaxPlayers", &o.maxPlayers)
+	num(key(gameserver.PortSwitch), &o.port)
+	num(key(gameserver.QueryPortSwitch), &o.queryPort)
+	num(key(gameserver.MaxPlayersSwitch), &o.maxPlayers)
+	flag(key(gameserver.ListInBrowserSwitch), &o.listed)
 	num("FakeExitCode", &o.exitCode)
 	dur("FakeSaveInterval", &o.saveInterval)
 	dur("FakeReadyDelay", &o.readyDelay)
+	dur("FakeStopDelay", &o.stopDelay)
 	dur("FakeCrashAfter", &o.crashAfter)
 	flag("FakeIgnoreStop", &o.ignoreStop)
 	flag("FakeNoReady", &o.noReady)
@@ -221,25 +257,25 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	if o.secrets, err = readSecrets(kv); err != nil {
 		return o, err
 	}
-	// Unlike a real server, which binds all interfaces without -MULTIHOME,
-	// the fake binds loopback only: tests must never make a desktop
-	// firewall ask about a listener.
-	if o.multihome == "" {
-		o.multihome = "127.0.0.1"
-	}
-	if !netbind.IsLoopback(o.multihome) {
-		return o, fmt.Errorf("-MULTIHOME=%s: the fake server binds loopback addresses only", o.multihome)
+	if o.mapName == "" {
+		o.mapName = "TestMap"
 	}
 	if o.worldName == "" {
 		o.worldName = "world"
 	}
-	if o.dataDir == "" {
-		o.dataDir = "Saved"
+	if o.userDir == "" {
+		o.userDir = "fake-user"
 	}
 	if o.saveInterval <= 0 {
 		o.saveInterval = time.Second
 	}
-	o.dataDir, err = filepath.Abs(o.dataDir)
+	if o.userDir, err = filepath.Abs(o.userDir); err != nil {
+		return o, err
+	}
+	if o.logFile == "" {
+		o.logFile = filepath.Join(o.userDir, "Saved", "Logs", "server.log")
+	}
+	o.logFile, err = filepath.Abs(o.logFile)
 	return o, err
 }
 
@@ -247,7 +283,6 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 // given, and from the password switches otherwise. A password switch next
 // to the secrets file switch is refused. Errors never repeat a value.
 func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
-	key := func(name string) string { return strings.TrimLeft(name, "-") }
 	path, fromFile := kv[key(gameserver.SecretsFileSwitch)]
 	if ignore, _ := strconv.ParseBool(kv["FakeIgnoreSecretsFile"]); ignore {
 		fromFile = false
@@ -276,15 +311,18 @@ type server struct {
 	logMu   sync.Mutex
 	logFile *os.File
 	out     io.Writer
-	gameLn  net.PacketConn
 	queryLn net.PacketConn
 	counter int
 	status  gameserver.Status
 	ready   atomic.Bool // the query port answers only once ready
 }
 
+// logf writes one log line the way the engine does: time and frame in
+// square brackets, then the category.
 func (s *server) logf(format string, args ...any) {
-	line := fmt.Sprintf("[%s] %s\n", time.Now().UTC().Format(time.RFC3339Nano), fmt.Sprintf(format, args...))
+	now := time.Now().UTC()
+	line := fmt.Sprintf("[%s:%03d][%3d]LogFake: %s\n", now.Format("2006.01.02-15.04.05"), now.Nanosecond()/1e6, 0,
+		fmt.Sprintf(format, args...))
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
 	if s.logFile != nil {
@@ -310,13 +348,13 @@ func run(args []string) int {
 		return 2
 	}
 	s := &server{o: o, out: os.Stdout}
-	for _, d := range []string{"Logs", "SaveGames", gameserver.ControlDirRel} {
-		if err := os.MkdirAll(filepath.Join(o.dataDir, d), 0o700); err != nil {
+	for _, d := range []string{filepath.Join(o.userDir, gameserver.ControlDirRel), filepath.Dir(s.savePath()), filepath.Dir(o.logFile)} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
 			fmt.Fprintln(os.Stderr, "esm-fakeserver:", err)
 			return 2
 		}
 	}
-	s.logFile, err = os.OpenFile(gameserver.ServerLogPath(o.dataDir), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	s.logFile, err = os.OpenFile(o.logFile, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "esm-fakeserver:", err)
 		return 2
@@ -325,35 +363,36 @@ func run(args []string) int {
 
 	s.logf("Fake server starting: pid %d", os.Getpid())
 	s.logCommandLine(args)
+	wd, _ := os.Getwd()
+	s.logf("Working folder: %s", wd)
+	s.logf("Library path: %s", os.Getenv(gameserver.LibraryPathVar))
 	if o.failStart {
 		s.logf("Failing start on purpose")
 		return 3
 	}
 	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion(),
 		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != ""}
-	host := o.multihome
-	s.gameLn, err = net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(o.port)))
-	if err != nil {
-		s.logf("Cannot bind game port: %v", err)
-		return 4
-	}
-	defer s.gameLn.Close()
-	s.queryLn, err = net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(o.queryPort)))
+	// Loopback only, unlike a real server, which listens on every address.
+	// No socket on the game port, like a real server.
+	s.queryLn, err = net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(o.queryPort)))
 	if err != nil {
 		s.logf("Cannot bind query port: %v", err)
 		return 4
 	}
 	defer s.queryLn.Close()
-	s.status.Ports = gameserver.Ports{
-		Game:  s.gameLn.LocalAddr().(*net.UDPAddr).Port,
-		Query: s.queryLn.LocalAddr().(*net.UDPAddr).Port,
-	}
+	s.status.Ports = gameserver.Ports{Game: o.port, Query: s.queryLn.LocalAddr().(*net.UDPAddr).Port}
 	s.writeStatus()
 	go s.answerQueries()
-	go drain(s.gameLn)
 	s.counter = s.loadCounter()
+	if s.counter > 0 {
+		s.logf("%s (slot %s)", gameserver.ResumedLine(o.worldName), s.slot())
+	} else {
+		s.logf("%s (slot %s)", gameserver.NewWorldLine(o.worldName), s.slot())
+	}
+	s.save()
+	s.logf("%s", gameserver.ServerIDLine(newServerID()))
 
-	sig := make(chan os.Signal, 2)
+	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 	var ready <-chan time.Time
@@ -369,18 +408,27 @@ func run(args []string) int {
 	poll := time.NewTicker(100 * time.Millisecond)
 	defer poll.Stop()
 	ignoreStop := o.ignoreStop
+	signals := 0
+	var exitAt <-chan time.Time
+	exitCode := 0
 
-	stop := func(why string) (exit bool) {
+	// stop saves the world for a stop request; the exit follows after the
+	// stop delay with code.
+	stop := func(why string, code int) {
 		if ignoreStop {
 			s.logf("Ignoring stop request (%s)", why)
-			return false
+			return
+		}
+		if exitAt != nil {
+			return
 		}
 		s.logf("Stop requested (%s)", why)
 		s.status.State = gameserver.StateStopping
 		s.writeStatus()
+		s.ready.Store(false)
 		s.save()
-		s.logf("Shutting down")
-		return true
+		s.logf("%s", gameserver.FlushedLine)
+		exitAt, exitCode = time.After(o.stopDelay), code
 	}
 
 	becomeReady := func() {
@@ -388,15 +436,20 @@ func run(args []string) int {
 		s.status.State = gameserver.StateReady
 		s.writeStatus()
 		s.ready.Store(true)
-		s.logf("%s (players 0/%d, map %s, world %s)", gameserver.ReadyMarker, o.maxPlayers, o.mapName, o.worldName)
+		s.logf("%s", gameserver.ReadyLine(o.serverName, shortMap(o.mapName), o.maxPlayers))
 	}
 
 	for {
 		select {
+		case <-exitAt:
+			s.logf("Exiting with code %d", exitCode)
+			return exitCode
 		case <-ready:
 			becomeReady()
 		case <-saveTick.C:
-			s.save()
+			if exitAt == nil {
+				s.save()
+			}
 		case <-crash:
 			s.logf("Crashing on purpose (exit %d)", o.exitCode)
 			return o.exitCode
@@ -422,16 +475,46 @@ func run(args []string) int {
 				ignoreStop = true
 				s.logf("Hang requested: stop requests are ignored from now on")
 			}
-			if s.takeControl(gameserver.ControlStop) && stop("stop request file") {
-				return 0
+			if s.takeControl(gameserver.ControlStop) {
+				stop("stop request file", 0)
 			}
 		case got := <-sig:
-			if stop(got.String()) {
-				return 0
+			signals++
+			if signals > 1 {
+				s.logf("SECOND stop signal (%s): a stop must be one signal only", got)
+				s.writeControl(controlSecondSignal, fmt.Sprintf("signal %d: %s\n", signals, got))
+				return SecondSignalExitCode
 			}
+			code := gameserver.StopExitCode
+			if got == syscall.SIGTERM {
+				code = 143
+			}
+			stop(got.String(), code)
 		}
 	}
 }
+
+// newServerID returns a made-up Steam server id: 17 digits, new each time.
+func newServerID() string {
+	var b [8]byte
+	rand.Read(b[:])
+	return strconv.FormatUint(90000000000000000+binary.BigEndian.Uint64(b[:])%9999999999999999, 10)
+}
+
+// shortMap is the map's own name: the last part of a path such as
+// "/Some/Folder/Name.Name".
+func shortMap(m string) string {
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	if i := strings.Index(m, "."); i >= 0 {
+		m = m[:i]
+	}
+	return m
+}
+
+// slot names the world's save: map and world.
+func (s *server) slot() string { return shortMap(s.o.mapName) + "__" + s.o.worldName }
 
 // logCommandLine prints the arguments as they came, the way real servers
 // print their command line.
@@ -440,12 +523,16 @@ func (s *server) logCommandLine(args []string) {
 }
 
 func (s *server) takeControl(name string) bool {
-	p := filepath.Join(s.o.dataDir, gameserver.ControlDirRel, name)
+	p := filepath.Join(s.o.userDir, gameserver.ControlDirRel, name)
 	if _, err := os.Stat(p); err != nil {
 		return false
 	}
 	os.Remove(p)
 	return true
+}
+
+func (s *server) writeControl(name, content string) {
+	os.WriteFile(filepath.Join(s.o.userDir, gameserver.ControlDirRel, name), []byte(content), 0o600)
 }
 
 func (s *server) answerQueries() {
@@ -477,17 +564,16 @@ func (s *server) answerQueries() {
 	}
 }
 
-func drain(c net.PacketConn) {
-	buf := make([]byte, 2048)
-	for {
-		if _, _, err := c.ReadFrom(buf); errors.Is(err, net.ErrClosed) {
-			return
-		}
-	}
+// savePath is the world's save file: below the user folder's save folder,
+// named after map and world.
+func (s *server) savePath() string {
+	return filepath.Join(s.o.userDir, filepath.FromSlash(gameserver.SaveDirRel), saveFolder, s.slot()+".json")
 }
 
-func (s *server) savePath() string {
-	return filepath.Join(s.o.dataDir, filepath.FromSlash(gameserver.SaveFileRel(s.o.worldName)))
+// fakeSave is the content of the fake's save file.
+type fakeSave struct {
+	World   string `json:"world"`
+	Counter int    `json:"counter"`
 }
 
 // loadCounter continues the save counter of an existing save file.
@@ -496,25 +582,39 @@ func (s *server) loadCounter() int {
 	if err != nil {
 		return 0
 	}
-	for _, f := range strings.Fields(string(b)) {
-		if v, ok := strings.CutPrefix(f, "counter="); ok {
-			n, _ := strconv.Atoi(v)
-			return n
-		}
+	var f fakeSave
+	if json.Unmarshal(b, &f) != nil {
+		return 0
 	}
-	return 0
+	return f.Counter
 }
 
+// save writes the world save, keeping the two saves before it as .bak1 and
+// .bak2, and a small metadata file next to it.
 func (s *server) save() {
 	s.counter++
-	content := fmt.Sprintf("fake-save world=%s counter=%d\n", s.o.worldName, s.counter)
-	if err := writeAtomic(s.savePath(), []byte(content)); err != nil {
+	p := s.savePath()
+	content, _ := json.Marshal(fakeSave{World: s.o.worldName, Counter: s.counter})
+	content = append(content, '\n')
+	if _, err := os.Stat(p); err == nil {
+		os.Rename(p+".bak1", p+".bak2")
+		copyFile(p, p+".bak1")
+	}
+	if err := writeAtomic(p, content); err != nil {
 		s.logf("Save failed: %v", err)
 		return
 	}
+	meta := strings.TrimSuffix(p, ".json") + ".meta.json"
+	writeAtomic(meta, []byte(fmt.Sprintf("{\"saved\":%q}\n", time.Now().UTC().Format(time.RFC3339Nano))))
 	s.status.LastSave = time.Now().UTC()
 	s.writeStatus()
-	s.logf("%s (%d)", gameserver.WorldSavedMarker, s.counter)
+	s.logf("%s", gameserver.WorldSavedLine(saveFolder+"/"+filepath.Base(p), len(content)))
+}
+
+func copyFile(src, dst string) {
+	if b, err := os.ReadFile(src); err == nil {
+		os.WriteFile(dst, b, 0o600)
+	}
 }
 
 func (s *server) writeStatus() {
@@ -522,7 +622,7 @@ func (s *server) writeStatus() {
 		return
 	}
 	b, _ := json.MarshalIndent(s.status, "", "  ")
-	if err := writeAtomic(gameserver.StatusFilePath(s.o.dataDir), append(b, '\n')); err != nil {
+	if err := writeAtomic(gameserver.StatusFilePath(s.o.userDir), append(b, '\n')); err != nil {
 		s.logf("Status write failed: %v", err)
 	}
 }

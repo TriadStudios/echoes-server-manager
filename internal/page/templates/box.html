@@ -25,7 +25,7 @@
 <div><dt>Game ports in use</dt><dd class="mono">{{if $d.GameUsed}}{{ints $d.GameUsed}}{{else}}none{{end}}</dd></div>
 <div><dt>Query ports in use</dt><dd class="mono">{{if $d.QueryUsed}}{{ints $d.QueryUsed}}{{else}}none{{end}}</dd></div>
 </dl>
-<p class="note">The ranges are set in esm.json. ESM never changes the firewall; it lists what has to be open.</p>
+<p class="note">The ranges are set in esm.json. Only the query ports need to be open inbound; game ports have no socket. ESM never changes the firewall; it lists what has to be open.</p>
 <details class="reveal">
 <summary class="btn">Show firewall commands</summary>
 <p class="note">For ufw:</p>

@@ -43,10 +43,16 @@ func (r *rig) dataDir(name string) string {
 	return d
 }
 
+// logFile is the server log of an instance.
+func (r *rig) logFile(name string) string {
+	p, _ := r.st.Abs("instances/" + name + "/" + gameserver.ServerLogRel)
+	return p
+}
+
 func (r *rig) spec(name string, extra ...string) Spec {
 	r.t.Helper()
 	data := r.dataDir(name)
-	argv := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 4, ServerName: name, WorldName: "w", DataDir: data}.Args()
+	argv := gameserver.Launch{Map: "TestMap", MaxPlayers: 4, ServerName: name, WorldName: "w", UserDir: data, LogFile: r.logFile(name)}.Args()
 	argv = append(argv, "-FakeReadyDelay=100ms", "-FakeSaveInterval=200ms")
 	argv = append(argv, extra...)
 	dir, _ := r.st.Abs("instances/" + name)
@@ -61,7 +67,8 @@ func (r *rig) spec(name string, extra ...string) Spec {
 	}
 }
 
-// cleanupStop makes sure nothing started under the rig outlives the test.
+// cleanupStop makes sure nothing started under the rig outlives the test:
+// a server that does not stop in time is killed here, by the test.
 func (r *rig) cleanupStop(name string) {
 	r.t.Cleanup(func() {
 		p, err := NewProcess(r.st, Options{})
@@ -72,8 +79,32 @@ func (r *rig) cleanupStop(name string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		p.Adopt()
-		p.Stop(ctx, name, time.Second)
+		if p.Stop(ctx, name, time.Second) != nil {
+			r.kill(name)
+		}
 	})
+}
+
+// kill ends the server of an instance with a kill, as a test may and ESM
+// never does on Linux.
+func (r *rig) kill(name string) {
+	var rec pidRecord
+	if r.st.ReadJSON(pidFile(name), &rec) != nil || checkProc(rec) != procOurs {
+		return
+	}
+	if proc, err := os.FindProcess(rec.PID); err == nil {
+		proc.Kill()
+		testkit.Eventually(r.t, 10*time.Second, func() bool { return checkProc(rec) != procOurs }, "killed server still runs")
+	}
+}
+
+// stopExitCode is the exit code of a fake after a polite stop: the
+// server's own after SIGINT on Linux, 0 after the stop file on Windows.
+func stopExitCode() int {
+	if runtime.GOOS == "windows" {
+		return 0
+	}
+	return gameserver.StopExitCode
 }
 
 func waitReady(t *testing.T, data string) gameserver.Status {
@@ -144,18 +175,21 @@ func TestProcessLifecycle(t *testing.T) {
 		t.Fatal("polite stop took too long (was it forced?)")
 	}
 	pr, _ = p.Status("alpha")
-	if pr.Running || pr.ExitCode == nil || *pr.ExitCode != 0 || pr.ExitedAt.IsZero() {
+	if pr.Running || pr.ExitCode == nil || *pr.ExitCode != stopExitCode() || pr.ExitedAt.IsZero() {
 		t.Fatalf("after polite stop: %+v", pr)
 	}
 	if s, _ := gameserver.ReadStatus(data); s.State != gameserver.StateStopping {
 		t.Fatalf("server did not stop politely, state %q", s.State)
 	}
-	if files, _ := gameserver.SaveFiles(data); len(files) != 1 {
+	if testkit.SecondSignal(data) {
+		t.Fatal("the server got a second stop signal")
+	}
+	if files, _ := gameserver.SaveFiles(data); len(files) < 2 || testkit.FakeSaveCounter(data, "TestMap", "w") < 2 {
 		t.Fatalf("world not saved: %v", files)
 	}
 	testkit.Eventually(t, 2*time.Second, func() bool { return !r.st.Exists("instances/alpha/run/pid.json") }, "pid file left behind")
 	console, err := r.st.ReadFile("instances/alpha/console.log")
-	if err != nil || !strings.Contains(string(console), "Server is ready") {
+	if err != nil || !strings.Contains(string(console), "Dedicated session") {
 		t.Fatalf("console.log: %v\n%s", err, console)
 	}
 	// Stopping again is fine.
@@ -171,7 +205,12 @@ func TestProcessLifecycle(t *testing.T) {
 	}
 }
 
-func TestProcessForceStop(t *testing.T) {
+// On Windows (development only) a server that ignores the stop request
+// file is killed after the timeout.
+func TestProcessForceStopWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows kills a server that does not stop; Linux leaves it running")
+	}
 	r := newRig(t)
 	p := newProc(t, r.st)
 	defer p.Close()
@@ -192,9 +231,85 @@ func TestProcessForceStop(t *testing.T) {
 	if pr.Running || pr.ExitCode == nil || *pr.ExitCode == 0 {
 		t.Fatalf("after force stop: %+v", pr)
 	}
-	log, _ := os.ReadFile(gameserver.ServerLogPath(data))
+	log, _ := os.ReadFile(r.logFile("stubborn"))
 	if !strings.Contains(string(log), "Ignoring stop request") {
 		t.Fatalf("polite request never reached the server:\n%s", log)
+	}
+}
+
+// On Linux a stop is exactly one SIGINT. A server that does not exit in
+// time is left running (ErrStopTimeout), and stopping it again, even from
+// a new supervisor, sends no second signal: the fake would record one and
+// exit with its own code.
+func TestProcessStopIsOneSignal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no signals; the stop request file is used there")
+	}
+	r := newRig(t)
+	p := newProc(t, r.st)
+	defer p.Close()
+	r.cleanupStop("stubborn")
+	if err := p.Start(context.Background(), r.spec("stubborn", "-FakeIgnoreStop")); err != nil {
+		t.Fatal(err)
+	}
+	data := r.dataDir("stubborn")
+	st := waitReady(t, data)
+	start := time.Now()
+	if err := p.Stop(context.Background(), "stubborn", time.Second); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("stop of a server that ignores it: %v, want ErrStopTimeout", err)
+	}
+	if el := time.Since(start); el < time.Second {
+		t.Fatalf("stop returned after %v, before the timeout", el)
+	}
+	pr, _ := p.Status("stubborn")
+	if !pr.Running || pr.PID != st.PID {
+		t.Fatalf("the server was not left running: %+v", pr)
+	}
+	testkit.Eventually(t, 5*time.Second, func() bool {
+		log, _ := os.ReadFile(r.logFile("stubborn"))
+		return strings.Contains(string(log), "Ignoring stop request (interrupt)")
+	}, "the SIGINT never reached the server")
+	var rec pidRecord
+	if err := r.st.ReadJSON(pidFile("stubborn"), &rec); err != nil || rec.StopSentAt.IsZero() {
+		t.Fatalf("the stop signal is not recorded: %+v %v", rec, err)
+	}
+	// Again, and again from a fresh supervisor: no second signal.
+	if err := p.Stop(context.Background(), "stubborn", 300*time.Millisecond); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("second stop: %v", err)
+	}
+	p2 := newProc(t, r.st)
+	defer p2.Close()
+	p2.Adopt()
+	if err := p2.Stop(context.Background(), "stubborn", 300*time.Millisecond); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("stop from a new supervisor: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if testkit.SecondSignal(data) {
+		t.Fatal("the server got a second stop signal")
+	}
+	if pr, _ := p.Status("stubborn"); !pr.Running {
+		t.Fatalf("the server is gone: %+v", pr)
+	}
+	log, _ := os.ReadFile(r.logFile("stubborn"))
+	if n := strings.Count(string(log), "Ignoring stop request"); n != 1 {
+		t.Fatalf("the server saw %d stop requests, want 1:\n%s", n, log)
+	}
+	// A server that does stop on its signal is not sent another one by a
+	// stop that follows.
+	r.kill("stubborn")
+	if err := p.Start(context.Background(), r.spec("stubborn", "-FakeStopDelay=1500ms")); err != nil {
+		t.Fatal(err)
+	}
+	waitReady(t, data)
+	if err := p.Stop(context.Background(), "stubborn", 200*time.Millisecond); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("stop shorter than the server's shutdown: %v", err)
+	}
+	if err := p.Stop(context.Background(), "stubborn", 10*time.Second); err != nil {
+		t.Fatalf("waiting again: %v", err)
+	}
+	pr, _ = p.Status("stubborn")
+	if pr.Running || pr.ExitCode == nil || *pr.ExitCode != gameserver.StopExitCode || testkit.SecondSignal(data) {
+		t.Fatalf("after the second wait: %+v, second signal %v", pr, testkit.SecondSignal(data))
 	}
 }
 
@@ -317,7 +432,7 @@ func TestProcessRefusesForeignPID(t *testing.T) {
 	r := newRig(t)
 	data := r.dataDir("foreign")
 	fake := testkit.FakeServer(t)
-	argv := gameserver.Launch{BindIP: "127.0.0.1", MaxPlayers: 1, ServerName: "f", WorldName: "w", DataDir: data}.Args()
+	argv := gameserver.Launch{Map: "TestMap", MaxPlayers: 1, ServerName: "f", WorldName: "w", UserDir: data, LogFile: r.logFile("foreign")}.Args()
 	cmd := exec.Command(fake, append(argv, "-FakeReadyDelay=50ms")...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -392,7 +507,7 @@ func TestProcessRefusesForeignPID(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("matching process was not stopped")
 	}
-	if cmd.ProcessState.ExitCode() != 0 {
+	if cmd.ProcessState.ExitCode() != stopExitCode() {
 		t.Fatalf("exit %d, want a polite stop", cmd.ProcessState.ExitCode())
 	}
 }

@@ -12,7 +12,7 @@ import (
 
 const (
 	processSupported = true
-	// signalsAvailable: the polite stop is SIGTERM.
+	// signalsAvailable: the polite stop is one SIGINT.
 	signalsAvailable = true
 )
 
@@ -22,7 +22,8 @@ func detachedAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }
 
-func terminate(p *os.Process) error { return p.Signal(syscall.SIGTERM) }
+// interrupt sends the server its one stop signal (gameserver.PoliteStop).
+func interrupt(p *os.Process) error { return p.Signal(syscall.SIGINT) }
 
 // procStat returns the state letter and start time (clock ticks after boot,
 // field 22 of /proc/<pid>/stat) of pid.

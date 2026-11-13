@@ -114,7 +114,7 @@ func brokenBuild(t *testing.T, parent, version string) string {
 		sum := sha256.Sum256([]byte(body))
 		sums[rel] = hex.EncodeToString(sum[:])
 	}
-	m := map[string]any{"version": version, "commit": "broken", "channel": "live",
+	m := map[string]any{"version": version, "commit": "broken", "channel": "live", "default_map": testkit.DefaultMap,
 		"executables": map[string]string{"linux": "bin/server", "windows": "bin/server.exe"}, "files": sums}
 	b, _ := json.Marshal(m)
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), b, 0o644); err != nil {
@@ -274,7 +274,7 @@ collect:
 func noLaunchLine(t *testing.T, what, text string) {
 	t.Helper()
 	for _, part := range []string{"-Port=", "-QueryPort=", "-ServerName=", "-WorldName=", gameserver.SecretsFileSwitch + "=",
-		gameserver.DataDirSwitch + "=", gameserver.ServerPasswordSwitch, gameserver.AdminPasswordSwitch} {
+		gameserver.UserDirSwitch + "=", gameserver.LogFileSwitch + "=", gameserver.ServerPasswordSwitch, gameserver.AdminPasswordSwitch} {
 		if strings.Contains(text, part) {
 			t.Errorf("the %s has %q of a server command line:\n%s", what, part, text)
 		}
@@ -353,9 +353,10 @@ func (h *harness) runSecrets(name string) (gameserver.Secrets, error) {
 // disk: its log and its console output.
 func (h *harness) rawOutput(name string) string {
 	h.t.Helper()
-	log, _ := os.ReadFile(gameserver.ServerLogPath(h.dataDir(name)))
+	previous, _ := os.ReadFile(filepath.Join(h.instDir(name), "logs", "server.previous.log"))
+	log, _ := os.ReadFile(h.serverLog(name))
 	console, _ := os.ReadFile(filepath.Join(h.root, "instances", name, "console.log"))
-	return string(log) + "\n" + string(console)
+	return string(previous) + "\n" + string(log) + "\n" + string(console)
 }
 
 // serverHas asks the running fake of an instance whether these are its
@@ -443,7 +444,7 @@ func (h *harness) checkNothingToHide(t *testing.T, name string, ev *eventLog, pi
 	noPieces(t, "state.json and pid.json", append(state, pid...), pieces)
 	// ESM itself never writes a command line anywhere.
 	for what, text := range map[string]string{"service log": h.stderr.String(), "state.json": string(state), "pid.json": string(pid), "audit log": string(auditLog)} {
-		for _, part := range []string{"-Port=", "-QueryPort=", gameserver.SecretsFileSwitch, gameserver.DataDirSwitch + "="} {
+		for _, part := range []string{"-Port=", "-QueryPort=", gameserver.SecretsFileSwitch, gameserver.UserDirSwitch + "="} {
 			if strings.Contains(text, part) {
 				t.Errorf("the %s has %q of a command line:\n%s", what, part, text)
 			}
@@ -595,7 +596,7 @@ func TestPasswordsNeverShowAfterESMRestart(t *testing.T) {
 
 	// Should the server print the passwords it was started with itself,
 	// ESM still knows them after its restart and masks them.
-	f, err := os.OpenFile(gameserver.ServerLogPath(h.dataDir("alpha")), os.O_WRONLY|os.O_APPEND, 0)
+	f, err := os.OpenFile(h.serverLog("alpha"), os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

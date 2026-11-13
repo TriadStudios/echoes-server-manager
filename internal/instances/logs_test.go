@@ -76,9 +76,9 @@ func TestTailAtDropsAnUnfinishedLine(t *testing.T) {
 	if !tl.skip {
 		t.Fatal("the tail does not know it starts inside a line")
 	}
-	add(gameserver.ReadyMarker + " -log\n" + gameserver.WorldSavedMarker + " (1)\n")
+	add(gameserver.ReadyLine("S", "M", 1) + " -log\n" + gameserver.FlushedLine + " (1)\n")
 	got := m.follow(&tl)
-	if !slices.Equal(got, []string{gameserver.WorldSavedMarker + " (1)"}) {
+	if !slices.Equal(got, []string{gameserver.FlushedLine + " (1)"}) {
 		t.Fatalf("got %q", got)
 	}
 	// At a line end nothing is dropped.
@@ -103,12 +103,12 @@ func TestFollowDropsTheRestOfALongLine(t *testing.T) {
 	if len(got) != 1 || got[0] != head {
 		t.Fatalf("the start of a long line: %d lines", len(got))
 	}
-	add(gameserver.ReadyMarker + " still the same line")
+	add(gameserver.ReadyLine("S", "M", 1) + " still the same line")
 	if got := m.follow(&tl); got != nil {
 		t.Fatalf("the rest of a long line was handed out: %q", got)
 	}
-	add(" its end\n" + gameserver.ReadyMarker + " (really)\n")
-	if got := m.follow(&tl); !slices.Equal(got, []string{gameserver.ReadyMarker + " (really)"}) {
+	add(" its end\n" + gameserver.ReadyLine("S", "M", 1) + " (really)\n")
+	if got := m.follow(&tl); !slices.Equal(got, []string{gameserver.ReadyLine("S", "M", 1) + " (really)"}) {
 		t.Fatalf("got %q", got)
 	}
 }

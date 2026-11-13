@@ -46,6 +46,10 @@ var (
 	ErrBadName         = errors.New("supervisor: invalid instance name")
 	ErrClosed          = errors.New("supervisor: closed")
 	ErrStillRunning    = errors.New("supervisor: process did not exit after being killed")
+	// ErrStopTimeout: the server did not exit within the stop timeout
+	// after its one stop signal. It was left running: ESM sends no second
+	// signal and does not kill it.
+	ErrStopTimeout = errors.New("supervisor: the server did not exit in time after its stop signal; it was left running and gets no second signal")
 )
 
 // Limits are resource limits for one server. Zero means no limit.
@@ -60,8 +64,11 @@ type Spec struct {
 	Executable string   // absolute path
 	Args       []string // arguments after the executable
 	Dir        string   // absolute working directory
-	Env        []string // KEY=VALUE; nil means inherit ESM's environment (process mode)
-	OutputFile string   // absolute path inside the ESM root; stdout and stderr are appended
+	// Env are KEY=VALUE pairs set for the server on top of the environment
+	// it gets anyway: ESM's own in process mode, the user service
+	// manager's under systemd.
+	Env        []string
+	OutputFile string // absolute path inside the ESM root; stdout and stderr are appended
 	Limits     Limits
 	// StopFile is written to ask for a polite stop where signals are not
 	// available (Windows). Absolute path inside the ESM root; optional.
@@ -91,8 +98,12 @@ func UnitName(name string) string { return "esm-" + name + ".service" }
 type Supervisor interface {
 	// Start launches the server and returns once it is running.
 	Start(ctx context.Context, spec Spec) error
-	// Stop asks politely, waits up to timeout, then kills. Stopping
-	// something that is not running is not an error.
+	// Stop sends the one polite stop request (Linux: a single SIGINT) and
+	// waits up to timeout. A server still running then is left alone and
+	// ErrStopTimeout is returned; a server that had its request already is
+	// not sent another. Stopping something that is not running is not an
+	// error. (Process mode on Windows, for development, kills after the
+	// timeout instead.)
 	Stop(ctx context.Context, name string, timeout time.Duration) error
 	// Status reports the process of an instance; ErrNotFound when the
 	// supervisor knows nothing about it.
@@ -112,7 +123,8 @@ type Supervisor interface {
 type Options struct {
 	// Kind is auto, process or systemd (empty means auto).
 	Kind string
-	// StopTimeout is the systemd TimeoutStopSec for new units (default 30s).
+	// StopTimeout is the systemd TimeoutStopSec for new units (default
+	// 120s).
 	StopTimeout time.Duration
 	// PollInterval is how often adopted processes are checked (default 250ms).
 	PollInterval time.Duration
@@ -125,7 +137,7 @@ func (o *Options) fill() {
 		o.Kind = KindAuto
 	}
 	if o.StopTimeout <= 0 {
-		o.StopTimeout = 30 * time.Second
+		o.StopTimeout = 120 * time.Second
 	}
 	if o.PollInterval <= 0 {
 		o.PollInterval = 250 * time.Millisecond

@@ -40,8 +40,11 @@ func newSystemd(t *testing.T, r *rig) *Systemd {
 	return s.(*Systemd)
 }
 
+// cleanupUnit makes sure the unit is gone after the test: a test may kill
+// what ESM never kills.
 func cleanupUnit(t *testing.T, name string) {
 	t.Cleanup(func() {
+		exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", unitName(name)).Run()
 		exec.Command("systemctl", "--user", "stop", unitName(name)).Run()
 		exec.Command("systemctl", "--user", "reset-failed", unitName(name)).Run()
 	})
@@ -78,13 +81,21 @@ func TestSystemdLifecycle(t *testing.T) {
 	if pr, _ := s.Status(name); !pr.Running {
 		t.Fatal("server stopped right after start (old stop request was not cleared)")
 	}
-	log, _ := os.ReadFile(gameserver.ServerLogPath(data))
+	log, _ := os.ReadFile(r.logFile(name))
 	if !strings.Contains(string(log), "$HOME and %h stay literal") {
 		t.Errorf("argument was rewritten by systemd:\n%s", log)
 	}
 	out, _ := exec.Command("systemctl", "--user", "show", unitName(name), "-p", "MemoryMax,CPUQuotaPerSecUSec").Output()
 	if !strings.Contains(string(out), "MemoryMax=536870912") || !strings.Contains(string(out), "CPUQuotaPerSecUSec=500ms") {
 		t.Errorf("limits not applied:\n%s", out)
+	}
+	// Even a stop from outside ESM sends one SIGINT to the server only,
+	// and no SIGKILL after the timeout.
+	out, _ = exec.Command("systemctl", "--user", "show", unitName(name), "-p", "KillSignal,KillMode,SendSIGKILL,TimeoutStopUSec").Output()
+	for _, want := range []string{"KillSignal=2\n", "KillMode=mixed\n", "SendSIGKILL=no\n", "TimeoutStopUSec=5s\n"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("unit lacks %q:\n%s", strings.TrimSpace(want), out)
+		}
 	}
 	if err := s.Start(context.Background(), spec); !errors.Is(err, ErrAlreadyRunning) {
 		t.Fatalf("double start: %v", err)
@@ -132,31 +143,82 @@ func TestSystemdLifecycle(t *testing.T) {
 	if st, _ := gameserver.ReadStatus(data); st.State != gameserver.StateStopping {
 		t.Fatalf("not stopped politely: %q", st.State)
 	}
+	if testkit.SecondSignal(data) {
+		t.Fatal("the server got a second stop signal")
+	}
 	console, _ := r.st.ReadFile("instances/" + name + "/console.log")
-	if !strings.Contains(string(console), "Server is ready") {
+	if !strings.Contains(string(console), "Dedicated session") {
 		t.Fatalf("console.log not written by the unit:\n%s", console)
 	}
 }
 
-func TestSystemdForceStop(t *testing.T) {
+// A stop is one SIGINT to the main process. A server that does not exit
+// in time is left running (ErrStopTimeout), and stopping it again, even
+// from a new supervisor, sends no second signal.
+func TestSystemdStopIsOneSignal(t *testing.T) {
 	needSystemd(t)
 	r := newRig(t)
-	name := uniqueName("sdforce")
+	name := uniqueName("sdone")
 	cleanupUnit(t, name)
 	s := newSystemd(t, r)
 	if err := s.Start(context.Background(), r.spec(name, "-FakeIgnoreStop")); err != nil {
 		t.Fatal(err)
 	}
-	waitReady(t, r.dataDir(name))
+	data := r.dataDir(name)
+	st := waitReady(t, data)
 	start := time.Now()
-	if err := s.Stop(context.Background(), name, time.Second); err != nil {
-		t.Fatal(err)
+	if err := s.Stop(context.Background(), name, time.Second); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("stop of a server that ignores it: %v, want ErrStopTimeout", err)
 	}
 	if time.Since(start) < time.Second {
-		t.Fatal("returned before the polite timeout")
+		t.Fatal("returned before the timeout")
+	}
+	if pr, _ := s.Status(name); !pr.Running || pr.PID != st.PID {
+		t.Fatalf("the server was not left running: %+v", pr)
+	}
+	if err := s.Stop(context.Background(), name, 300*time.Millisecond); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("second stop: %v", err)
+	}
+	if err := newSystemd(t, r).Stop(context.Background(), name, 300*time.Millisecond); !errors.Is(err, ErrStopTimeout) {
+		t.Fatalf("stop from a new supervisor: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if testkit.SecondSignal(data) {
+		t.Fatal("the server got a second stop signal")
+	}
+	log, _ := os.ReadFile(r.logFile(name))
+	if n := strings.Count(string(log), "Ignoring stop request"); n != 1 {
+		t.Fatalf("the server saw %d stop requests, want 1:\n%s", n, log)
+	}
+}
+
+// systemctl --user stop from outside ESM also sends exactly one SIGINT:
+// the server saves and exits with its own code, no second signal.
+func TestSystemdOutsideStopIsOneSignal(t *testing.T) {
+	needSystemd(t)
+	r := newRig(t)
+	name := uniqueName("sdout")
+	cleanupUnit(t, name)
+	s := newSystemd(t, r)
+	if err := s.Start(context.Background(), r.spec(name, "-FakeStopDelay=1s")); err != nil {
+		t.Fatal(err)
+	}
+	data := r.dataDir(name)
+	waitReady(t, data)
+	before := testkit.FakeSaveCounter(data, "TestMap", "w")
+	if out, err := exec.Command("systemctl", "--user", "stop", unitName(name)).CombinedOutput(); err != nil {
+		t.Fatalf("systemctl stop: %v\n%s", err, out)
 	}
 	if pr, _ := s.Status(name); pr.Running {
-		t.Fatal("still running")
+		t.Fatalf("still running: %+v", pr)
+	}
+	if testkit.SecondSignal(data) {
+		t.Fatal("the server got a second stop signal")
+	}
+	log, _ := os.ReadFile(r.logFile(name))
+	if !strings.Contains(string(log), "Stop requested (interrupt)") || !strings.Contains(string(log), "Exiting with code 130") ||
+		testkit.FakeSaveCounter(data, "TestMap", "w") <= before {
+		t.Fatalf("not a clean stop on one SIGINT:\n%s", log)
 	}
 }
 

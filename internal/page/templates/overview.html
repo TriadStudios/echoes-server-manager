@@ -15,7 +15,8 @@
 <div><dt>Map</dt><dd class="mono">{{if $s.Map}}{{$s.Map}}{{else}}the build's default{{end}}</dd></div>
 <div><dt>Game port</dt><dd class="mono">{{$s.Ports.Game}}</dd></div>
 <div><dt>Query port</dt><dd class="mono">{{$s.Ports.Query}}</dd></div>
-<div><dt>Bound to</dt><dd class="mono">{{if $s.BindIP}}{{$s.BindIP}}{{else}}all addresses{{end}}</dd></div>
+<div><dt>Steam server id</dt><dd class="mono">{{with $s.Live.SteamServerID}}{{.}} <span class="note">(new at every start)</span>{{else}}not known{{end}}</dd></div>
+<div><dt>Ports checked on</dt><dd class="mono">{{if $s.BindIP}}{{$s.BindIP}}{{else}}all addresses{{end}} <span class="note">(the server listens on all)</span></dd></div>
 <div><dt>Last save</dt><dd class="mono">{{with $s.Live.LastSave}}<time datetime="{{iso .}}">{{when .}}</time>{{else}}unknown{{end}}</dd></div>
 <div><dt>Listed in browser</dt><dd>{{yesno $s.Listed}}</dd></div>
 <div><dt>Join password</dt><dd>{{if $s.Secrets.ServerPasswordSet}}set{{else}}none{{end}}</dd></div>
