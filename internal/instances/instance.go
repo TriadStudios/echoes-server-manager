@@ -249,6 +249,16 @@ func invalid(field, format string, args ...any) error {
 	return fault.New(fault.Invalid, "invalid", field+": "+format, args...)
 }
 
+// unsafeArgument checks a setting that goes onto the server command line
+// (see gameserver.UnsafeArgument). what names the setting without
+// repeating its value: an extra argument may hold anything.
+func unsafeArgument(field, what, value string) error {
+	if why, bad := gameserver.UnsafeArgument(value); bad {
+		return fault.New(fault.Invalid, "unsafe_argument", "%s: %s %s; the server reads its whole command line for switches", field, what, why)
+	}
+	return nil
+}
+
 // Validate checks every field of an instance (except ports against other
 // instances and the network, which the manager does).
 func (in *Instance) Validate() error {
@@ -257,6 +267,9 @@ func (in *Instance) Validate() error {
 	}
 	if len(in.DisplayName) > 64 || hasControl(in.DisplayName) {
 		return invalid("display_name", "must be at most 64 printable characters")
+	}
+	if err := unsafeArgument("display_name", "the display name", in.DisplayName); err != nil {
+		return err
 	}
 	if in.Cluster != "" && !clusterRe.MatchString(in.Cluster) {
 		return invalid("cluster", "must match %s", clusterRe)
@@ -272,6 +285,12 @@ func (in *Instance) Validate() error {
 	}
 	if !worldRe.MatchString(in.World) {
 		return invalid("world", "must match %s", worldRe)
+	}
+	if err := unsafeArgument("world", "the world name", in.World); err != nil {
+		return err
+	}
+	if err := unsafeArgument("map", "the map", in.Map); err != nil {
+		return err
 	}
 	if in.Ports.Game < 0 || in.Ports.Game > 65535 || in.Ports.Query < 0 || in.Ports.Query > 65535 {
 		return invalid("ports", "must be between 1 and 65535")
@@ -303,8 +322,14 @@ func (in *Instance) Validate() error {
 		if gameserver.IsReservedSwitch(k) {
 			return invalid("rules", "%q is set by ESM itself", k)
 		}
+		if err := unsafeArgument("rules", fmt.Sprintf("key %q", k), k); err != nil {
+			return err
+		}
 		if v := in.Rules[k]; len(v) > 256 || hasControl(v) {
 			return invalid("rules", "value of %s must be at most 256 printable characters", k)
+		}
+		if err := unsafeArgument("rules", fmt.Sprintf("the value of %s", k), in.Rules[k]); err != nil {
+			return err
 		}
 	}
 	if len(in.Schedule.RestartAt) > maxRestartTimes {
@@ -392,7 +417,7 @@ func checkExtraArg(instance string, pos int, a string) error {
 	if gameserver.IsReservedSwitch(name) {
 		return invalid("extra_args", "argument %d: %s is set by ESM itself", pos, "-"+name)
 	}
-	return nil
+	return unsafeArgument("extra_args", fmt.Sprintf("argument %d", pos), a)
 }
 
 // ParseMemory parses a size like "512M" or "8G" (powers of 1024) into

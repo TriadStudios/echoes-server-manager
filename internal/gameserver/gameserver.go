@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Mask stands in for a secret value in text that ESM shows.
@@ -170,6 +171,30 @@ func IsReservedSwitch(key string) bool {
 func RefusedSwitch(key string) (why string, refused bool) {
 	if switchName(key) == switchName(MultihomeSwitch) {
 		return MultihomeSwitch + " is never passed: with it the server advertises the bind address instead of its Steam identity and players cannot join; the box's firewall decides where the query port is reachable", true
+	}
+	return "", false
+}
+
+// UnsafeArgument reports whether value, a setting that goes onto the
+// server command line (the server name, the world name, a rule key or
+// value, an extra argument), could smuggle a switch past ESM, and says
+// why. The server joins its arguments back into one command line and
+// searches that for switches, so separate arguments are no boundary: a
+// double quote can end a quoted value, white space followed by "-" and a
+// name starts a new switch (a lone " - " does not), and -MULTIHOME is
+// found wherever its name stands. Such values are refused.
+func UnsafeArgument(value string) (why string, unsafe bool) {
+	switch {
+	case strings.Contains(value, `"`):
+		return `has a double quote ("), which the server's command line parsing takes for the end of a quoted value`, true
+	case strings.Contains(strings.ToLower(value), switchName(MultihomeSwitch)):
+		return `names MULTIHOME: ` + MultihomeSwitch + ` is never passed`, true
+	}
+	rs := []rune(value)
+	for i := 1; i+1 < len(rs); i++ {
+		if rs[i] == '-' && unicode.IsSpace(rs[i-1]) && !unicode.IsSpace(rs[i+1]) {
+			return `has white space followed by "-" and more, which the server would read as a switch of its own`, true
+		}
 	}
 	return "", false
 }
