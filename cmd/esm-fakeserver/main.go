@@ -404,7 +404,8 @@ func run(args []string) int {
 		return 3
 	}
 	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion(),
-		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != ""}
+		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != "",
+		AnnouncementsTokenSet: o.secrets.AnnouncementsToken != "", ProblemReportTokenSet: o.secrets.ProblemReportToken != ""}
 	// Loopback only, unlike a real server, which listens on every address.
 	// No socket on the game port, like a real server.
 	s.queryLn, err = net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(o.queryPort)))

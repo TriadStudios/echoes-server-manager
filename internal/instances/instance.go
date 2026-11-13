@@ -692,6 +692,11 @@ type SecretFlags struct {
 	ProblemReportTokenSet bool `json:"problem_report_token_set"`
 }
 
+// any says whether a password or token is set.
+func (f SecretFlags) any() bool {
+	return f.ServerPasswordSet || f.AdminPasswordSet || f.AnnouncementsTokenSet || f.ProblemReportTokenSet
+}
+
 // checkSecret checks a new password ("" clears it). Its errors never
 // repeat the value.
 func checkSecret(field, v string) error {

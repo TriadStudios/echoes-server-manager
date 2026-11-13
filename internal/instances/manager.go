@@ -500,7 +500,7 @@ func (m *Manager) warnings(v View) []string {
 	switch {
 	case v.OutputHidden():
 		w = append(w, WarnSecretsOnCommandLine)
-	case v.Status.State == Running && (v.Secrets.ServerPasswordSet || v.Secrets.AdminPasswordSet) && !m.serverConfirms(v):
+	case v.Status.State == Running && v.Secrets.any() && !m.serverConfirms(v):
 		w = append(w, WarnSecretsUnconfirmed)
 	}
 	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
@@ -529,7 +529,8 @@ func (m *Manager) serverConfirms(v View) bool {
 	if s.PID != 0 && v.Status.PID != 0 && s.PID != v.Status.PID {
 		return false
 	}
-	return (!v.Secrets.ServerPasswordSet || s.ServerPasswordSet) && (!v.Secrets.AdminPasswordSet || s.AdminPasswordSet)
+	return (!v.Secrets.ServerPasswordSet || s.ServerPasswordSet) && (!v.Secrets.AdminPasswordSet || s.AdminPasswordSet) &&
+		(!v.Secrets.AnnouncementsTokenSet || s.AnnouncementsTokenSet) && (!v.Secrets.ProblemReportTokenSet || s.ProblemReportTokenSet)
 }
 
 // List returns every instance, sorted by name.

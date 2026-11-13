@@ -445,9 +445,11 @@ type Status struct {
 	Version  string    `json:"version,omitempty"`
 	LastSave time.Time `json:"last_save,omitzero"`
 	// ServerPasswordSet and AdminPasswordSet say which passwords the server
-	// took, never what they are.
-	ServerPasswordSet bool `json:"server_password_set"`
-	AdminPasswordSet  bool `json:"admin_password_set"`
+	// took, never what they are; the token fields the same for the tokens.
+	ServerPasswordSet     bool `json:"server_password_set"`
+	AdminPasswordSet      bool `json:"admin_password_set"`
+	AnnouncementsTokenSet bool `json:"announcements_token_set,omitempty"`
+	ProblemReportTokenSet bool `json:"problem_report_token_set,omitempty"`
 }
 
 // ReadStatus reads the status file of a data folder.

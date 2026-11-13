@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -89,4 +90,24 @@ func TestTokensReachTheServerLikeThePasswords(t *testing.T) {
 	inst, _ := os.ReadFile(filepath.Join(h.instDir("beta"), "instance.json"))
 	noPieces(t, "instance.json", inst, pieces)
 	h.must(http.StatusOK, "POST", "/api/v1/instances/beta/stop", struct{}{}, nil)
+}
+
+// Tokens count like passwords: a build that cannot read the secrets file
+// runs without them, and while it runs the instance says so.
+func TestUnconfirmedTokensAreFlagged(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "0.9", Fake: map[string]any{"FakeIgnoreSecretsFile": true}})
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	for name, build := range map[string]string{"old": "0.9", "new": "1.0"} {
+		h.create(name, build, nil)
+		h.must(http.StatusOK, "PUT", "/api/v1/instances/"+name+"/secrets", map[string]string{"problem_report_token": reportToken}, nil)
+		h.must(http.StatusOK, "POST", "/api/v1/instances/"+name+"/start?wait=true", struct{}{}, nil)
+	}
+	var old, now instances.View
+	h.must(http.StatusOK, "GET", "/api/v1/instances/old", nil, &old)
+	h.must(http.StatusOK, "GET", "/api/v1/instances/new", nil, &now)
+	if !slices.Equal(old.Warnings, []string{instances.WarnSecretsUnconfirmed}) || len(now.Warnings) != 0 {
+		t.Fatalf("warnings: old %q, new %q", old.Warnings, now.Warnings)
+	}
 }

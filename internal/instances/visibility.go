@@ -57,10 +57,10 @@ const (
 	// WarnLimitsNotEnforced: the instance has resource limits, and the
 	// supervisor in use does not apply them.
 	WarnLimitsNotEnforced = "limits_not_enforced"
-	// WarnSecretsUnconfirmed: the instance has passwords and hands them
+	// WarnSecretsUnconfirmed: the instance has passwords or tokens and hands them
 	// over in the secrets file, and its running server has not said, in its
 	// status file, that it took them. A server build that cannot read the
-	// secrets file runs without passwords; this is how that shows.
+	// secrets file runs without them; this is how that shows.
 	WarnSecretsUnconfirmed = "secrets_unconfirmed"
 	// WarnMaxPlayersAboveGame: the instance was stored with a max_players
 	// above what the game server takes (gameserver.MaxPlayersLimit); the
@@ -76,7 +76,7 @@ func WarningText(code string) string {
 	case WarnLimitsNotEnforced:
 		return "memory and CPU limits are not enforced by the process supervisor"
 	case WarnSecretsUnconfirmed:
-		return "the running server has not confirmed that it took its passwords from the secrets file; a server build that cannot read that file runs WITHOUT passwords"
+		return "the running server has not confirmed that it took its passwords and tokens from the secrets file; a server build that cannot read that file runs WITHOUT passwords and tokens"
 	case WarnMaxPlayersAboveGame:
 		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
 			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
