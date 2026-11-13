@@ -1354,7 +1354,11 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   A file written by a release that has `keep_steam_builds` holds that
   setting; older releases do not know it and refuse a configuration file
   with a setting they do not know. Before going back to one with a forced
-  self-update, remove the `keep_steam_builds` line.
+  self-update, remove the `keep_steam_builds` line. In the same way, an
+  instance with an announcements or problem report token set has a
+  `secrets.json` that older releases cannot read: clear its tokens first
+  (`esm secret <name> announcements-token --clear`, and the same for
+  `problem-report-token`).
 - **A stop during a Steam install can take a while.** ESM ends a Steam
   install it is running when it stops, but the copy of the app's files
   into the install work folder only stops between files, so a stop may
