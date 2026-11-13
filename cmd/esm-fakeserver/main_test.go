@@ -280,7 +280,7 @@ func TestFakePasswordsOnCommandLine(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	checkPasswords(t, st.Ports.Query, secrets)
-	if !strings.Contains(r.logText(), "-ServerPassword=join me 7 -AdminPassword=adm1n-pw -FakeSaveInterval") {
+	if !strings.Contains(r.logText(), "-Password=join me 7 -AdminPassword=adm1n-pw -FakeSaveInterval") {
 		t.Fatalf("the command line in the log:\n%s", r.logText())
 	}
 	status, _ := os.ReadFile(gameserver.StatusFilePath(r.data))
@@ -576,5 +576,20 @@ func TestFakeRefusesMultihome(t *testing.T) {
 	}
 	if _, err := os.Stat(data); !os.IsNotExist(err) {
 		t.Fatalf("a refused start wrote a data folder: %v", err)
+	}
+}
+
+// The fake finds a password switch the way the game server does: the join
+// password is "Password=", which -ServerPassword= and -AdminPassword= do
+// not match.
+func TestFakeFindsSwitchesLikeTheServer(t *testing.T) {
+	kv := map[string]string{"ServerPassword": "not-this", "AdminPassword": "admin-pw"}
+	s, err := readSecrets(kv)
+	if err != nil || s.ServerPassword != "" || s.AdminPassword != "admin-pw" {
+		t.Fatalf("%+v %v", s, err)
+	}
+	kv["password"] = "join-pw"
+	if s, _ := readSecrets(kv); s.ServerPassword != "join-pw" {
+		t.Fatalf("%+v", s)
 	}
 }

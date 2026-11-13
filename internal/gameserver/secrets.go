@@ -44,10 +44,14 @@ const SecretsFileSwitch = "-SecretsFile"
 // SecretsFileName is the name ESM gives the secrets file of an instance.
 const SecretsFileName = "server-secrets.json"
 
-// The switches that carry the passwords with DeliveryCommandLine.
-// UNCONFIRMED.
+// The switches that carry the passwords with DeliveryCommandLine: the
+// server's own. It looks a value up by "Password=" and "AdminPassword=",
+// without regard to case, anywhere in its command line where the character
+// before the name is not a letter or digit. So the join password switch is
+// -Password: in "-ServerPassword=" the "Password=" follows a letter and is
+// never found. UNCONFIRMED on a real host.
 const (
-	ServerPasswordSwitch = "-ServerPassword"
+	ServerPasswordSwitch = "-Password"
 	AdminPasswordSwitch  = "-AdminPassword"
 )
 

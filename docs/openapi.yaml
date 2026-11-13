@@ -1238,8 +1238,10 @@ components:
       description: |
         How the server gets its passwords. `file`: ESM writes them to a
         private file before each start and names it on the command line;
-        no password is on the command line. `command_line`: as switches on
-        the command line, for server builds that cannot read the file. That
+        no password is on the command line. `command_line`: as the server's
+        own switches on the command line (`-Password=`, `-AdminPassword=`,
+        `-AnnouncementsToken=`, `-ProblemReportToken=`), for server builds
+        that cannot read the file. That
         is unsafe on a shared box, and the read role then gets none of the
         instance's server output and no state reasons.
     Warning:

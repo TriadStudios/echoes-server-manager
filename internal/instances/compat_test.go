@@ -76,7 +76,7 @@ func TestCommandLineDelivery(t *testing.T) {
 		t.Fatal("the server does not have exactly the passwords of its command line")
 	}
 	raw := r.rawOutput("alpha")
-	if !strings.Contains(raw, "-ServerPassword="+serverPW+" -AdminPassword="+adminPW+"\n") || strings.Contains(raw, gameserver.SecretsFileSwitch) {
+	if !strings.Contains(raw, "-Password="+serverPW+" -AdminPassword="+adminPW+"\n") || strings.Contains(raw, gameserver.SecretsFileSwitch) {
 		t.Fatalf("the server's command line:\n%s", raw)
 	}
 	// The file records what the running server was given.
@@ -108,7 +108,7 @@ func TestCommandLineDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := strings.Join(lines, "\n")
-		if !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") ||
+		if !strings.Contains(text, "-Password="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") ||
 			strings.Contains(text, serverPW) || strings.Contains(text, adminPW) {
 			t.Fatalf("the %s log for an operator:\n%s", source, text)
 		}
@@ -146,7 +146,7 @@ func TestCommandLineDelivery(t *testing.T) {
 		if r.st.Exists(rel) {
 			t.Errorf("%s is still in place", rel)
 		}
-		if b, err := r.st.ReadFile(rel + unsafeSuffix); err != nil || !strings.Contains(string(b), "-ServerPassword="+serverPW) {
+		if b, err := r.st.ReadFile(rel + unsafeSuffix); err != nil || !strings.Contains(string(b), "-Password="+serverPW) {
 			t.Errorf("%s was not set aside whole: %v", rel, err)
 		}
 	}
@@ -237,7 +237,7 @@ func TestCommandLineStartFailure(t *testing.T) {
 	}
 	secret := pieces(testServerPW, testAdminPW)
 	_, err := m.Start(context.Background(), "alpha", true)
-	if fault.CodeOf(err) != "start_failed" || !strings.Contains(err.Error(), "-ServerPassword="+gameserver.Mask) {
+	if fault.CodeOf(err) != "start_failed" || !strings.Contains(err.Error(), "-Password="+gameserver.Mask) {
 		t.Fatalf("start error: %v", err)
 	}
 	noPieces(t, "start error", err.Error(), secret)
@@ -245,7 +245,7 @@ func TestCommandLineStartFailure(t *testing.T) {
 	if !slices.Equal(spec.SecretValues, []string{testServerPW, testAdminPW}) {
 		t.Fatalf("the supervisor was told these secret values: %q", spec.SecretValues)
 	}
-	if !slices.Contains(spec.Args, "-ServerPassword="+testServerPW) || !slices.Contains(spec.Args, "-AdminPassword="+testAdminPW) ||
+	if !slices.Contains(spec.Args, "-Password="+testServerPW) || !slices.Contains(spec.Args, "-AdminPassword="+testAdminPW) ||
 		strings.Contains(strings.Join(spec.Args, "\n"), gameserver.SecretsFileSwitch) {
 		t.Fatalf("the command line with command-line delivery: %q", spec.Args)
 	}

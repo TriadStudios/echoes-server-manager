@@ -102,7 +102,7 @@ type Launch struct {
 // shell string. Order: the map, -unattended, -Port, -QueryPort,
 // -ServerName, -WorldName, -MaxPlayers, -ListInBrowser, -UserDir, -abslog,
 // the rules sorted by key, the passwords and tokens (the secrets file
-// switch; or, with DeliveryCommandLine, -ServerPassword, -AdminPassword,
+// switch; or, with DeliveryCommandLine, -Password, -AdminPassword,
 // -AnnouncementsToken and -ProblemReportToken when set), then the extra
 // args. -MULTIHOME is never part of it: a bind address configured
 // for an instance is not given to the server.

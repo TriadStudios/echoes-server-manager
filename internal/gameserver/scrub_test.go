@@ -33,6 +33,7 @@ func TestSwitchRuleMasksWholeValues(t *testing.T) {
 		"rules: value of AdminPassword must be printable":         "rules: value of AdminPassword must be printable",
 		"-AnnouncementsToken=abc -ProblemReportToken=d e -Port=1": "-AnnouncementsToken=******** -ProblemReportToken=******** -Port=1",
 		"-problemreporttoken=x":                                   "-problemreporttoken=********",
+		"-Password=join me -AdminPassword=x -Port=1":              "-Password=******** -AdminPassword=******** -Port=1",
 		"the token is not set (0 chars)":                          "the token is not set (0 chars)",
 	}
 	for in, want := range cases {

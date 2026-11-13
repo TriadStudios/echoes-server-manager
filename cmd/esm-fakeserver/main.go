@@ -210,6 +210,21 @@ func parseArgs(args []string, kv map[string]string) (mapName string, err error) 
 
 func key(name string) string { return strings.TrimLeft(name, "-") }
 
+// gameValue looks a switch up the way the game server does: "name=" without
+// regard to case, found only where the character before the name is not a
+// letter or digit. So -AdminPassword= and -ServerPassword= are not the
+// switch Password, and only -Password= (or -x_Password=) is.
+func gameValue(kv map[string]string, name string) string {
+	alnum := func(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' }
+	for k, v := range kv {
+		i := len(k) - len(name)
+		if i >= 0 && strings.EqualFold(k[i:], name) && (i == 0 || !alnum(k[i-1])) {
+			return v
+		}
+	}
+	return ""
+}
+
 func buildOptions(mapName string, kv map[string]string) (options, error) {
 	o := options{
 		mapName:      mapName,
@@ -301,10 +316,10 @@ func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
 	}
 	if !fromFile {
 		return gameserver.Secrets{
-			ServerPassword:     kv[key(gameserver.ServerPasswordSwitch)],
-			AdminPassword:      kv[key(gameserver.AdminPasswordSwitch)],
-			AnnouncementsToken: kv[key(gameserver.AnnouncementsTokenSwitch)],
-			ProblemReportToken: kv[key(gameserver.ProblemReportTokenSwitch)],
+			ServerPassword:     gameValue(kv, key(gameserver.ServerPasswordSwitch)),
+			AdminPassword:      gameValue(kv, key(gameserver.AdminPasswordSwitch)),
+			AnnouncementsToken: gameValue(kv, key(gameserver.AnnouncementsTokenSwitch)),
+			ProblemReportToken: gameValue(kv, key(gameserver.ProblemReportTokenSwitch)),
 		}, nil
 	}
 	for k := range kv {

@@ -361,11 +361,14 @@ compatibility mode below.
 
 ### On the command line (compatibility mode)
 
-`secret_delivery: "command_line"` passes the passwords as
-`-ServerPassword=` and `-AdminPassword=` switches instead, and the tokens
-as the server's own `-AnnouncementsToken=` and `-ProblemReportToken=`. It is off unless
-an admin sets it for an instance in so many words, at create or with a
-change. (The secrets file is written in this mode too. The server is not
+`secret_delivery: "command_line"` passes the passwords as the server's
+own `-Password=` (join) and `-AdminPassword=` switches instead, and the
+tokens as `-AnnouncementsToken=` and `-ProblemReportToken=`. The server
+looks each up as `Name=` without regard to case, and only where the
+character before the name is not a letter or digit, so `-ServerPassword=`
+(which ESM sent before) never reached it as the join password. It is off
+unless an admin sets it for an instance in so many words, at create or
+with a change. (The secrets file is written in this mode too. The server is not
 told about it; it is ESM's record of what the running server was started
 with, and goes when the server has stopped.)
 
@@ -1241,8 +1244,9 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
   query port other than the default.
 - Whether a loose per-server config file next to the build is read; ESM
   passes every setting on the command line instead.
-- The admin and password switches, and which other switches take secrets
-  (the test server ran with neither password).
+- The password and token switches on a real host (`-Password=`,
+  `-AdminPassword=`, `-AnnouncementsToken=`, `-ProblemReportToken=`; the
+  test server ran with neither password).
 - The secrets file: the real server does not read one yet, so the switch
   that names it and the format of the file are ESM's proposal for the game
   side. Until the game has it, an instance whose server needs a password
