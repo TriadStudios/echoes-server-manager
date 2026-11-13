@@ -339,9 +339,19 @@ failed.
 **Ready.** The first of these sources that confirms wins, checked in this
 order: (1) the server's status file, written by the process that is running
 now, says `ready` (a real server writes none today); (2) the server log has
-the ready line; (3) the query port answers ESM's probe (only the fake server
-does today). If none confirms within `ready_timeout`, ESM stops the server
-and the instance is `failed`.
+the ready line; (3) the query port answers ESM's probe. If none confirms
+within `ready_timeout`, ESM stops the server and the instance is `failed`.
+
+The probe speaks A2S_INFO, the public Source server query protocol, which
+the real server answers on its query port: the request (`0xFFFFFFFF 'T'
+"Source Engine Query\0"`), the challenge step (a `0x41` reply is answered
+by sending the request again with its 4-byte challenge, at most twice), and
+the `0x49` info reply, of which ESM reads the name, map, players and max
+players. Every field is bounds-checked; a reply longer than one packet,
+split over packets, cut short or of another type is no answer. The probe
+asks the instance's `bind_ip`, or 127.0.0.1 when that is empty, and is
+bounded by a short timeout (200 ms by default). It is also how a server
+that ESM finds running at its start is checked again.
 
 The ready line is the server saying it registered its dedicated session
 (`[SESSION] Dedicated session '<name>' registered (map <map>, <n> slots)`):
@@ -878,9 +888,11 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
   (see [Passwords](#passwords)).
 - The exact place of the save line's words in their line, and the log
   categories of the lines ESM reads.
-- The status file (the real server writes none; ESM relies on the log) and
-  the query probe (the real server answers the Steam server query protocol,
-  which ESM does not speak yet; ESM relies on the log).
+- The status file (the real server writes none; ESM relies on the log
+  line, then the query probe).
+- Whether the server answers A2S_INFO before it has registered its session
+  (ESM checks the log line first), and whether it answers on the box's
+  loopback address (seen answering from outside the box).
 - How to stop a server politely on Windows, and Windows hosts at all.
 - Long uptimes, more than one player, admin login, and an automatic warning
   to players before a stop (there is none; a stop is immediate).
@@ -914,8 +926,15 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   reports `stop_timeout` and does nothing more; ending the server by force
   is the box owner's call. While it runs, a new start of its instance is
   refused.
-- **The query probe and the status file are the fake's.** A real server is
-  seen ready only through its log line.
+- **The status file is the fake's.** A real server is seen ready through
+  its log line or, failing that, its answer to A2S_INFO.
+- **A stop from outside ESM counts as a crash.** A server stopped with
+  `systemctl --user stop` (or ended any other way ESM did not ask for) has
+  crashed as far as ESM can tell, and with `restart_on_crash` it is started
+  again.
+- **Nothing watches a server after a stop timeout.** The instance stays
+  `failed` until someone stops it again, even if the server exits on its
+  own in the meantime.
 - **`bind_ip` limits ESM's port checks only.** A port free on that address
   may still be taken on another one, where the server also listens.
 - **Separate arguments are not a boundary for the real server.** ESM hands
