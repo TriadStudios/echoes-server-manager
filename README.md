@@ -35,6 +35,9 @@ Early development. **Not ready for real hosts yet.**
 ## Build
 
 You need Go 1.24 or newer. ESM uses only the Go standard library.
+`go.mod` names the toolchain go1.27.4, which the go command fetches by
+itself unless `GOTOOLCHAIN=local` is set. CI and releases build with the
+newest patch release of Go 1.27.
 
 ```sh
 go build ./cmd/esm
@@ -467,7 +470,12 @@ Known limits are listed in [docs/DESIGN.md](docs/DESIGN.md#known-limits).
 gofmt -l .
 go vet ./...
 go test ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 ```
+
+CI runs these on Linux and Windows (gofmt and govulncheck on Linux only);
+the release workflow runs govulncheck before it builds, and a known
+vulnerability stops the release.
 
 The tests build a fake game server (`cmd/esm-fakeserver`) and a fake
 SteamCMD (`cmd/esm-fakesteamcmd`) and drive whole services through the API

@@ -652,9 +652,10 @@ of where it comes from. The release workflow signs `SHA256SUMS` with an
 Ed25519 key whose public half is built into ESM; the private half is the
 secret `ESM_RELEASE_KEY` of the GitHub environment `release` (deployments
 from `v*` tags only) and a copy the project owner keeps offline. The
-workflow builds and tests in a job without secrets and with a read-only
-token, signs in a job that runs only the `esm-sign` binary the build job
-made, and publishes in a third job with the write token and no key.
+workflow builds, tests and runs govulncheck (a known vulnerability stops
+the release) in a job without secrets and with a read-only token, signs in
+a job that runs only the `esm-sign` binary the build job made, and
+publishes in a third job with the write token and no key.
 `SHA256SUMS` starts with `version <tag>`, so the signature covers which
 release the binaries belong to. ESM fetches the release list, the binaries and the two files over
 https from GitHub (redirects on https only, time limits, size caps: 1 MiB
