@@ -81,10 +81,20 @@ update button, admins only) downloads the newest release for this system,
 checks the signature with the built-in key and the binary's hash against
 the signed list, and only then puts the new binary in place; the old one
 stays next to it as `esm.previous` (to roll back, move it back). The page's
-button then ends the service so that its service manager starts the new
-binary; after `esm update-self` on the command line, restart the service
+button (`POST /api/v1/box/self-update`) then ends the service so that its
+service manager starts the new binary, and does that only when something
+will: on Linux, when systemd runs ESM (the unit of `esm service install`).
+Otherwise, and on Windows, the update is refused and nothing changes,
+unless the caller sets `exit_anyway` (the page asks first); ESM then
+updates, ends, and has to be started again by hand. `esm update-self` on
+the command line replaces the binary and ends nothing: restart the service
 yourself (`systemctl --user restart esm`). Game servers keep running
 either way and the new ESM adopts them.
+
+One self-update runs at a time: while it runs it holds `esm.update.lock`
+next to the binary, and another one, from the page or the command line,
+is refused. A lock older than 15 minutes was left by an update that did
+not finish and is taken over.
 
 ### Making a release (maintainers)
 

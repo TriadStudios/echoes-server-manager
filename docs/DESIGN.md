@@ -675,6 +675,24 @@ key before signing, so a wrong secret fails in the workflow and not on the
 boxes. Updates never happen on their own: a person runs `esm update-self`
 or the admin-only `POST /api/v1/box/self-update`.
 
+`esm update-self` replaces the binary and ends nothing; the running
+service goes on with the old binary until it is restarted. The API call
+ends the service a moment after it answers, so that its service manager
+starts the new binary, and does that only when something will: on Linux
+when systemd runs ESM as a service (systemd sets `INVOCATION_ID`; the unit
+of `esm service install` has `Restart=always`). Otherwise, and always on
+Windows, where ESM has no service manager, the call is refused with 409
+`no_service_manager` and nothing changes, unless the caller sets
+`exit_anyway`; ESM then updates, ends, and has to be started by hand (the
+page asks before it sends that). An update holds the lock file
+`<binary>.update.lock` next to the binary while it runs (made with
+`O_EXCL`), so updates from the command line and the service never replace
+the binary at the same time: a second one gets 409 `busy`, or the same
+error on the command line. A lock older than 15 minutes was left by an
+update that did not finish (its downloads end within 11 minutes) and is
+taken over. Once an update through the API has put a new binary in place,
+that service takes no other until it has ended.
+
 **Steam.** A Steam build is trusted as far as Steam and the accounts that
 upload builds to the app are: ESM does not check a signature of its own on
 it. SteamCMD (Valve's program) runs with ESM's rights. The manifest of a
@@ -818,7 +836,8 @@ skipped.
   200 when its build is installed already). `GET /api/v1/box` carries
   `update_available` and `release`; `POST /api/v1/box/self-update` (admin)
   puts the newest release in place and ends the service for its service
-  manager to start again.
+  manager to start again (refused with 409 `no_service_manager` when
+  nothing would, unless `exit_anyway` is set; see [Trust](#trust)).
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -1165,9 +1184,11 @@ wrong, it changes in the adapter and the fake, and nowhere else.
 - **Links in a Steam app are refused.** A depot that holds symbolic links
   cannot be installed, under the same rule as any build.
 - **Self-update leftovers.** A self-update that is killed while it
-  downloads leaves a `.esm-update-*` file next to the binary. On Windows a
-  second self-update fails while the `.previous` binary of the first one
-  still runs (it cannot be replaced); end that process first.
+  downloads leaves a `.esm-update-*` file next to the binary, and its lock
+  file `<binary>.update.lock`, which keeps other self-updates out until it
+  is 15 minutes old. On Windows a second self-update fails while the
+  `.previous` binary of the first one still runs (it cannot be replaced);
+  end that process first.
 
 ## Open items
 
