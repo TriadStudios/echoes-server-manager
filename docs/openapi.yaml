@@ -212,7 +212,9 @@ paths:
         manager starts the new binary; game servers keep running and are
         adopted by the new ESM. Never done without this call. Without
         `force`, only a newer release is taken: 409 `up_to_date`, or
-        `unknown_version` for a development build.
+        `unknown_version` for a development build. SHA256SUMS starts with
+        `version <tag>`; the signed version must be the release's tag (also
+        with `force`) and decides whether the release is newer.
       requestBody:
         content:
           application/json:
@@ -1243,7 +1245,11 @@ components:
         is updated as soon as its server answers the query port with 0
         players (or right away when it is stopped): backup, one stop
         signal, start of the new build, roll back when it does not become
-        ready. A failed automatic update is not tried again for that build.
+        ready. The player count is asked again right before the stop; a
+        player who joined puts the update off. A failed automatic update is
+        not tried again for that build. An update by hand to an older build
+        of the source pauses automatic updates until the source has a build
+        newer than the one left.
     UpdateInfo:
       type: object
       properties:
@@ -1257,7 +1263,7 @@ components:
     UpdateEvent:
       type: object
       properties:
-        action: { type: string, enum: [available, started, updated, failed, overdue] }
+        action: { type: string, enum: [available, started, updated, failed, postponed, overdue, paused] }
         from: { type: string }
         to: { type: string }
         message: { type: string, description: Empty for the read role when the instance passes its passwords on the command line. }

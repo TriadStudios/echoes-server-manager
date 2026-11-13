@@ -587,27 +587,49 @@ again on Steam is followed too). `auto_update`:
   or right away when it is stopped. While players are on, the count is not
   known, or the instance is starting, stopping, crashed or failed, it waits
   and says why. After `update_max_wait` (default 6h) it raises one warning
-  (an `update` event and an audit entry) and keeps waiting. An automatic
+  (an `update` event and an audit entry) and keeps waiting. Right before
+  the stop (after the backup) the update asks the player count again; a
+  player who joined meanwhile puts it off, like an update refused because
+  the instance is busy, and the scheduler tries again later. An automatic
   update that failed is not tried again for the same build; a newer build,
   or an update by hand, starts over.
 
+An update by hand to an older build of the same source (a lower build id)
+pauses the instance's automatic updates until the source's newest build
+has a build id above the one the instance left; any other update by hand
+ends a pause. The failed build and the pause are kept in
+`instances/<name>/run/autoupdate.json`, so they hold across restarts of
+ESM. When there is nothing to update to any more, the last failure is
+forgotten.
+
 Each step is an `update` event (`available`, `started`, `updated`,
-`failed`, `overdue`); each automatic update and each overdue warning is in
-the audit log as actor kind `system`.
+`failed`, `postponed`, `overdue`, `paused`); each automatic update, each
+put-off one and each overdue warning is in the audit log as actor kind
+`system`.
 
 ## Trust
 
 **Releases.** A release is trusted because of its signature, not because
 of where it comes from. The release workflow signs `SHA256SUMS` with an
-Ed25519 key whose public half is built into ESM; the private half is a
-repository secret (`ESM_RELEASE_KEY`) and a copy the project owner keeps
-offline. ESM fetches the release list, the binaries and the two files over
+Ed25519 key whose public half is built into ESM; the private half is the
+secret `ESM_RELEASE_KEY` of the GitHub environment `release` (deployments
+from `v*` tags only) and a copy the project owner keeps offline. The
+workflow builds and tests in a job without secrets and with a read-only
+token, signs in a job that runs only the `esm-sign` binary the build job
+made, and publishes in a third job with the write token and no key.
+`SHA256SUMS` starts with `version <tag>`, so the signature covers which
+release the binaries belong to. ESM fetches the release list, the binaries and the two files over
 https from GitHub (redirects on https only, time limits, size caps: 1 MiB
 for the release list, 64 KiB for `SHA256SUMS`, 256 MiB for a binary), and
-takes a binary only when the signature verifies and the binary's SHA-256
-is the one the signed list names. A release whose files lack the signature
-is refused. So GitHub, a proxy or a mirror can withhold a release, but not
-change one. Whoever holds the private key can make releases every ESM
+takes a binary only when the signature verifies, the signed version is
+the release's tag and newer than the running ESM (unless forced), and the
+binary's SHA-256 is the one the signed list names. A release whose files
+lack the signature is refused. So GitHub, a proxy or a mirror cannot change
+a release's files or pass an older signed release off as a newer one; it
+can still withhold releases, or keep offering an old one (which a box does
+not take, as it is not newer). The release check that only shows whether
+a newer release is out reads the unsigned tag; a self-update checks the
+signed version. Whoever holds the private key can make releases every ESM
 accepts; a new key needs a release, signed with the old one, that carries
 the new public key. `esm-sign` checks the key against the built-in public
 key before signing, so a wrong secret fails in the workflow and not on the
@@ -1091,17 +1113,22 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   optional verbosity). Should the game ever log what a player types right
   after the category, such text could pass for one of those lines.
 
-- **The player check and the stop are two steps.** An automatic update
-  stops the server right after the query port said 0 players; a player who
-  joins in between is disconnected.
+- **The player check and the stop are still two steps.** An automatic
+  update asks the query port again right before the stop; a player who
+  joins in the moment between that answer and the stop is disconnected.
+- **Automatic updates are not instant.** A new Steam build is seen at the
+  source's next check (`check_every`), and an instance acts on it at the
+  scheduler's next tick (15 seconds).
 - **SteamCMD's words are assumed.** That a wrong branch password shows as
   "Invalid Password", that `StateFlags` bit 4 means fully installed, and
   that a quoted `force_install_dir` path with spaces is read as one word
   are UNCONFIRMED on a real host (the fake SteamCMD follows them).
 - **Links in a Steam app are refused.** A depot that holds symbolic links
   cannot be installed, under the same rule as any build.
-- **A failed automatic update is remembered in memory.** After ESM restarts
-  it is tried once more.
+- **Self-update leftovers.** A self-update that is killed while it
+  downloads leaves a `.esm-update-*` file next to the binary. On Windows a
+  second self-update fails while the `.previous` binary of the first one
+  still runs (it cannot be replaced); end that process first.
 
 ## Open items
 

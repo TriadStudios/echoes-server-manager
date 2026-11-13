@@ -43,9 +43,11 @@ go build ./cmd/esm
 ## Releases and updates
 
 Each release (a tag such as `v0.3.0`) carries `esm-linux-amd64`,
-`esm-windows-amd64.exe`, `SHA256SUMS` with the SHA-256 of both, and
-`SHA256SUMS.sig`, the Ed25519 signature of `SHA256SUMS`. The public half
-of the signing key is built into ESM (`internal/release.PublicKey`):
+`esm-windows-amd64.exe`, `SHA256SUMS` and `SHA256SUMS.sig`, the Ed25519
+signature of `SHA256SUMS`. `SHA256SUMS` starts with the line
+`version <tag>` and then lists the SHA-256 of both binaries, so the
+signature also says which release they belong to. The public half of the
+signing key is built into ESM (`internal/release.PublicKey`):
 
 ```
 -----BEGIN PUBLIC KEY-----
@@ -59,8 +61,12 @@ To check a download by hand (OpenSSL 3), save that key as
 ```sh
 base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin
 openssl pkeyutl -verify -pubin -inkey esm-release.pem -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig.bin
+head -1 SHA256SUMS                      # must name the release you downloaded
 sha256sum --check --ignore-missing SHA256SUMS
 ```
+
+(`sha256sum` warns that one line, the version line, is not a checksum
+line; that is expected.)
 
 `esm version --check` says whether a newer release is out; the service
 looks too (at most every 6 hours, only while someone looks at the box) and
@@ -76,6 +82,26 @@ button then ends the service so that its service manager starts the new
 binary; after `esm update-self` on the command line, restart the service
 yourself (`systemctl --user restart esm`). Game servers keep running
 either way and the new ESM adopts them.
+
+### Making a release (maintainers)
+
+The release workflow signs in a job of its own that runs in the GitHub
+environment `release`, whose secret `ESM_RELEASE_KEY` is the base64 of the
+32-byte private seed. That job runs only the `esm-sign` binary the build
+job made; building, testing and publishing run without the key. Set the
+environment up once, allowing deployments from `v*` tags only (a required
+reviewer can be added in the repository settings):
+
+```sh
+gh api -X PUT repos/TriadStudios/echoes-server-manager/environments/release \
+  -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST repos/TriadStudios/echoes-server-manager/environments/release/deployment-branch-policies \
+  -f name='v*' -f type=tag
+gh secret set ESM_RELEASE_KEY --env release --repo TriadStudios/echoes-server-manager < release-key.txt
+```
+
+Then push a tag `vX.Y.Z`. Without the secret the sign job fails and
+nothing is published.
 
 ## Run
 
@@ -277,9 +303,15 @@ instance):
 - `restart`: ESM updates the instance itself as soon as its server answers
   the query port with **0 players** (or at once when it is stopped): a
   backup, one stop signal, the new build, and a roll back when the new
-  build does not get ready. While players are on it waits and asks again;
-  after `update_max_wait` (default 6h) it raises a warning and keeps
-  waiting. A failed automatic update is not tried again for that build.
+  build does not get ready. The player count is asked once more right
+  before the stop; a player who joined meanwhile puts the update off. While
+  players are on it waits and asks again; after `update_max_wait` (default
+  6h) it raises a warning and keeps waiting. A failed automatic update is
+  not tried again for that build.
+
+Updating an instance by hand to an older build of its source pauses its
+automatic updates until the source has a build newer than the one it
+left.
 
 Every step is an `update` event, and each automatic update is in the audit
 log.
