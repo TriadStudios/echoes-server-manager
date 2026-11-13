@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
+	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 )
 
@@ -179,5 +180,45 @@ func TestRunChecksSteam(t *testing.T) {
 	}
 	if c := find(r, "steam_runtime"); c.Status != OK {
 		t.Fatalf("steam_runtime in place: %+v", c)
+	}
+}
+
+func TestSteamSourcesCheck(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Defaults(root)
+	r := Report{}
+	checkSteamSources(&r, cfg, root, "linux")
+	if c := find(r, "steam_sources"); c.Status != OK || !strings.Contains(c.Message, "no Steam sources") {
+		t.Fatalf("none: %+v", c)
+	}
+	cfg.SteamSources = []config.SteamSource{
+		{Name: "main", AppID: "1000001", Branch: "testing", Executable: map[string]string{"linux": "a/b"}, Channel: "test"},
+		{Name: "pub", AppID: "1000001", Executable: map[string]string{"linux": "a/b"}, Channel: "live"},
+	}
+	r = Report{}
+	checkSteamSources(&r, cfg, root, "linux")
+	if c := find(r, "steamcmd"); c.Status != Fail {
+		t.Fatalf("missing SteamCMD: %+v", c)
+	}
+	writeFile(t, cfg.SteamCMDPath(), []byte("#!/bin/sh\n"), 0o700)
+	writeFile(t, filepath.Join(root, "secrets", "steam.json"), []byte(`{"passwords":{"main":"Secret-Pw1"}}`), 0o600)
+	r = Report{}
+	checkSteamSources(&r, cfg, root, "linux")
+	if c := find(r, "steamcmd"); c.Status != OK {
+		t.Fatalf("SteamCMD: %+v", c)
+	}
+	if r.Problems != 0 || r.Warnings != 0 {
+		t.Fatalf("problems: %+v", r)
+	}
+	for _, c := range r.Checks {
+		if strings.Contains(c.Message, "Secret-Pw1") {
+			t.Fatalf("a check shows the password: %+v", c)
+		}
+	}
+	os.Remove(filepath.Join(root, "secrets", "steam.json"))
+	r = Report{}
+	checkSteamSources(&r, cfg, root, "linux")
+	if r.Warnings != 1 {
+		t.Fatalf("no password: %+v", r)
 	}
 }

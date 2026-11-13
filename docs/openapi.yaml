@@ -198,6 +198,35 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/box/self-update:
+    post:
+      tags: [box]
+      summary: Replace ESM's binary with the newest release (admin)
+      description: |
+        Looks up the newest release on GitHub (https), downloads
+        SHA256SUMS and SHA256SUMS.sig, checks the signature with the
+        Ed25519 key built into ESM, downloads the binary for this system
+        and checks its SHA-256 against the signed list. Only then is the
+        binary put in place (the old one is kept as `<binary>.previous`).
+        The service ends a moment after answering, so that its service
+        manager starts the new binary; game servers keep running and are
+        adopted by the new ESM. Never done without this call. Without
+        `force`, only a newer release is taken: 409 `up_to_date`, or
+        `unknown_version` for a development build.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SelfUpdateRequest" }
+      responses:
+        "200":
+          description: The binary was replaced; the service ends in a moment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelfUpdateResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /api/v1/box/firewall:
     get:
       tags: [box]
@@ -238,12 +267,24 @@ paths:
         before the build is installed; the call returns when the install is
         done. A build runs with ESM's own rights, so only admins install
         builds.
+
+        A source `steam:<name>` runs the Steam source of that name with
+        SteamCMD (validating every file) and installs the branch's build as
+        `steam-<name>-<buildid>` when no build of that build id is installed
+        yet (201). When it is installed already the answer is 200 with that
+        build. A wrong branch password is 422 `wrong_password`; SteamCMD
+        missing is 422 `steamcmd_missing`.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/InstallRequest" }
       responses:
+        "200":
+          description: A Steam source whose build is installed already.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Build" }
         "201":
           description: Installed.
           content:
@@ -635,7 +676,7 @@ paths:
       tags: [events]
       summary: Server-Sent Events stream
       description: |
-        Each event has `id:`, `event:` (state, log, build or audit) and
+        Each event has `id:`, `event:` (state, log, build, update or audit) and
         `data:` with the Event as JSON. A comment line is sent every 15
         seconds to keep the connection open. Reconnect with the
         `Last-Event-ID` header to get the events missed meanwhile, as long as
@@ -661,7 +702,7 @@ paths:
           schema: { type: string }
         - name: types
           in: query
-          description: Comma-separated event types (state, log, build, audit).
+          description: Comma-separated event types (state, log, build, update, audit).
           schema: { type: string }
         - name: Last-Event-ID
           in: header
@@ -674,6 +715,47 @@ paths:
               schema: { $ref: "#/components/schemas/Event" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/steam:
+    get:
+      tags: [builds]
+      summary: The Steam sources and what they last did
+      description: |
+        Sources are configured in esm.json (`steam_sources`). A branch
+        password is never shown, only whether one is set.
+      responses:
+        "200":
+          description: Sources.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SteamList" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/steam/{name}/password:
+    put:
+      tags: [builds]
+      summary: Set or remove the branch password of a Steam source (admin)
+      description: |
+        Stored in `<root>/secrets/steam.json` (0600). It is never returned,
+        logged or written to the audit log, and reaches SteamCMD only in a
+        private script file, never on a command line. 1 to 128 printable
+        ASCII characters without spaces, quotes or backslashes; "" removes
+        it.
+      parameters:
+        - $ref: "#/components/parameters/Name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SteamPasswordRequest" }
+      responses:
+        "200":
+          description: Set (or removed).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SteamPasswordResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /api/v1/clusters:
     get:
       tags: [instances]
@@ -903,6 +985,73 @@ components:
           description: The box's local time zone, which restart times use.
           examples: ["CET (UTC+01:00)"]
         usage: { $ref: "#/components/schemas/BoxUsage" }
+        update_available:
+          type: boolean
+          description: A newer ESM release is out (see release). Nothing is updated without POST /box/self-update.
+        release: { $ref: "#/components/schemas/ReleaseStatus" }
+    ReleaseStatus:
+      type: object
+      description: |
+        The last look for a newer ESM release. The service looks at most
+        every 6 hours, and only while someone asks for the box; with
+        `update_check: false` in esm.json it never does.
+      properties:
+        enabled: { type: boolean }
+        checked: { type: string, format: date-time }
+        current: { type: string, description: This ESM's version. }
+        latest: { type: string, description: The newest release's tag ("" when not known). }
+        available: { type: boolean }
+        url: { type: string, description: The newest release's page. }
+        note: { type: string, description: Why available cannot be known, or what failed. }
+    SelfUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        force: { type: boolean, description: Take the newest release even when it is not newer. }
+    SelfUpdateResult:
+      type: object
+      properties:
+        from: { type: string }
+        to: { type: string }
+        binary: { type: string, description: The replaced binary. }
+        previous: { type: string, description: Where the old binary was kept (move it back to roll back). }
+        restarting: { type: boolean }
+        note: { type: string }
+    SteamSource:
+      type: object
+      properties:
+        name: { type: string }
+        app_id: { type: string }
+        branch: { type: string, description: The beta branch ("" for the default branch). }
+        channel: { type: string, enum: [live, test] }
+        default_map: { type: string }
+        executable:
+          type: object
+          additionalProperties: { type: string }
+        check_every: { $ref: "#/components/schemas/Duration" }
+        password_set: { type: boolean }
+        running: { type: boolean, description: SteamCMD runs for this source now. }
+        buildid: { type: string, description: The build id SteamCMD last downloaded. }
+        version: { type: string, description: The ESM build of it (steam-<name>-<buildid>). }
+        since: { type: string, format: date-time, description: When that build id was first seen. }
+        checked: { type: string, format: date-time, description: When SteamCMD last ran for the source. }
+        error: { type: string, description: What went wrong then ("" when it worked). }
+    SteamList:
+      type: object
+      properties:
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/SteamSource" }
+    SteamPasswordRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        password: { type: string, maxLength: 128 }
+    SteamPasswordResult:
+      type: object
+      properties:
+        name: { type: string }
+        password_set: { type: boolean }
     Unknown:
       type: object
       description: A value that could not be read, and why.
@@ -1079,6 +1228,39 @@ components:
           description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key.
           items: { type: string }
         secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
+        auto_update: { $ref: "#/components/schemas/AutoUpdate" }
+        update_max_wait:
+          $ref: "#/components/schemas/Duration"
+          description: How long auto_update restart waits for an empty server before a warning (it keeps waiting). Default 6h, 1m to 720h.
+    AutoUpdate:
+      type: string
+      enum: [off, install, restart]
+      description: |
+        What happens when the Steam source the instance's build came from
+        (a build steam-<source>-<buildid>) has a newer build of the
+        instance's channel. off and install: nothing; the build shows as
+        available (the source's checks install it). restart: the instance
+        is updated as soon as its server answers the query port with 0
+        players (or right away when it is stopped): backup, one stop
+        signal, start of the new build, roll back when it does not become
+        ready. A failed automatic update is not tried again for that build.
+    UpdateInfo:
+      type: object
+      properties:
+        source: { type: string, description: The Steam source the instance's build came from ("" for none). }
+        target: { type: string, description: The newer build ("" for none). }
+        since: { type: string, format: date-time }
+        pending: { type: boolean, description: auto_update restart will update the instance and waits for the moment. }
+        waiting: { type: string, description: Why it waits. }
+        overdue: { type: boolean, description: It has waited longer than update_max_wait. }
+        last_error: { type: string, description: Why the last automatic update failed. }
+    UpdateEvent:
+      type: object
+      properties:
+        action: { type: string, enum: [available, started, updated, failed, overdue] }
+        from: { type: string }
+        to: { type: string }
+        message: { type: string, description: Empty for the read role when the instance passes its passwords on the command line. }
     CreateInstance:
       allOf:
         - $ref: "#/components/schemas/Settings"
@@ -1113,6 +1295,8 @@ components:
           type: array
           items: { type: string }
         secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
+        auto_update: { $ref: "#/components/schemas/AutoUpdate" }
+        update_max_wait: { $ref: "#/components/schemas/Duration" }
         previous_builds:
           type: array
           items: { type: string }
@@ -1126,6 +1310,8 @@ components:
           type: array
           description: Things an operator should know about the instance on this box.
           items: { $ref: "#/components/schemas/Warning" }
+        update_available: { type: boolean, description: A newer build of the instance's Steam source is installed (see update). }
+        update: { $ref: "#/components/schemas/UpdateInfo" }
     Live:
       type: object
       description: |
@@ -1327,11 +1513,12 @@ components:
       properties:
         id: { type: integer }
         time: { type: string, format: date-time }
-        type: { type: string, enum: [state, log, build, audit] }
+        type: { type: string, enum: [state, log, build, update, audit] }
         instance: { type: string }
         data:
           oneOf:
             - $ref: "#/components/schemas/Status"
             - $ref: "#/components/schemas/LogLine"
             - $ref: "#/components/schemas/BuildEvent"
+            - $ref: "#/components/schemas/UpdateEvent"
             - $ref: "#/components/schemas/AuditEntry"

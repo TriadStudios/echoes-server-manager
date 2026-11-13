@@ -138,3 +138,17 @@ func (c *client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
+
+// doStatus is do that also returns the answer's status code.
+func (c *client) doStatus(ctx context.Context, method, path string, body, out any) (int, error) {
+	req, err := c.request(ctx, method, path, body)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.send(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
+}

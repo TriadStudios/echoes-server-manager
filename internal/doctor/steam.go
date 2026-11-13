@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -187,5 +188,49 @@ func checkBuilds(r *Report, root, goos, appID string) {
 		r.add("builds", OK, "no builds installed yet")
 	default:
 		r.add("builds", OK, "%s: server binary present and executable", plural(n, "build", "builds"))
+	}
+}
+
+// checkSteamSources checks what installs from Steam need: SteamCMD where
+// steamcmd says (a regular file, executable on Linux), the sources, and a
+// password for every source on a beta branch. Passwords are only looked
+// for, never shown.
+func checkSteamSources(r *Report, cfg *config.Config, root, goos string) {
+	if len(cfg.SteamSources) == 0 {
+		r.add("steam_sources", OK, "no Steam sources in %s (builds come from folders, archives and URLs only)", config.FileName)
+		return
+	}
+	names := make([]string, len(cfg.SteamSources))
+	for i, s := range cfg.SteamSources {
+		names[i] = s.Name
+	}
+	r.add("steam_sources", OK, "%d Steam source(s): %s", len(names), strings.Join(names, ", "))
+	exe := cfg.SteamCMDPath()
+	fi, err := os.Stat(exe)
+	switch {
+	case err != nil:
+		r.add("steamcmd", Fail, "SteamCMD is not at %s (%v): install it there (see the README) or set steamcmd in %s", exe, err, config.FileName)
+	case !fi.Mode().IsRegular():
+		r.add("steamcmd", Fail, "%s is not a regular file", exe)
+	case runtime.GOOS == "linux" && fi.Mode().Perm()&0o100 == 0:
+		r.add("steamcmd", Fail, "%s is not executable by its owner", exe)
+	default:
+		r.add("steamcmd", OK, "SteamCMD is at %s", exe)
+	}
+	var sec struct {
+		Passwords map[string]string `json:"passwords"`
+	}
+	if b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash("secrets/steam.json"))); err == nil {
+		json.Unmarshal(b, &sec)
+	}
+	for _, s := range cfg.SteamSources {
+		switch {
+		case s.Branch == "":
+			r.add("steam_password", OK, "%s uses the app's default branch (no password)", s.Name)
+		case sec.Passwords[s.Name] == "":
+			r.add("steam_password", Warn, "%s is on branch %s and no password is set; if the branch has one, set it with: esm steam password %s", s.Name, s.Branch, s.Name)
+		default:
+			r.add("steam_password", OK, "%s: the password of branch %s is set", s.Name, s.Branch)
+		}
 	}
 }

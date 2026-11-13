@@ -44,6 +44,7 @@ type env struct {
 	g       globals
 	out     io.Writer
 	errOut  io.Writer
+	in      io.Reader
 	version string
 	ctx     context.Context
 }
@@ -65,7 +66,11 @@ Service:
   serve                         run the ESM service (game servers keep running when it stops)
   doctor [--bind IP]            check this box (read-only); --bind checks free ports
                                 on that address instead of all interfaces
-  version                       print the version
+  version [--check]             print the version; --check looks up the newest release
+  update-self [--force]         replace this esm binary with the newest release
+                                (signature and hash checked; the old one is kept
+                                as <binary>.previous); restart the service after
+  service install [--force]     write the systemd user unit for ESM (Linux)
 
 Instances:
   list                          list instances
@@ -82,8 +87,17 @@ Instances:
 
 Builds:
   build install <folder|archive|https-url> [--sha256 HEX]   (local sources from the import folder)
+  build install steam:<source>  download the source's branch with SteamCMD and
+                                install its build when it is new
   build list
   build prune
+  build manifest <folder> --version V [--channel live|test] --executable linux=<path>
+         [--executable windows=<path>] [--default-map M] [--commit C]
+                                write the manifest.json a build folder needs
+
+Steam:
+  steam list                    the Steam sources and what they last installed
+  steam password <name> [--clear]   set a branch password, read from standard input
 
 Tokens:
   token create --role read|operator|admin [--name NAME]
@@ -92,7 +106,7 @@ Tokens:
 // Main runs the command line with args (without the program name) and
 // returns the exit code.
 func Main(args []string, stdout, stderr io.Writer, version string) int {
-	e := &env{out: stdout, errOut: stderr, version: version, ctx: context.Background()}
+	e := &env{out: stdout, errOut: stderr, in: os.Stdin, version: version, ctx: context.Background()}
 	top := flag.NewFlagSet("esm", flag.ContinueOnError)
 	top.SetOutput(io.Discard)
 	e.g.register(top)
@@ -140,6 +154,12 @@ func Main(args []string, stdout, stderr io.Writer, version string) int {
 		err = e.build(rest)
 	case "token":
 		err = e.token(rest)
+	case "update-self":
+		err = e.updateSelf(rest)
+	case "service":
+		err = e.serviceCmd(rest)
+	case "steam":
+		err = e.steamCmd(rest, e.in)
 	default:
 		err = usageErr("unknown command %q (see esm help)", verb)
 	}
@@ -224,14 +244,6 @@ func (e *env) fail(err error) int {
 }
 
 func (e *env) client() (*client, error) { return newClient(&e.g) }
-
-func (e *env) versionCmd(args []string) error {
-	fs := e.flags("version")
-	if _, err := parse(fs, args); err != nil {
-		return err
-	}
-	return e.result(map[string]string{"version": e.version}, "esm "+e.version)
-}
 
 // interruptible returns a context that ends on Ctrl-C or SIGTERM.
 func interruptible() (context.Context, context.CancelFunc) {
