@@ -10,7 +10,8 @@
 // app/steamapps/appmanifest_<app>.acf. When no build steam-<name>-<buildid>
 // is installed yet, the app's files (without steamapps/) are copied into
 // the build install area, a manifest is made for them, and they are
-// installed read-only like any build.
+// installed read-only like any build. The copy is made only when the file
+// system that holds the builds has at least twice the files' size free.
 //
 // Branch passwords are ESM secrets in <root>/secrets/steam.json (0600).
 // They are never returned, logged or audited, and SteamCMD's output is
@@ -25,10 +26,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +42,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
+	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
 
 // Folders and files inside the ESM root.
@@ -93,6 +97,9 @@ type Options struct {
 	RunTimeout time.Duration
 	// Installed, when set, is told about every build a source installs.
 	Installed func(source string, b builds.Build)
+	// DiskSpace reads the size and the free space of the file system that
+	// holds a folder (default sysinfo.DiskSpace).
+	DiskSpace func(dir string) (total, free uint64, err error)
 }
 
 // state is what ESM keeps about a source between runs, in
@@ -126,6 +133,9 @@ type Manager struct {
 	mu      sync.Mutex
 	running map[string]bool
 
+	// noSpaceInfo says once that the free space cannot be read.
+	noSpaceInfo sync.Once
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -142,6 +152,9 @@ func New(o Options) *Manager {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
+	}
+	if o.DiskSpace == nil {
+		o.DiskSpace = sysinfo.DiskSpace
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{st: o.Store, cfg: o.Config, builds: o.Builds, opts: o, log: o.Logger,
@@ -441,6 +454,9 @@ func (m *Manager) install(ctx context.Context, src config.SteamSource, manual bo
 	if b, err := m.builds.Get(version); err == nil {
 		return b, false, am.BuildID, nil
 	}
+	if err := m.checkSpace(src.Name, version, appAbs); err != nil {
+		return builds.Build{}, false, "", err
+	}
 	b, err := m.builds.InstallFolder(ctx, appAbs, builds.ManifestSpec{
 		Version: version, Commit: "steam app " + src.AppID + " build " + am.BuildID, Channel: src.Channel,
 		DefaultMap: src.DefaultMap, Executables: src.Executable, Skip: []string{"steamapps"},
@@ -454,6 +470,83 @@ func (m *Manager) install(ctx context.Context, src config.SteamSource, manual bo
 		return builds.Build{}, false, "", err
 	}
 	return b, true, am.BuildID, nil
+}
+
+// spaceFactor is how many times its size a Steam build needs free on the
+// file system that holds the builds before it is copied there: once for
+// the copy, and as much again left for saves, backups and logs.
+const spaceFactor = 2
+
+// checkSpace refuses to install the app's files (in app, without
+// steamapps/) as build version when the file system that holds the builds
+// has less than spaceFactor times their size free. When the free space
+// cannot be read there, the install goes ahead; the log says so once.
+func (m *Manager) checkSpace(source, version, app string) error {
+	size, err := folderSize(app, "steamapps")
+	if err != nil {
+		return fmt.Errorf("Steam source %s: size of the app's files: %w", source, err)
+	}
+	dir := m.st.Path()
+	if m.st.Exists(builds.Dir) {
+		if dir, err = m.st.Abs(builds.Dir); err != nil {
+			return err
+		}
+	}
+	_, free, err := m.opts.DiskSpace(dir)
+	if err != nil {
+		m.noSpaceInfo.Do(func() {
+			m.log.Warn("cannot read the free disk space; Steam builds are installed without checking it", "path", dir, "err", err)
+		})
+		return nil
+	}
+	if need := spaceFactor * size; free < need {
+		m.log.Warn("Steam build not installed: not enough free disk space", "source", source, "version", version,
+			"size_bytes", size, "free_bytes", free, "path", dir)
+		return fault.New(fault.Conflict, "not_enough_space",
+			"Steam source %s: build %s is %s and needs %s free (twice its size) on the disk that holds %s/, but %s is free; nothing was installed. Free some space (builds no instance uses, old backups) and install again",
+			source, version, sizeText(size), sizeText(need), builds.Dir, sizeText(free))
+	}
+	return nil
+}
+
+// folderSize adds up the sizes of the regular files in dir, without the
+// top level names in skip.
+func folderSize(dir string, skip ...string) (uint64, error) {
+	var n uint64
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if rel, _ := filepath.Rel(dir, p); slices.Contains(skip, rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n += uint64(fi.Size())
+		return nil
+	})
+	return n, err
+}
+
+// sizeText writes a byte count in binary units, like "6.1 GiB".
+func sizeText(n uint64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // readAppManifest reads and checks the app manifest SteamCMD left.

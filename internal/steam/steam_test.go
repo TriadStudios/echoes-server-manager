@@ -1,7 +1,10 @@
 package steam
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -336,6 +339,105 @@ func TestSteamErrors(t *testing.T) {
 	r.m.cfg.SteamCMD = filepath.Join(r.steam, "missing")
 	if _, _, err := r.m.Install(ctx, "main", true); fault.CodeOf(err) != "steamcmd_missing" {
 		t.Fatalf("missing SteamCMD: %v", err)
+	}
+}
+
+// contentSize adds up the sizes of the files in dir.
+func contentSize(t *testing.T, dir string) uint64 {
+	t.Helper()
+	var n uint64
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n += uint64(fi.Size())
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A Steam build is copied into builds/ only when the disk that holds the
+// builds has at least twice its size free. With less, the install is
+// refused with an error the source's state keeps, and nothing is copied;
+// with twice its size free it goes ahead.
+func TestSteamInstallNeedsTwiceTheBuildSizeFree(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	size := contentSize(t, r.content)
+	var free uint64
+	var asked []string
+	r.m.opts.DiskSpace = func(dir string) (uint64, uint64, error) {
+		asked = append(asked, dir)
+		return 1 << 40, free, nil
+	}
+
+	free = 2*size - 1
+	_, _, err := r.m.Install(ctx, "main", false)
+	if fault.CodeOf(err) != "not_enough_space" || !strings.Contains(err.Error(), "steam-main-100") ||
+		!strings.Contains(err.Error(), "nothing was installed") {
+		t.Fatalf("install with too little space: %v", err)
+	}
+	if v := r.m.Sources()[0]; v.Error != err.Error() || v.Version != "" {
+		t.Fatalf("source after the refusal: %+v", v)
+	}
+	if list, err := r.builds.List(); err != nil || len(list) != 0 {
+		t.Fatalf("builds after the refusal: %+v %v", list, err)
+	}
+	for _, dir := range []string{builds.Dir, "tmp"} {
+		entries, _ := os.ReadDir(filepath.Join(r.root, dir))
+		for _, e := range entries {
+			if e.Name() != ".info" {
+				t.Errorf("%s/%s left after the refusal", dir, e.Name())
+			}
+		}
+	}
+	if len(asked) == 0 || !strings.HasPrefix(asked[0], r.st.Path()) {
+		t.Fatalf("free space asked for %v, not for the root's disk", asked)
+	}
+
+	free = 2 * size
+	b, installed, err := r.m.Install(ctx, "main", false)
+	if err != nil || !installed || b.Version != "steam-main-100" {
+		t.Fatalf("install with twice the size free: %+v %v %v", b, installed, err)
+	}
+	if v := r.m.Sources()[0]; v.Error != "" || v.Version != "steam-main-100" {
+		t.Fatalf("source after the install: %+v", v)
+	}
+}
+
+// Where the free space cannot be read, Steam builds are installed all the
+// same, and the service log says so once.
+func TestSteamInstallWithoutFreeSpaceReading(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	r.m.log = slog.New(slog.NewTextHandler(&logs, nil))
+	r.m.opts.DiskSpace = func(string) (uint64, uint64, error) {
+		return 0, 0, errors.New("not read on this system")
+	}
+	for _, id := range []string{"100", "101"} {
+		r.ctl.BuildID = id
+		testkit.SetSteamControl(t, r.steam, r.ctl)
+		b, installed, err := r.m.Install(ctx, "main", false)
+		if err != nil || !installed || b.Version != "steam-main-"+id {
+			t.Fatalf("install of %s: %+v %v %v", id, b, installed, err)
+		}
+	}
+	if n := strings.Count(logs.String(), "not read on this system"); n != 1 {
+		t.Fatalf("the log says %d times that the free space is unknown:\n%s", n, logs.String())
 	}
 }
 
