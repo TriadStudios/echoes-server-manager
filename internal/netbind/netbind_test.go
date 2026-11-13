@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -63,16 +64,35 @@ func TestPortFree(t *testing.T) {
 	if PortFree("127.0.0.1", udp.LocalAddr().(*net.UDPAddr).Port) == nil {
 		t.Fatal("a port taken for UDP is free")
 	}
-	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	// A port the system picks for TCP may be one it keeps for itself for
+	// UDP (Windows reserves ranges of ports); such a port is skipped.
+	for range 20 {
+		tcp, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := tcp.Addr().(*net.TCPAddr).Port
+		if PortFree("127.0.0.1", port) == nil {
+			t.Fatal("a port taken for TCP is free")
+		}
+		tcp.Close()
+		if !udpBindable(port) {
+			continue
+		}
+		if err := PortFree("127.0.0.1", port); err != nil {
+			t.Fatalf("a closed port is busy: %v", err)
+		}
+		return
+	}
+	t.Skip("no port the system picked for TCP was free for UDP too")
+}
+
+// udpBindable reports whether UDP port can be bound on 127.0.0.1 now.
+func udpBindable(port int) bool {
+	c, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	if err != nil {
-		t.Fatal(err)
+		return false
 	}
-	port := tcp.Addr().(*net.TCPAddr).Port
-	if PortFree("127.0.0.1", port) == nil {
-		t.Fatal("a port taken for TCP is free")
-	}
-	tcp.Close()
-	if err := PortFree("127.0.0.1", port); err != nil {
-		t.Fatalf("a closed port is busy: %v", err)
-	}
+	c.Close()
+	return true
 }

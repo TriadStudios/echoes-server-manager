@@ -343,7 +343,10 @@ func TestLocalSourcesOnlyFromTheImportFolder(t *testing.T) {
 			t.Errorf("%s: %v (code %s), want source_not_allowed", what, err, code(err))
 			continue
 		}
-		if strings.Contains(err.Error(), filepath.Base(outside)) {
+		// The answer may name the import folder, and nothing else: with
+		// that taken out, no part of the outside path is left.
+		if rest := strings.ReplaceAll(err.Error(), r.src, "<import folder>"); strings.Contains(rest, outside) ||
+			strings.Contains(rest, string(filepath.Separator)+filepath.Base(outside)) || strings.Contains(rest, "nothing-here") {
 			t.Errorf("%s: the answer names the path: %v", what, err)
 		}
 		if first == "" {
