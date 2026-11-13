@@ -790,6 +790,27 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ClusterList" }
+  /api/v1/game-settings:
+    get:
+      tags: [instances]
+      summary: The game settings ESM knows by name
+      description: |
+        The catalog of the settings the game server takes on its command
+        line, beyond the ones ESM sets itself (server name, world, player
+        limit, listing, ports, passwords). Read-only; the same for every
+        instance. An instance sets one in its `rules` under the setting's
+        key; a rule that is not set is not passed, and the server uses its
+        default. A rule that names a setting of the catalog is checked by
+        its type and range when it is set (422 `invalid`, naming the key
+        and what it allows). Rules outside the catalog are passed as they
+        are. The two settings marked `secret` are not rules: they are set
+        with `PUT /api/v1/instances/{name}/secrets` under `secret_field`.
+      responses:
+        "200":
+          description: The groups and the settings, in the order they are shown.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GameSettingList" }
   /api/v1/tokens:
     get:
       tags: [tokens]
@@ -1239,13 +1260,25 @@ components:
         rules:
           type: object
           description: |
-            Each rule becomes -Key=Value on the server command line and is
-            shown to every role. A key that looks like a secret is refused:
+            Game settings. Sent, the map replaces every rule. Each rule
+            becomes -Key=Value on the server command line and is shown to
+            every role; a rule not set is not passed, and the server uses
+            its default. A key of the catalog (`GET /api/v1/game-settings`)
+            is checked by the setting's type and range when it is set or
+            changed (422 `invalid`); a value stored earlier is kept as it is
+            until it is changed. A key that names a catalog setting in
+            another case ("motd") is refused when set: write it as the
+            catalog does ("MOTD"). Other keys are passed as they are.
+
+            A key that looks like a secret is refused:
             without case and without "_", "-" and "." it contains password,
             passwd, passphrase, pwd, secret, token, apikey, privatekey or
             credential, or ends with key or pw, or one of its words starts
             with pass or is pw (ServerPass, RconPw; also Passive).
-          additionalProperties: { type: string, maxLength: 256 }
+
+            A value has at most 256 characters; a list setting of the
+            catalog at most its max_length (2000).
+          additionalProperties: { type: string, maxLength: 2000 }
         listed: { type: boolean }
         autostart: { type: boolean }
         restart_on_crash: { type: boolean }
@@ -1377,6 +1410,59 @@ components:
       properties:
         restart: { type: string, format: date-time }
         backup: { type: string, format: date-time }
+    GameSettingList:
+      type: object
+      properties:
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/SettingGroup" }
+        settings:
+          type: array
+          items: { $ref: "#/components/schemas/GameSetting" }
+    SettingGroup:
+      type: object
+      properties:
+        id: { type: string, enum: [access, world, chat, reports] }
+        title: { type: string }
+        note: { type: string, description: Said once for the whole group. }
+    GameSetting:
+      type: object
+      properties:
+        key: { type: string, description: The rule key, exactly as the server reads it. }
+        group: { type: string, enum: [access, world, chat, reports] }
+        label: { type: string }
+        type:
+          type: string
+          enum: [bool, int, float, string, enum, list, date]
+          description: |
+            `bool`: True or False (true, yes, no, 1 and 0 in any case too).
+            `int`: a whole number. `float`: a decimal number like 0.25.
+            `enum`: one of `choices` (any case). `list`: items separated by
+            commas; ESM passes them joined by ", " so the server reads the
+            list whole. `date`: YYYY-MM-DD. `string`: text; without a space
+            it may not hold "," or ")", where the server would end it.
+        default:
+          type: string
+          description: What the server uses when the rule is not set, written as ESM would pass it; empty when that is empty or the server works it out itself (help says how).
+        min: { type: number, description: Smallest allowed number (inclusive). }
+        max: { type: number, description: Largest allowed number (inclusive). }
+        unit: { type: string, examples: [minutes, seconds] }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              label: { type: string }
+        max_length: { type: integer, description: Longest value of a string or list, in bytes. }
+        format: { type: string, enum: [url], description: url is an http or https address. }
+        help: { type: string }
+        new_world_only:
+          type: boolean
+          description: A world rule. The game applies it only when the world is first created; a world that exists keeps the rules saved with it.
+        caution: { type: boolean, description: The setting weakens the server's protection; help says how. }
+        secret: { type: boolean, description: Not a rule. Set with the instance's secrets under secret_field; never shown. }
+        secret_field: { type: string, enum: [announcements_token, problem_report_token] }
     InstanceList:
       type: object
       properties:

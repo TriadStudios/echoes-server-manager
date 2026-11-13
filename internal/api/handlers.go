@@ -750,6 +750,18 @@ func (s *Server) clusters(w http.ResponseWriter, r *http.Request, c *call) error
 	return writeJSON(w, http.StatusOK, ClusterList{Clusters: s.o.Instances.Clusters()})
 }
 
+// GameSettingList answers GET /game-settings: the catalog of the game's
+// settings that an instance sets in its rules (and the two tokens, which
+// it sets with its secrets).
+type GameSettingList struct {
+	Groups   []gameserver.SettingGroup `json:"groups"`
+	Settings []gameserver.GameSetting  `json:"settings"`
+}
+
+func (s *Server) gameSettings(w http.ResponseWriter, r *http.Request, c *call) error {
+	return writeJSON(w, http.StatusOK, GameSettingList{Groups: gameserver.GameSettingGroups(), Settings: gameserver.GameSettings()})
+}
+
 // --- tokens and audit ---
 
 // TokenView is a token without its hash.
