@@ -43,6 +43,53 @@ func TestNewer(t *testing.T) {
 	}
 }
 
+// Pre-releases are ordered as semantic versioning says: identifier by
+// identifier, numbers as numbers, a number below any identifier with
+// letters, and a shorter list below a longer one that starts the same.
+func TestNewerOrdersPreReleases(t *testing.T) {
+	// Each version is older than every one after it.
+	order := []string{
+		"v1.0.0-1",
+		"v1.0.0-2",
+		"v1.0.0-10",
+		"v1.0.0-10a",
+		"v1.0.0-9z",
+		"v1.0.0-alpha",
+		"v1.0.0-alpha.1",
+		"v1.0.0-alpha.9",
+		"v1.0.0-alpha.10",
+		"v1.0.0-alpha.beta",
+		"v1.0.0-beta",
+		"v1.0.0-beta.2",
+		"v1.0.0-beta.11",
+		"v1.0.0-rc.1",
+		"v1.0.0-rc.9",
+		"v1.0.0-rc.10",
+		"v1.0.0-rc.10.1",
+		"v1.0.0",
+		"v1.0.1-rc.1",
+	}
+	for i, older := range order {
+		for j, newer := range order {
+			got, ok := Newer(newer, older)
+			if !ok || got != (j > i) {
+				t.Errorf("Newer(%q, %q) = %v, %v; want %v", newer, older, got, ok, j > i)
+			}
+		}
+	}
+	// Leading zeros do not change a number.
+	if got, ok := Newer("v1.0.0-rc.010", "v1.0.0-rc.9"); !got || !ok {
+		t.Errorf("rc.010 is not newer than rc.9")
+	}
+	if got, _ := Newer("v1.0.0-rc.01", "v1.0.0-rc.1"); got {
+		t.Errorf("rc.01 is newer than rc.1")
+	}
+	// Numbers longer than an int still compare by value.
+	if got, _ := Newer("v1.0.0-rc.100000000000000000000", "v1.0.0-rc.99999999999999999999"); !got {
+		t.Errorf("a long number")
+	}
+}
+
 func TestBuiltinKeyParses(t *testing.T) {
 	if len(BuiltinKey()) != ed25519.PublicKeySize {
 		t.Fatalf("PublicKey %q is not a base64 Ed25519 public key", PublicKey)
