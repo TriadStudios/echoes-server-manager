@@ -153,6 +153,11 @@ type rt struct {
 	// unverified is an automatic update that switched the build while the
 	// instance was stopped; the next start checks it (see unverified.go).
 	unverified unverified
+	// updating are the builds an update under way may still need: the one
+	// the instance ran when the update began, which a failed update goes
+	// back to, and the one it updates to. Pruning keeps both until the
+	// update ends (see holdBuilds). Set with m.mu held as well.
+	updating []string
 }
 
 // setFilterLocked rebuilds the filter for server output. in.mu must be
@@ -972,8 +977,9 @@ func (m *Manager) Clusters() []Cluster {
 }
 
 // BuildUsers maps each build version to the instances that use it, as
-// their current build, one of their kept previous builds, or the build an
-// unproven automatic update would go back to.
+// their current build, one of their kept previous builds, the build an
+// unproven automatic update would go back to, or a build an update under
+// way may still need (the one it began on and the one it goes to).
 func (m *Manager) BuildUsers() map[string][]string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -989,6 +995,7 @@ func (m *Manager) buildUsersLocked() map[string][]string {
 		if in.unverified.from != "" {
 			refs = append(refs, in.unverified.from)
 		}
+		refs = append(refs, in.updating...)
 		in.mu.Unlock()
 		for _, v := range refs {
 			if !slices.Contains(out[v], name) {
@@ -1029,6 +1036,24 @@ func (m *Manager) pruneBuilds(mayGo func(version string) bool) ([]string, error)
 	defer m.mu.Unlock()
 	users := m.buildUsersLocked()
 	return m.builds.Prune(func(v string) bool { return len(users[v]) > 0 || !mayGo(v) })
+}
+
+// holdBuilds counts the instance's current build and build to as in use
+// until release is called: an update under way switches to the one and may
+// go back to the other, whatever keep_previous_builds keeps. It takes m.mu
+// like a prune does, so a prune either ended before or keeps both. in.op
+// must be held.
+func (m *Manager) holdBuilds(in *rt, to string) (release func()) {
+	m.mu.Lock()
+	in.mu.Lock()
+	in.updating = []string{in.cfg.Build, to}
+	in.mu.Unlock()
+	m.mu.Unlock()
+	return func() {
+		in.mu.Lock()
+		in.updating = nil
+		in.mu.Unlock()
+	}
 }
 
 // setBuild switches the instance to build b with the given previous

@@ -32,7 +32,10 @@ type unverified struct {
 
 // switchStopped ends an automatic update of an instance whose server is
 // not running (after its backup): the build is switched, nothing is
-// started, and the instance is marked unverified. in.op must be held.
+// started, and the instance is marked unverified. It runs inside update,
+// which holds the old build (holdBuilds) until it returns: pruning keeps
+// that build between the switch and the mark that names it. in.op must be
+// held.
 func (m *Manager) switchStopped(ctx context.Context, in *rt, cfg Instance, to string) (Status, error) {
 	old := cfg.Build
 	if err := m.setBuild(in, to, append([]string{old}, cfg.PreviousBuilds...)); err != nil {
@@ -93,8 +96,9 @@ func (m *Manager) clearUnverifiedLocked(in *rt) bool {
 // starts the new build and waits until it is ready, whatever the caller
 // asked for. When it does not get ready, the new build is stopped, the
 // build the instance ran before is put back and started, and the failed
-// build is recorded so automatic updates do not try it again. in.op must
-// be held.
+// build is recorded so automatic updates do not try it again. Pruning
+// keeps u.from throughout: the mark names it until setBuild has made it
+// the current build. in.op must be held.
 func (m *Manager) startChecked(ctx context.Context, in *rt, u unverified) (Status, error) {
 	ctx = context.WithoutCancel(ctx)
 	name := in.name

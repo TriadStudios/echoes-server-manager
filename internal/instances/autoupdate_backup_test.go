@@ -91,4 +91,8 @@ func TestAutoUpdatePutOffBeforeTheBackup(t *testing.T) {
 	if v, _ := r.m.Get("a"); v.Build != "steam-main-1" || v.Status.State != Running {
 		t.Fatalf("after the put-off update: build %s, %s", v.Build, v.Status.State)
 	}
+	// The update is over: it holds the build it was to go to no longer.
+	if users := r.m.BuildUsers(); len(users[*target]) > 0 {
+		t.Fatalf("build users after the put-off update: %v", users)
+	}
 }

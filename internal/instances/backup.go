@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 )
@@ -371,21 +372,30 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 // prunes older ones only once the update goes ahead. An automatic update
 // of an instance whose server is not running only switches the build
 // (switchStopped). A manual update may pause automatic updates.
+//
+// From the moment it has the instance until it returns, whatever the
+// outcome, the update holds the build the instance ran and the one it goes
+// to (holdBuilds), so pruning removes neither: not the new build before it
+// is switched in, and not the old one while the new one is waited for,
+// though it may be no kept previous build by then.
 func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
-	nb, err := m.builds.Get(to)
-	if err != nil {
-		if fault.Is(err, fault.NotFound) {
-			return Status{}, fault.New(fault.Invalid, "no_build", "build %s is not installed", to)
-		}
+	if _, err := m.buildToUpdateTo(to); err != nil {
 		return Status{}, err
 	}
 	ctx = context.WithoutCancel(ctx)
 	in.op.Lock()
 	defer in.op.Unlock()
+	release := m.holdBuilds(in, to)
+	defer release()
+	// The build may have gone while the update waited for the instance.
+	nb, err := m.buildToUpdateTo(to)
+	if err != nil {
+		return m.mustStatus(name), err
+	}
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	prevState := in.status.State
@@ -499,4 +509,13 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 		in.mu.Unlock()
 	}
 	return m.mustStatus(name), fault.New(fault.Failed, "update_failed", "update failed, rolled back to %s: %v", old, cause)
+}
+
+// buildToUpdateTo looks up the build an update goes to.
+func (m *Manager) buildToUpdateTo(to string) (builds.Build, error) {
+	nb, err := m.builds.Get(to)
+	if fault.Is(err, fault.NotFound) {
+		return builds.Build{}, fault.New(fault.Invalid, "no_build", "build %s is not installed", to)
+	}
+	return nb, err
 }
