@@ -150,11 +150,11 @@ func TestGameSettingCheck(t *testing.T) {
 		"Difficulty":                {"0", "1", "2"},
 		"ChatFilter":                {"Off", "Mask", "Drop", "mask"},
 		"DeathDropMode":             {"Everything", "InventoryOnly", "Nothing", "nothing"},
-		"LastWipe":                  {"", "2026-11-13", "2024-02-29", "2000-01-01"},
-		"ChatBlockedWords":          {"", "rude", "rude,ruder", "rude, ruder , rudest", "a,,b", strings.Repeat("abcd,", 400)[:1999]},
-		"AdminPlayerIds":            {"", "76561190000000001", "76561190000000001,76561190000000002", "net:76561190000000001"},
-		"MOTD":                      {"", "Welcome!", "Welcome, traveller", "Be nice (please)", "well-met friends", strings.Repeat("x", 256)},
-		"AnnouncementsUrl":          {"", "https://example.com/api", "http://127.0.0.1:8080/x?y=1"},
+		"LastWipe":                  {"2026-11-13", "2024-02-29", "2000-01-01"},
+		"ChatBlockedWords":          {"rude", "rude,ruder", "rude, ruder , rudest", "a,,b", strings.Repeat("abcd,", 400)[:1999]},
+		"AdminPlayerIds":            {"76561190000000001", "76561190000000001,76561190000000002", "net:76561190000000001"},
+		"MOTD":                      {"Welcome!", "Welcome, traveller", "Be nice (please)", "well-met friends", strings.Repeat("x", 256)},
+		"AnnouncementsUrl":          {"https://example.com/api", "http://127.0.0.1:8080/x?y=1"},
 		"ProblemReportUrl":          {"https://example.com/reports"},
 		"BossSummonCooldownSeconds": {"0", "600"},
 	}
@@ -180,11 +180,11 @@ func TestGameSettingCheck(t *testing.T) {
 		"Difficulty":               {"3", "-1", "hard", "Normal", "1.0", ""},
 		"ChatFilter":               {"Masked", "", "Off Mask"},
 		"DeathDropMode":            {"All", "Some", ""},
-		"LastWipe":                 {"2026-11-14", "2026-02-30", "13.11.2026", "2026-1-1", "2026-11-13T00:00:00Z", "yesterday"},
-		"ChatBlockedWords":         {"two words", "close)", `quote"`, strings.Repeat("abcd,", 401)[:2001]},
-		"AdminPlayerIds":           {"one two"},
-		"MOTD":                     {"Hi,all", "Welcome:)", strings.Repeat("x", 257), "a\nb", `say "hi"`, "go -Port=1"},
-		"AnnouncementsUrl":         {"example.com/api", "ftp://example.com/x", "https://", "https://example.com/a b", "https://example.com/a,b", "https://example.com/(x)"},
+		"LastWipe":                 {"", "2026-11-14", "2026-02-30", "13.11.2026", "2026-1-1", "2026-11-13T00:00:00Z", "yesterday"},
+		"ChatBlockedWords":         {"", ",", " , ", "two words", "close)", `quote"`, strings.Repeat("abcd,", 401)[:2001]},
+		"AdminPlayerIds":           {"", "one two"},
+		"MOTD":                     {"", "Hi,all", "Welcome:)", strings.Repeat("x", 257), "a\nb", `say "hi"`, "go -Port=1"},
+		"AnnouncementsUrl":         {"", "example.com/api", "ftp://example.com/x", "https://", "https://example.com/a b", "https://example.com/a,b", "https://example.com/(x)"},
 	}
 	for key, values := range bad {
 		s, _ := LookupGameSetting(key)
@@ -242,6 +242,37 @@ func TestLaunchArgsWriteListsWhole(t *testing.T) {
 		"-MOTD=Welcome, traveller", "-HarvestRate=2.5", "-SomethingElse=a,b"} {
 		if !slices.Contains(argv, want) {
 			t.Errorf("%q is not on the command line %q", want, argv)
+		}
+	}
+}
+
+// No argument ends in "=": the server reads an empty unquoted value as the
+// argument that follows it, which could be another switch. A rule stored
+// with an empty value is left out when it is a setting of the catalog (the
+// server uses its default) and passed as the bare switch otherwise; an
+// extra argument that ends in "=" is passed without it.
+func TestLaunchArgsNeverEndInEquals(t *testing.T) {
+	l := goldenLaunch()
+	l.ServerName = ""
+	l.Rules = map[string]string{"MOTD": "", "PvP": "", "ChatBlockedWords": " , ", "Foo": "", "HarvestRate": "2"}
+	l.ExtraArgs = []string{"-Bar=", "-Baz==", "-Keep=1"}
+	for _, delivery := range []string{DeliveryFile, DeliveryCommandLine} {
+		l.Delivery = delivery
+		argv := l.Args()
+		for _, a := range argv {
+			if strings.HasSuffix(a, "=") {
+				t.Errorf("%s: %q ends in =", delivery, a)
+			}
+			for _, gone := range []string{"-MOTD", "-PvP", "-ChatBlockedWords"} {
+				if a == gone || strings.HasPrefix(a, gone+"=") {
+					t.Errorf("%s: %q is passed although it is empty", delivery, a)
+				}
+			}
+		}
+		for _, want := range []string{"-Foo", "-Bar", "-Baz", "-Keep=1", "-HarvestRate=2", "-ServerName"} {
+			if !slices.Contains(argv, want) {
+				t.Errorf("%s: %q is not on the command line %q", delivery, want, argv)
+			}
 		}
 	}
 }

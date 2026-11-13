@@ -365,10 +365,8 @@
           var drop = f.elements['drop:' + key];
           if (changed(el) || el.closest('[data-added]')) { rulesChanged = true; }
           // A game setting left empty is not set: the server uses its
-          // default (one stored empty and left as it is stays). Another
-          // rule is kept unless it is removed.
-          var keep = el.hasAttribute('data-game') ? el.value !== '' || (el.hasAttribute('data-set') && !changed(el)) : !(drop && drop.checked);
-          if (keep) { rules[key] = el.value; }
+          // default. Another rule is kept unless it is removed.
+          if (el.hasAttribute('data-game') ? el.value !== '' : !(drop && drop.checked)) { rules[key] = el.value; }
           return;
         }
         if (n.indexOf('drop:') === 0) {

@@ -435,6 +435,8 @@ func (in *Instance) Validate() error {
 // keeps working until it is changed. A rule that names a catalog setting
 // in another case is refused when set: the server finds its switches
 // without regard to case, and the setting is known by its own spelling.
+// A new rule needs a value, and a new extra argument may not end in "=":
+// the server would read the argument after an empty value as that value.
 // now is the time of the check (a date may not lie after it).
 func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 	// The server takes at most gameserver.MaxPlayersLimit players. A value
@@ -457,10 +459,26 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 			if f, folded := gameserver.FoldGameSetting(k); folded {
 				return invalid("rules", "%s is the game setting %s: write its name as %s", k, f.Key, f.Key)
 			}
+			// The server reads an empty value as the argument after it.
+			if v == "" {
+				return invalid("rules", "%s needs a value; leave the rule out to use the server's default", k)
+			}
 			continue
 		}
 		if err := s.Check(v, now); err != nil {
 			return invalid("rules", "%v", err)
+		}
+	}
+	var argsBefore []string
+	if old != nil {
+		argsBefore = old.ExtraArgs
+	}
+	for i, a := range in.ExtraArgs {
+		if slices.Contains(argsBefore, a) {
+			continue
+		}
+		if strings.HasSuffix(a, "=") {
+			return invalid("extra_args", "argument %d ends in \"=\" without a value, and the server would read the next argument as its value; give it a value or leave out the \"=\"", i+1)
 		}
 	}
 	return nil

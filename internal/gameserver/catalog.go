@@ -243,6 +243,11 @@ func (s GameSetting) Check(value string, now time.Time) error {
 	if hasControlChar(value) {
 		return bad("may not hold control characters")
 	}
+	// The server reads an empty value as the argument after it. Not set
+	// is the way to the server's default.
+	if value == "" || (s.Type == TypeList && ListValue(value) == "") {
+		return bad("needs a value; to use the server's default, leave the setting out (not set)")
+	}
 	switch s.Type {
 	case TypeBool:
 		if !slices.Contains(boolWords, strings.ToLower(value)) {
@@ -271,9 +276,6 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		}
 		return bad("must be %s", orList(values))
 	case TypeDate:
-		if value == "" {
-			return nil
-		}
 		d, err := time.Parse(time.DateOnly, value)
 		if !dateRe.MatchString(value) || err != nil {
 			return bad("must be a date like 2026-01-31 (YYYY-MM-DD)")
@@ -308,7 +310,7 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		if !strings.ContainsFunc(value, unicode.IsSpace) && strings.ContainsAny(value, ",)") {
 			return bad("may not hold ',' or ')' unless it also holds a space: the server ends a value without spaces there")
 		}
-		if s.Format == FormatURL && value != "" {
+		if s.Format == FormatURL {
 			u, err := url.Parse(value)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsFunc(value, unicode.IsSpace) {
 				return bad("must be an http or https address like https://example.com/path")

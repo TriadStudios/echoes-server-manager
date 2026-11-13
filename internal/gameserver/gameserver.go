@@ -106,18 +106,25 @@ type Launch struct {
 // -AnnouncementsToken and -ProblemReportToken when set), then the extra
 // args. -MULTIHOME is never part of it: a bind address configured
 // for an instance is not given to the server.
+//
+// No argument ends in "=". The server reads an empty value that is not
+// quoted as the argument after it, so "-MOTD=" would take the next switch
+// for its value. An empty value (one stored before ESM refused them) is
+// left out for a setting of the catalog, so the server uses its default,
+// and written as the bare switch otherwise; an extra argument that ends in
+// "=" is passed without its trailing "=".
 func (l Launch) Args() []string {
 	argv := []string{
 		l.Map,
 		UnattendedSwitch,
-		PortSwitch + "=" + strconv.Itoa(l.GamePort),
-		QueryPortSwitch + "=" + strconv.Itoa(l.QueryPort),
-		ServerNameSwitch + "=" + l.ServerName,
-		WorldNameSwitch + "=" + l.WorldName,
-		MaxPlayersSwitch + "=" + strconv.Itoa(l.MaxPlayers),
-		ListInBrowserSwitch + "=" + boolWord(l.Listed),
-		UserDirSwitch + "=" + l.UserDir,
-		LogFileSwitch + "=" + l.LogFile,
+		withValue(PortSwitch, strconv.Itoa(l.GamePort)),
+		withValue(QueryPortSwitch, strconv.Itoa(l.QueryPort)),
+		withValue(ServerNameSwitch, l.ServerName),
+		withValue(WorldNameSwitch, l.WorldName),
+		withValue(MaxPlayersSwitch, strconv.Itoa(l.MaxPlayers)),
+		withValue(ListInBrowserSwitch, boolWord(l.Listed)),
+		withValue(UserDirSwitch, l.UserDir),
+		withValue(LogFileSwitch, l.LogFile),
 	}
 	keys := make([]string, 0, len(l.Rules))
 	for k := range l.Rules {
@@ -125,7 +132,11 @@ func (l Launch) Args() []string {
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		argv = append(argv, "-"+k+"="+switchValue(k, l.Rules[k]))
+		v := switchValue(k, l.Rules[k])
+		if _, known := LookupGameSetting(k); known && v == "" {
+			continue
+		}
+		argv = append(argv, withValue("-"+k, v))
 	}
 	if l.Delivery == DeliveryCommandLine {
 		if l.Secrets.ServerPassword != "" {
@@ -143,7 +154,21 @@ func (l Launch) Args() []string {
 	} else if l.SecretsFile != "" {
 		argv = append(argv, SecretsFileSwitch+"="+l.SecretsFile)
 	}
-	return append(argv, l.ExtraArgs...)
+	for _, a := range l.ExtraArgs {
+		if a = strings.TrimRight(a, "="); strings.Trim(a, "-") != "" {
+			argv = append(argv, a)
+		}
+	}
+	return argv
+}
+
+// withValue writes a switch with its value, or the bare switch for an
+// empty value (see Args).
+func withValue(name, value string) string {
+	if value == "" {
+		return name
+	}
+	return name + "=" + value
 }
 
 // boolWord writes a switch value the way the engine's own switches are
