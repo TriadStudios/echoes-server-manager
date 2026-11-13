@@ -3,10 +3,12 @@ package instances
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
+	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 )
@@ -25,8 +27,16 @@ import (
 //     query port with 0 players, or right away when it is stopped. While
 //     players are on, or the count is not known, it waits and asks again
 //     at the next scheduler tick. Waiting longer than update_max_wait
-//     raises a warning event once (it keeps waiting). An automatic update
-//     that failed is not tried again for the same build.
+//     raises a warning event once (it keeps waiting). Right before the
+//     server is stopped (after the backup) the player count is asked again:
+//     a player who joined meanwhile puts the update off. An update that is
+//     refused because the instance is busy is tried again later. An
+//     automatic update that failed is not tried again for the same build.
+//
+// An admin who updates an instance by hand to an older build of its source
+// pauses its automatic updates until the source has a build newer than the
+// one the instance left. The failed build and the pause are kept in
+// run/autoupdate.json, so they hold across restarts of ESM.
 //
 // Every step is an "update" event, and each automatic update and each
 // overdue warning is in the audit log (actor kind "system").
@@ -53,7 +63,8 @@ type UpdateInfo struct {
 
 // UpdateEvent is the data of an "update" event.
 type UpdateEvent struct {
-	// Action: available, started, updated, failed, overdue.
+	// Action: available, started, updated, failed, postponed, overdue,
+	// paused.
 	Action  string `json:"action"`
 	From    string `json:"from"`
 	To      string `json:"to"`
@@ -70,6 +81,66 @@ type autoState struct {
 	// failed is the target whose automatic update failed, and lastError why.
 	failed    string
 	lastError string
+	// holdSource and holdBuildID pause automatic updates after a manual
+	// update to an older build: until the source has a build id above
+	// holdBuildID.
+	holdSource  string
+	holdBuildID string
+}
+
+// autoFile is what of autoState is kept in run/autoupdate.json.
+type autoFile struct {
+	Failed      string `json:"failed,omitempty"`
+	LastError   string `json:"last_error,omitempty"`
+	HoldSource  string `json:"hold_source,omitempty"`
+	HoldBuildID string `json:"hold_buildid,omitempty"`
+}
+
+func autoFileRel(name string) string { return instDir(name) + "/run/autoupdate.json" }
+
+// saveAutoLocked writes the lasting part of the instance's auto state.
+// in.mu must be held.
+func (m *Manager) saveAutoLocked(in *rt) {
+	if in.deleted {
+		return
+	}
+	f := autoFile{Failed: in.auto.failed, LastError: in.auto.lastError, HoldSource: in.auto.holdSource, HoldBuildID: in.auto.holdBuildID}
+	if f == (autoFile{}) {
+		m.st.Remove(autoFileRel(in.name))
+		return
+	}
+	if err := m.st.WriteJSON(autoFileRel(in.name), f, 0o600); err != nil {
+		m.log.Warn("cannot write the automatic update state", "instance", in.name, "err", err)
+	}
+}
+
+// loadAuto reads the lasting part of an instance's auto state.
+func (m *Manager) loadAuto(name string) autoState {
+	var f autoFile
+	if err := m.st.ReadJSON(autoFileRel(name), &f); err != nil {
+		return autoState{}
+	}
+	return autoState{failed: f.Failed, lastError: f.LastError, holdSource: f.HoldSource, holdBuildID: f.HoldBuildID}
+}
+
+// idLess compares two build ids (digits) as numbers.
+func idLess(a, b string) bool {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
+// held reports whether a manual downgrade pauses the update to target.
+func (a autoState) held(target string) bool {
+	src, id, ok := steam.SourceOf(target)
+	return ok && a.holdSource == src && !idLess(a.holdBuildID, id)
+}
+
+func (a autoState) holdText() string {
+	return "automatic updates wait for a build newer than " + steam.Version(a.holdSource, a.holdBuildID) +
+		" (the instance was updated by hand to an older build)"
 }
 
 // PlayerQueryTimeout bounds the player count query before an automatic
@@ -104,6 +175,10 @@ func (m *Manager) updateInfo(cfg Instance, a autoState) UpdateInfo {
 	}
 	if a.target == target {
 		u.Since = a.since
+	}
+	if a.held(target) {
+		u.Waiting = a.holdText()
+		return u
 	}
 	if cfg.AutoUpdate == AutoUpdateRestart && a.failed != target {
 		u.Pending = true
@@ -154,11 +229,20 @@ func (m *Manager) autoTick(now time.Time) {
 		in.mu.Lock()
 		if target == "" {
 			// Nothing to update to (or an update has the new build in
-			// place right now): forget the wait, keep what an update
-			// that runs or failed needs.
-			in.auto = autoState{failed: in.auto.failed, lastError: in.auto.lastError, running: in.auto.running}
+			// place right now): forget the wait and the last failure; keep
+			// a running update and a pause.
+			old := in.auto
+			in.auto = autoState{running: old.running, holdSource: old.holdSource, holdBuildID: old.holdBuildID}
+			if old.failed != "" || old.lastError != "" {
+				m.saveAutoLocked(in)
+			}
 			in.mu.Unlock()
 			continue
+		}
+		if in.auto.holdSource != "" && !in.auto.held(target) {
+			// A build newer than the one left by hand: the pause is over.
+			in.auto.holdSource, in.auto.holdBuildID = "", ""
+			m.saveAutoLocked(in)
 		}
 		if in.auto.target != target {
 			in.auto.target, in.auto.since, in.auto.waiting, in.auto.warned = target, now, "", false
@@ -168,7 +252,7 @@ func (m *Manager) autoTick(now time.Time) {
 				Message: "build " + target + " is available (auto_update " + cfg.AutoUpdate + ")"})
 			in.mu.Lock()
 		}
-		skip := cfg.AutoUpdate != AutoUpdateRestart || in.auto.failed == target || in.auto.running
+		skip := cfg.AutoUpdate != AutoUpdateRestart || in.auto.failed == target || in.auto.running || in.auto.held(target)
 		in.mu.Unlock()
 		if skip {
 			continue
@@ -211,6 +295,27 @@ func (m *Manager) autoTick(now time.Time) {
 	}
 }
 
+// noteManualUpdate pauses automatic updates after a manual update to an
+// older build of the same source, and ends a pause after any other manual
+// update.
+func (m *Manager) noteManualUpdate(in *rt, from, to string) {
+	fs, fid, ok1 := steam.SourceOf(from)
+	ts, tid, ok2 := steam.SourceOf(to)
+	in.mu.Lock()
+	down := ok1 && ok2 && fs == ts && idLess(tid, fid)
+	if down {
+		in.auto.holdSource, in.auto.holdBuildID = fs, fid
+	} else {
+		in.auto.holdSource, in.auto.holdBuildID = "", ""
+	}
+	m.saveAutoLocked(in)
+	text, hidden := in.auto.holdText(), in.cfg.OutputHidden()
+	in.mu.Unlock()
+	if down {
+		m.publishUpdate(in.name, hidden, UpdateEvent{Action: "paused", From: from, To: to, Message: text})
+	}
+}
+
 // playersWaiting asks the server for its player count and returns why an
 // update must wait, or "" when the server is empty.
 func (m *Manager) playersWaiting(cfg Instance) string {
@@ -235,15 +340,27 @@ func (m *Manager) autoUpdate(in *rt, cfg Instance, target string) {
 	m.log.Info("automatic update", "instance", cfg.Name, "from", cfg.Build, "to", target)
 	m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "started", From: cfg.Build, To: target,
 		Message: "updating from " + cfg.Build + " to " + target + " (auto_update restart)"})
-	_, err := m.Update(context.Background(), cfg.Name, target)
+	_, err := m.update(context.Background(), cfg.Name, target, true)
+	putOff := err != nil && fault.Is(err, fault.Conflict)
 	in.mu.Lock()
 	in.auto.running = false
-	if err != nil {
+	switch {
+	case putOff:
+		// Busy, or a player joined: tried again at a later tick.
+		in.auto.waiting = err.Error()
+	case err != nil:
 		in.auto.failed, in.auto.lastError = target, err.Error()
-	} else {
+	default:
 		in.auto = autoState{}
 	}
+	m.saveAutoLocked(in)
 	in.mu.Unlock()
+	if putOff {
+		m.log.Info("automatic update put off", "instance", cfg.Name, "to", target, "why", err)
+		m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "postponed", From: cfg.Build, To: target, Message: err.Error()})
+		m.auditAuto(audit.Entry{Action: "instance.auto_update.postponed", Target: cfg.Name + " to " + target, Error: err.Error()})
+		return
+	}
 	e := audit.Entry{Action: "instance.auto_update", Target: cfg.Name + " to " + target, OK: err == nil}
 	if err != nil {
 		e.Error = err.Error()
@@ -254,3 +371,7 @@ func (m *Manager) autoUpdate(in *rt, cfg Instance, target string) {
 	}
 	m.auditAuto(e)
 }
+
+// beforeAutoStop, when set (tests only), runs in an automatic update right
+// before the player count is asked again.
+var beforeAutoStop func(name string)

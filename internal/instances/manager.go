@@ -282,6 +282,7 @@ func New(opts Options) (*Manager, error) {
 			}
 		}
 		r.setFilterLocked()
+		r.auto = m.loadAuto(in.Name)
 		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build}
 		var last Status
 		if err := m.st.ReadJSON(stateFile(in.Name), &last); err == nil {
