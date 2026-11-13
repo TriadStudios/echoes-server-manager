@@ -221,8 +221,9 @@ func (m *Manager) serverEnv() []string {
 }
 
 // findServerID reads the Steam server id from the start of the current
-// server log (it is logged a few seconds after the start), for a server
-// found running when ESM starts.
+// server log, for a server found running when ESM starts. Every start
+// begins a new log, and the server logs its id a few seconds after it
+// starts, so the first id line is this run's; a later one is not taken.
 func (m *Manager) findServerID(name string) string {
 	f, err := m.st.Open(serverLog(name))
 	if err != nil {
@@ -231,13 +232,12 @@ func (m *Manager) findServerID(name string) string {
 	defer f.Close()
 	buf := make([]byte, 1<<20)
 	n, _ := f.ReadAt(buf, 0)
-	id := ""
 	for _, line := range strings.Split(string(buf[:n]), "\n") {
 		if v, ok := gameserver.ServerID(line); ok {
-			id = v
+			return v
 		}
 	}
-	return id
+	return ""
 }
 
 // dropRunSecretsLocked removes the secrets file of a server that has
@@ -696,8 +696,11 @@ func (m *Manager) followLogs(in *rt, w *watchState) {
 			w.logReady = true
 		}
 		if id, ok := gameserver.ServerID(line); ok {
+			// The first id line of a run is the server's; a start clears it.
 			in.mu.Lock()
-			in.serverID = id
+			if in.serverID == "" {
+				in.serverID = id
+			}
 			in.mu.Unlock()
 		}
 		publish(SourceServer, line)

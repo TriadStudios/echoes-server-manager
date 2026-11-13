@@ -174,13 +174,17 @@ func RefusedSwitch(key string) (why string, refused bool) {
 	return "", false
 }
 
-// The engine puts this in front of a message in its log file: the time and
-// frame number ("[2026.01.02-03.04.05:678][  0]"), then the log category,
-// optionally a verbosity and optionally a subsystem tag, each followed by
-// ": " ("LogExample: Display: "). All of it is optional, so a line printed
-// without it counts too. UNCONFIRMED: the categories the real lines carry;
-// any name of letters, digits and "_" is accepted, at most three of them.
-const logPrefix = `^(?:\[[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}:[0-9]{3}\]\[ *[0-9]+\])?(?:[A-Za-z][A-Za-z0-9_]*: ){0,3}`
+// The engine puts this in front of every message in its log file (the
+// -abslog file ESM reads): the time and frame number
+// ("[2026.01.02-03.04.05:678][  0]"), then exactly one log category, then
+// optionally one verbosity word, each followed by ": "
+// ("LogExample: Display: "). All of it is required but the verbosity, so
+// nothing a player types can stand where the words of a line ESM reads
+// start: a chat line has the player's name, or a tag, between the
+// category and the text. UNCONFIRMED: the categories the real lines carry;
+// any name of letters, digits and "_" is accepted.
+const logPrefix = `^\[[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}:[0-9]{3}\]\[ *[0-9]+\]` +
+	`[A-Za-z][A-Za-z0-9_]*: (?:(?:Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose): )?`
 
 // The shapes of the server log lines ESM reads. Only the fixed words are
 // matched; names and numbers in them are the server's own. Each must start
@@ -193,14 +197,14 @@ var (
 	// server that is logged on but has no session yet cannot be joined.
 	readyLine = regexp.MustCompile(logPrefix + `\[SESSION\] Dedicated session '.*' registered \(map `)
 	// worldSavedLine: the server wrote its world save (at start, at every
-	// autosave and at a stop), or confirmed at a stop that its last write
-	// went through. CONFIRMED for the words; UNCONFIRMED whether "Wrote
-	// save" always starts its message (an optional "[Tag] " is allowed in
-	// front of either).
-	worldSavedLine = regexp.MustCompile(logPrefix + `(?:\[[A-Za-z]+\] )?(?:Wrote save |Synchronous write after the flush succeeded)`)
+	// autosave and at a stop), or confirmed at a stop, tagged [SHUTDOWN]
+	// or [EXIT], that its last write went through. CONFIRMED for the
+	// words; UNCONFIRMED whether "Wrote save" starts its message.
+	worldSavedLine = regexp.MustCompile(logPrefix + `(?:Wrote save |\[(?:SHUTDOWN|EXIT)\] Synchronous write after the flush succeeded)`)
 	// serverIDLine: the server logged on to Steam anonymously and names
 	// the Steam id it got. CONFIRMED: the id is new at every start.
-	// UNCONFIRMED: whether the words always start the message.
+	// UNCONFIRMED: whether the words start the message (a subsystem tag in
+	// front of them would hide the id; it is only shown, never relied on).
 	serverIDLine = regexp.MustCompile(logPrefix + `Steam game server logged on with UID: ([0-9]{1,20})(?:[^0-9A-Za-z_]|$)`)
 	// resumedLine: the server found a save of its world and carries on
 	// with it (instead of a new world). CONFIRMED for the words.

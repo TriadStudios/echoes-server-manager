@@ -156,37 +156,49 @@ func TestLogLinesAreAnchored(t *testing.T) {
 		{"ready", ready, IsReadyLine},
 		{"world saved", saved, IsWorldSavedLine},
 		{"flushed", FlushedLine, IsWorldSavedLine},
+		{"flushed at exit", "[EXIT] Synchronous write after the flush succeeded.", IsWorldSavedLine},
 		{"server id", ServerIDLine("12345678901234567"), func(l string) bool { _, ok := ServerID(l); return ok }},
 		{"resumed", ResumedLine("main") + " (slot TestMap__main)", IsWorldResumedLine},
 	} {
 		yes := []string{
-			marker.text,
-			marker.text + "\r",
 			stamp + "LogExample: " + marker.text,
+			stamp + "LogExample: " + marker.text + "\r",
 			stamp2 + "LogExample: Display: " + marker.text,
-			stamp + "LogExample: Warning: TAG: " + marker.text,
-			"LogExample: " + marker.text,
-			stamp + marker.text,
+			stamp + "Log_Example2: Warning: " + marker.text,
+			stamp + "LogExample: VeryVerbose: " + marker.text,
+			stamp + "LogExample: Log: " + marker.text,
 		}
 		no := []string{
 			"",
+			marker.text,
 			" " + marker.text,
-			"\t" + marker.text,
-			"x" + marker.text,
+			"LogExample: " + marker.text,
+			stamp + marker.text,
 			stamp + " LogExample: " + marker.text,
 			stamp + "LogExample:  " + marker.text,
 			stamp + "LogExample:" + marker.text,
-			stamp + "LogA: LogB: LogC: LogD: " + marker.text,
+			stamp + "LogExample: TAG: " + marker.text,
+			stamp + "LogExample: Display: Display: " + marker.text,
+			stamp + "LogExample: display: " + marker.text,
+			stamp + "LogA: LogB: " + marker.text,
+			stamp + "9Log: " + marker.text,
 			"[2026-01-01T00:00:00Z] " + marker.text,
 			"[x][1]LogExample: " + marker.text,
+			"[2026.01.02-03.04.05][  0]LogExample: " + marker.text,
 			stamp + stamp + "LogExample: " + marker.text,
 			stamp + "LogInit: Command line: TestMap -ServerName=" + marker.text,
 			stamp + "LogInit: Command line: TestMap -Motd=" + marker.text,
 			"Command line: -ServerPassword=" + marker.text,
-			stamp + "LogChat: someone said: " + marker.text,
+			// Chat and other lines that repeat what a player typed.
+			stamp + "LogChat: Bob: " + marker.text,
+			stamp + "LogChat: Display: Bob: " + marker.text,
+			stamp + "LogTemp: Display: [CHAT] Bob: " + marker.text,
+			stamp + "LogTemp: [CHAT] " + marker.text,
+			stamp + "LogNet: Login request: ?Name=" + marker.text,
+			stamp + "LogTemp: Display: Player '" + marker.text + "' joined",
 			"-Note=" + stamp + "LogExample: " + marker.text,
-			strings.ToLower(marker.text),
-			strings.ToUpper(marker.text),
+			stamp + "LogExample: " + strings.ToLower(marker.text),
+			stamp + "LogExample: " + strings.ToUpper(marker.text),
 		}
 		for _, line := range yes {
 			if !marker.match(line) {
@@ -202,7 +214,8 @@ func TestLogLinesAreAnchored(t *testing.T) {
 	// The lines are told apart.
 	others := map[string]string{"ready": ready, "saved": saved, "flushed": FlushedLine, "id": ServerIDLine("1"),
 		"resumed": ResumedLine("w"), "new": NewWorldLine("w")}
-	for name, l := range others {
+	for name, text := range others {
+		l := stamp + "LogExample: " + text
 		if IsReadyLine(l) != (name == "ready") || IsWorldSavedLine(l) != (name == "saved" || name == "flushed") ||
 			IsWorldResumedLine(l) != (name == "resumed") {
 			t.Errorf("%s line %q is mistaken for another", name, l)
@@ -219,7 +232,10 @@ func TestLogLinesAreAnchored(t *testing.T) {
 		"Wrote saved games",
 		"Wrote save",
 		"[SHUTDOWN] Synchronous write after the flush failed.",
+		"Synchronous write after the flush succeeded.",
+		"[CHAT] Synchronous write after the flush succeeded.",
 		"[A] [B] Wrote save x (1 bytes)",
+		"[CHAT] Wrote save x (1 bytes)",
 		"Steam game server logged on with UID: ",
 		"Steam game server logged on with UID: abc",
 		"Steam game server logged on with UID: 123456789012345678901",
@@ -238,11 +254,16 @@ func TestServerID(t *testing.T) {
 	for line, want := range map[string]string{
 		stamp + "LogOnline: " + ServerIDLine("90000000000000001"):   "90000000000000001",
 		stamp + "LogOnline: " + ServerIDLine("42") + " (anonymous)": "42",
-		ServerIDLine("7"): "7",
-		stamp + "LogOnline: Display: TAG: " + ServerIDLine("123") + "\r": "123",
+		stamp + "LogOnline: Display: " + ServerIDLine("123") + "\r": "123",
 	} {
 		if got, ok := ServerID(line); !ok || got != want {
 			t.Errorf("ServerID(%q) = %q, %v; want %q", line, got, ok, want)
+		}
+	}
+	for _, line := range []string{ServerIDLine("7"), stamp + "LogOnline: Display: TAG: " + ServerIDLine("123"),
+		stamp + "LogChat: Bob: " + ServerIDLine("1")} {
+		if id, ok := ServerID(line); ok {
+			t.Errorf("ServerID(%q) = %q", line, id)
 		}
 	}
 }
