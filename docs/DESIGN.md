@@ -68,6 +68,7 @@ return the JSON 404 error.
     setup.json                 hash and expiry of the one-time setup code
     users.json                 users with PBKDF2 password hashes
     tokens.json                API tokens (SHA-256 only)
+    steam.json                 branch passwords of the Steam sources (0600)
   steam/linux64/               the 64-bit Steam client libraries (put there
                                by the box owner; see steam_runtime_dir)
   builds/
@@ -95,6 +96,12 @@ return the JSON 404 error.
                                (0600; only while a server runs)
   backups/
     <name>/<id>/               save files and meta.json
+  steam-cache/
+    <source>/app/              SteamCMD's install folder of the source's app
+                               (kept, so downloads are deltas)
+    <source>/home/             the home folder SteamCMD runs with
+    <source>.state.json        build id last seen, when, last check, last error
+    <source>.log               SteamCMD's output of the last run (masked)
   tmp/                         install work folders
 ```
 
@@ -122,6 +129,9 @@ are refused, so typos are reported.
 | `log_level`            | `info`            | `debug`, `info`, `warn` or `error`. |
 | `steam_app_id`         | (none)            | The game's Steam app id (digits). Written to `steam_appid.txt` next to the server binary of every build installed from then on. No default; `esm doctor` warns while it is unset. |
 | `steam_runtime_dir`    | `<root>/steam/linux64` | Folder with the 64-bit `steamclient.so` and `libsteamwebrtc.so`; put first on every server's `LD_LIBRARY_PATH`. A relative path is taken from the root. |
+| `update_check`         | `true`            | Let the service look up the newest ESM release (at most every 6 hours, only while someone looks at the box). It never updates anything by itself. |
+| `steamcmd`             | `<root>/steamcmd/steamcmd.sh` | SteamCMD (`steamcmd.exe` on Windows). A relative path is taken from the root. |
+| `steam_sources`        | (none)            | Steam apps builds come from: `name`, `app_id`, `branch` (empty for the default branch), `executable` (per system, a path inside the app's files), `default_map`, `channel`, `check_every` (default `15m`, `"0"` off, else at least `1m`). See [Builds from Steam](#builds-from-steam). |
 
 ## Instances
 
@@ -518,7 +528,107 @@ rolled back. World data is not touched by a rollback.
 or as one of its newest `keep_previous_builds` previous builds. A single
 build can be deleted when no instance uses it.
 
-Later, builds will also come from Steam, with the app ids as configuration.
+**Making a manifest.** `esm build manifest <folder> --version V
+--executable linux=<path> ...` writes the manifest of a build folder: the
+SHA-256 of every file, under the rules of an install (no links or special
+files, clean names that differ in more than case, the file-count limit),
+checked for every system it names a binary for.
+
+### Builds from Steam
+
+A Steam source (`steam_sources`) is a Steam app (a dedicated server tool
+app) and, usually, a password-protected beta branch. `esm build install
+steam:<name>` (`POST /api/v1/builds` with that source; admin) and the
+source's own checks every `check_every` do the same:
+
+1. One SteamCMD run at a time. ESM writes a script into a fresh folder
+   `steam-cache/.run-<random>/` (0700, the file 0600):
+   `force_install_dir`, `login anonymous`, `app_update <app> -beta <branch>
+   -betapassword <password>` (plus `validate` when a person asked), `quit`,
+   and runs `steamcmd +runscript <file>` with `HOME` set to the source's
+   cache, so SteamCMD's own files stay there. The folder is removed after
+   the run. The password is never on a command line, in the environment,
+   in a log or in the audit log; SteamCMD's output is masked before ESM
+   keeps any of it.
+2. A wrong password (SteamCMD says "Invalid Password") is `wrong_password`;
+   any other failure is `steamcmd_failed`, with the last error line.
+3. ESM reads `steamapps/appmanifest_<app>.acf` with a strict, bounded
+   parser (quoted KeyValues text only, at most 1 MiB, depth 16, strings of
+   4 KiB): the app id must match, `StateFlags` must say "fully installed",
+   and `buildid` gives the version `steam-<name>-<buildid>`.
+4. When that build is installed already, nothing more happens. Otherwise
+   the app's files (without `steamapps/`) are copied into the install work
+   folder (links and special files refused), a manifest is made for the
+   copy (channel, default map and executables from the source), and the
+   install finishes like any other: hashes checked, `steam_appid.txt`
+   placed, read-only, moved into `builds/`.
+
+The cache keeps the app's files, so a check when nothing changed is quick
+and a new build is a delta download. A box holds each build twice (the
+cache and `builds/`). The source's state (`GET /api/v1/steam`, `esm steam
+list`) says what it last saw and whether the last run failed; an automatic
+check that fails is written to the audit log when its error changes.
+
+### Automatic updates
+
+An instance follows the Steam source its current build came from (a build
+`steam-<source>-<buildid>`); an instance on any other build follows none.
+Its update target is the source's last seen build, when that is installed,
+of the instance's channel and not its own build (so a build id set live
+again on Steam is followed too). `auto_update`:
+
+- `off` (default) and `install`: the target shows as available
+  (`update_available`, `update` in the instance, the dashboard and the
+  overview); nothing else happens. The source's checks install builds
+  whatever the instances are set to.
+- `restart`: the scheduler (every 15 seconds) updates the instance with the
+  usual update (backup, one stop signal, start, wait for ready, roll back)
+  as soon as its server answers the query port (A2S_INFO) with 0 players,
+  or right away when it is stopped. While players are on, the count is not
+  known, or the instance is starting, stopping, crashed or failed, it waits
+  and says why. After `update_max_wait` (default 6h) it raises one warning
+  (an `update` event and an audit entry) and keeps waiting. An automatic
+  update that failed is not tried again for the same build; a newer build,
+  or an update by hand, starts over.
+
+Each step is an `update` event (`available`, `started`, `updated`,
+`failed`, `overdue`); each automatic update and each overdue warning is in
+the audit log as actor kind `system`.
+
+## Trust
+
+**Releases.** A release is trusted because of its signature, not because
+of where it comes from. The release workflow signs `SHA256SUMS` with an
+Ed25519 key whose public half is built into ESM; the private half is a
+repository secret (`ESM_RELEASE_KEY`) and a copy the project owner keeps
+offline. ESM fetches the release list, the binaries and the two files over
+https from GitHub (redirects on https only, time limits, size caps: 1 MiB
+for the release list, 64 KiB for `SHA256SUMS`, 256 MiB for a binary), and
+takes a binary only when the signature verifies and the binary's SHA-256
+is the one the signed list names. A release whose files lack the signature
+is refused. So GitHub, a proxy or a mirror can withhold a release, but not
+change one. Whoever holds the private key can make releases every ESM
+accepts; a new key needs a release, signed with the old one, that carries
+the new public key. `esm-sign` checks the key against the built-in public
+key before signing, so a wrong secret fails in the workflow and not on the
+boxes. Updates never happen on their own: a person runs `esm update-self`
+or the admin-only `POST /api/v1/box/self-update`.
+
+**Steam.** A Steam build is trusted as far as Steam and the accounts that
+upload builds to the app are: ESM does not check a signature of its own on
+it. SteamCMD (Valve's program) runs with ESM's rights. The manifest of a
+Steam build is made by ESM from what SteamCMD left in the cache, so its
+hashes prove only that the installed build is what the cache held. An
+install a person asks for runs SteamCMD with `validate`, which checks the
+cache against Steam; the automatic checks skip that, to stay cheap. The
+branch password keeps a test branch to the people who know it; ESM keeps
+it like the other secrets.
+
+**ESM as a service.** `esm service install` writes a systemd user unit
+(`~/.config/systemd/user/esm.service`, `Restart=always`) and runs nothing:
+not `systemctl`, not `loginctl`. It uses `KillMode=process`, so stopping
+ESM stops ESM alone: game servers of the process supervisor are ESM's
+children, and systemd would otherwise end them too.
 
 ## Ports and the firewall
 
@@ -640,6 +750,14 @@ skipped.
   gives a backup as a tar.gz (operator role). Both write in pieces, each
   with its own write deadline, so only a client that stops reading is cut
   off.
+
+- Steam and updates: `GET /api/v1/steam` lists the Steam sources (never a
+  password); `PUT /api/v1/steam/{name}/password` sets one (admin); `POST
+  /api/v1/builds` with `{"source": "steam:<name>"}` runs a source (admin;
+  200 when its build is installed already). `GET /api/v1/box` carries
+  `update_available` and `release`; `POST /api/v1/box/self-update` (admin)
+  puts the newest release in place and ends the service for its service
+  manager to start again.
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -796,14 +914,17 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 ```
 esm [--root DIR] [--json] [--url URL [--token TOKEN]] <command> [arguments]
 
-serve | doctor [--bind IP] | version
+serve | doctor [--bind IP] | version [--check] | update-self [--force]
+service install [--force]
 list | status [name]
 create <name> [--build V] [--channel C] [--map M] [--world W] [--display-name N]
        [--cluster C] [--game-port P] [--query-port P] [--bind IP] [--max-players N]
        [--set Key=Value ...] [--arg -X=Y ...] [--secret-delivery file|command_line]
 start | stop | restart <name>
 logs <name> [-n N] [-f] [--console]
-build install <folder|archive|https-url> [--sha256 HEX] | build list | build prune
+build install <folder|archive|https-url|steam:<source>> [--sha256 HEX] | build list | build prune
+build manifest <folder> --version V [--channel C] --executable linux=<path> [--default-map M] [--commit C]
+steam list | steam password <name> [--clear]   (the password on standard input)
 update <name> --to <version>
 backup <name>
 restore <name> <backup-id>
@@ -928,8 +1049,10 @@ wrong, it changes in the adapter and the fake, and nowhere else.
 - **Phase 1:** the web page (server-rendered HTML over the API).
 - **Phase 2:** the real server: the adapter follows the facts confirmed on
   a real host (see [The real server](#the-real-server)).
-- **Later:** player controls, Steam installs, Windows hosts (planned for
-  the first public release).
+- **Phase 3:** signed releases and self-update, ESM as a systemd user
+  service, builds from Steam with SteamCMD, automatic updates.
+- **Later:** player controls, Windows hosts (planned for the first public
+  release).
 
 ## Known limits
 
@@ -968,6 +1091,18 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   optional verbosity). Should the game ever log what a player types right
   after the category, such text could pass for one of those lines.
 
+- **The player check and the stop are two steps.** An automatic update
+  stops the server right after the query port said 0 players; a player who
+  joins in between is disconnected.
+- **SteamCMD's words are assumed.** That a wrong branch password shows as
+  "Invalid Password", that `StateFlags` bit 4 means fully installed, and
+  that a quoted `force_install_dir` path with spaces is read as one word
+  are UNCONFIRMED on a real host (the fake SteamCMD follows them).
+- **Links in a Steam app are refused.** A depot that holds symbolic links
+  cannot be installed, under the same rule as any build.
+- **A failed automatic update is remembered in memory.** After ESM restarts
+  it is tried once more.
+
 ## Open items
 
 - **Keep game servers away from ESM's files.** Today a game server runs as
@@ -986,5 +1121,6 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   what lets the command-line compatibility mode be removed.
 - Whether a server that does not confirm its passwords should be refused
   instead of only flagged.
-- How Steam branches map to ESM channels.
+- How Steam branches map to ESM channels (today each source names its
+  channel).
 - Whether several boxes should be managed from one page, and how.
