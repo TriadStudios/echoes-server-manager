@@ -300,14 +300,25 @@ is its `auto_update` setting (Settings on the page, or `PATCH` the
 instance):
 
 - `off` (default) and `install`: nothing more; update by hand.
-- `restart`: ESM updates the instance itself as soon as its server answers
-  the query port with **0 players** (or at once when it is stopped): a
-  backup, one stop signal, the new build, and a roll back when the new
-  build does not get ready. The player count is asked once more right
-  before the stop; a player who joined meanwhile puts the update off. While
-  players are on it waits and asks again; after `update_max_wait` (default
-  6h) it raises a warning and keeps waiting. A failed automatic update is
-  not tried again for that build.
+- `restart`: ESM updates a running instance itself as soon as its server
+  answers the query port with **0 players**: a backup, one stop signal,
+  the new build, and a roll back when the new build does not get ready.
+  The player count is asked again before the backup and once more right
+  before the stop; a player who joined meanwhile puts the update off, and
+  a backup made for it is removed again (older backups are pruned only
+  when an update goes ahead). While players are on it waits and asks
+  again; after `update_max_wait` (default 6h) it raises a warning and
+  keeps waiting. A failed automatic update is not tried again for that
+  build.
+- A **stopped** instance set to `restart` is never started by an update:
+  ESM backs up its saves and switches its build, and that is all. The
+  instance shows `update_unverified` (on the page: "new build, checked at
+  next start"). The next start, whoever makes it (API, command line or
+  page), starts the new build and waits until it is ready; if it does not
+  get ready, ESM stops it, puts the previous build back, starts that, and
+  does not try the failed build again. Until then the previous build
+  counts as in use, so pruning keeps it. A crashed or failed instance is
+  not updated; it waits and says why.
 
 Updating an instance by hand to an older build of its source pauses its
 automatic updates until the source has a build newer than the one it

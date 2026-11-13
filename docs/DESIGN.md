@@ -524,9 +524,11 @@ ready. If the new build does not become ready, ESM stops it, switches back
 and starts the old build again; the answer says the update failed and was
 rolled back. World data is not touched by a rollback.
 
-**Pruning** removes every build that no instance uses as its current build
-or as one of its newest `keep_previous_builds` previous builds. A single
-build can be deleted when no instance uses it.
+**Pruning** removes every build that no instance uses as its current build,
+as one of its newest `keep_previous_builds` previous builds, or as the
+build an unproven automatic update goes back to (`update_rollback_build`,
+see [Automatic updates](#automatic-updates)). A single build can be
+deleted when no instance uses it.
 
 **Making a manifest.** `esm build manifest <folder> --version V
 --executable linux=<path> ...` writes the manifest of a build folder: the
@@ -581,18 +583,38 @@ again on Steam is followed too). `auto_update`:
   (`update_available`, `update` in the instance, the dashboard and the
   overview); nothing else happens. The source's checks install builds
   whatever the instances are set to.
-- `restart`: the scheduler (every 15 seconds) updates the instance with the
-  usual update (backup, one stop signal, start, wait for ready, roll back)
-  as soon as its server answers the query port (A2S_INFO) with 0 players,
-  or right away when it is stopped. While players are on, the count is not
-  known, or the instance is starting, stopping, crashed or failed, it waits
-  and says why. After `update_max_wait` (default 6h) it raises one warning
-  (an `update` event and an audit entry) and keeps waiting. Right before
-  the stop (after the backup) the update asks the player count again; a
-  player who joined meanwhile puts it off, like an update refused because
-  the instance is busy, and the scheduler tries again later. An automatic
-  update that failed is not tried again for the same build; a newer build,
-  or an update by hand, starts over.
+- `restart`: the scheduler (every 15 seconds) updates a running instance
+  with the usual update (backup, one stop signal, start, wait for ready,
+  roll back) as soon as its server answers the query port (A2S_INFO) with
+  0 players. While players are on, the count is not known, or the instance
+  is starting, stopping, crashed or failed, it waits and says why. After
+  `update_max_wait` (default 6h) it raises one warning (an `update` event
+  and an audit entry) and keeps waiting. The update asks the player count
+  again before its backup, and once more right before the stop (after the
+  backup); a player who joined meanwhile puts it off, like an update
+  refused because the instance is busy, and the scheduler tries again
+  later. A backup made by an update that is then put off is removed again,
+  and an automatic update prunes older backups (to the instance's `keep`)
+  only once it goes ahead, so updates put off again and again on a busy
+  server never push older backups out. An automatic update that failed is
+  not tried again for the same build; a newer build, or an update by hand,
+  starts over.
+- `restart`, stopped instance: an automatic update never starts a server
+  that is not running (an operator may have stopped it on purpose). It
+  backs up the saves and switches the build (the old one goes to the
+  previous builds), and starts nothing. The instance is marked
+  `update_unverified` (with `update_rollback_build`, the build it ran
+  before; over several such updates that stays the build that last ran),
+  kept in `instances/<name>/run/autoupdate.json`. The next start, by API,
+  command line, page, a restart or autostart, starts the new build and
+  waits for ready like an update does, whatever `wait` says. If it does
+  not get ready, ESM stops it, switches back to the old build and starts
+  that, with the same events and audit entries as a failed automatic
+  update, and records the failed build so automatic updates do not try it
+  again; the start answers 422 `update_failed`. When it gets ready the
+  mark goes. While the mark is set, the build to go back to counts as in
+  use, so pruning keeps it. An update by hand of a stopped instance still
+  starts the new build to prove it and stops it again, as before.
 
 An update by hand to an older build of the same source (a lower build id)
 pauses the instance's automatic updates until the source's newest build
