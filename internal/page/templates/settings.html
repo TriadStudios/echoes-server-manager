@@ -20,7 +20,7 @@
 
 <fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Updates</legend>
-<p class="note">{{if $s.Update.Source}}This server's build came from the Steam source <span class="mono">{{$s.Update.Source}}</span>, whose checks install each new build of its branch.{{else}}This server's build is not from a Steam source, so no newer build is looked for; update it to a build from one to follow it.{{end}} With <span class="mono">restart</span> ESM updates the server when it has no players: a backup, one stop request, the new build, and a roll back if it does not get ready.</p>
+<p class="note">{{if $s.Update.Source}}This server's build came from the Steam source <span class="mono">{{$s.Update.Source}}</span>, whose checks install each new build of its branch.{{else}}This server's build is not from a Steam source, so no newer build is looked for; update it to a build from one to follow it.{{end}} With <span class="mono">restart</span> ESM updates a running server when it has no players: a backup, one stop request, the new build, and a roll back to the previous build if it does not get ready (saves the new build wrote stay; restore the pre-update backup for those). A stopped server is not started: ESM backs up its saves and switches the build, and the next start, whoever makes it, waits for the new build to get ready and goes back to the previous one if it does not.</p>
 <div class="grid fields">
 <label class="field"><span>Automatic updates</span>
 <select name="auto_update" data-orig="{{$s.AutoUpdate}}" data-label="Automatic updates">

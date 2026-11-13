@@ -68,10 +68,10 @@
 </section>
 </div>
 
-{{if or $s.UpdateAvailable $s.Update.LastError}}<section class="panel" aria-labelledby="newer-h">
+{{if or $s.UpdateAvailable $s.Update.LastError $s.Status.UpdateUnverified}}<section class="panel" aria-labelledby="newer-h">
 <h2 class="label" id="newer-h">Newer build</h2>
 {{template "update-note" $s}}
-<p class="note">auto_update is set under Settings: off and install only show the newer build; restart updates the server as soon as it has no players (it asks the query port), with a backup first and a roll back when the new build does not get ready.</p>
+<p class="note">auto_update is set under Settings: off and install only show the newer build; restart updates a running server as soon as it has no players (it asks the query port), with a backup first and a roll back to the previous build when the new one does not get ready. A stopped server is never started by an update: its build is switched, and the next start checks it.</p>
 </section>{{end}}
 
 {{if $v.Operator}}<section class="panel" aria-labelledby="update-h">

@@ -38,4 +38,17 @@ func TestUpdateNote(t *testing.T) {
 	if !strings.Contains(b.String(), "auto_update is install: update by hand.") {
 		t.Errorf("install mode note:\n%s", b.String())
 	}
+	// A build switched in while the server was stopped is checked at the
+	// next start; the note says so and names the build to go back to.
+	v = instances.View{Instance: instances.Instance{Name: "a", Build: "steam-main-2", AutoUpdate: instances.AutoUpdateRestart},
+		Status: instances.Status{State: instances.Stopped, UpdateUnverified: true, UpdateRollbackBuild: "steam-main-1"}}
+	b.Reset()
+	if err := p.tmpl["overview"].ExecuteTemplate(&b, "update-note", v); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"New build, checked at next start", "steam-main-2", "goes back to <span class=\"mono\">steam-main-1</span>"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("note of an unproven build lacks %q:\n%s", want, b.String())
+		}
+	}
 }
