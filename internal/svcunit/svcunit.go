@@ -65,9 +65,7 @@ func Unit(exe, root string) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("# Written by \"esm service install\". Echoes Server Manager for this user.\n")
 	b.WriteString("[Unit]\n")
-	b.WriteString("Description=Echoes Server Manager\n")
-	b.WriteString("Wants=network-online.target\n")
-	b.WriteString("After=network-online.target\n\n")
+	b.WriteString("Description=Echoes Server Manager\n\n")
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=exec\n")
 	fmt.Fprintf(&b, "ExecStart=%s serve --root %s\n", qe, qr)

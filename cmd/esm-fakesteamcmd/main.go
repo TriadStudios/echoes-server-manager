@@ -302,6 +302,14 @@ func mirror(src, dst string) error {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Steam depots can hold links; they come over as links.
+			dest, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(dest, target)
+		}
 		fi, err := d.Info()
 		if err != nil {
 			return err
