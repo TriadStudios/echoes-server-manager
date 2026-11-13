@@ -19,6 +19,8 @@ func detachedAttr() *syscall.SysProcAttr { return nil }
 
 func interrupt(*os.Process) error { return errUnsupported }
 
+func textBusy(error) bool { return false }
+
 func startMarker(int) (string, error) { return "", errUnsupported }
 
 func inspect(int) (bool, string, error) { return false, "", errUnsupported }

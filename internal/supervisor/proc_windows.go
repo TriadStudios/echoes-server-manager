@@ -35,6 +35,10 @@ func detachedAttr() *syscall.SysProcAttr {
 	}
 }
 
+// textBusy is Linux's "text file busy"; Windows reports a sharing
+// violation instead, which is not waited out.
+func textBusy(error) bool { return false }
+
 func interrupt(*os.Process) error {
 	return errors.New("signals are not available on Windows")
 }

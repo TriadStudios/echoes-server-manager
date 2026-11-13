@@ -142,13 +142,23 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	if err != nil {
 		return fmt.Errorf("supervisor: open output: %w", err)
 	}
-	cmd := exec.Command(exe, spec.Args...)
-	cmd.Dir = spec.Dir
-	cmd.Env = mergeEnv(os.Environ(), spec.Env)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	cmd.SysProcAttr = detachedAttr()
-	err = cmd.Start()
+	var cmd *exec.Cmd
+	// A binary still open for writing somewhere (a build being installed,
+	// or a descriptor a child forked in that moment holds until it runs
+	// its own program) cannot be run yet on Linux; that passes quickly.
+	for deadline := time.Now().Add(busyWait); ; {
+		cmd = exec.Command(exe, spec.Args...)
+		cmd.Dir = spec.Dir
+		cmd.Env = mergeEnv(os.Environ(), spec.Env)
+		cmd.Stdout = out
+		cmd.Stderr = out
+		cmd.SysProcAttr = detachedAttr()
+		err = cmd.Start()
+		if err == nil || !textBusy(err) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	out.Close()
 	if err != nil {
 		// The error names the executable, not the arguments.
@@ -177,6 +187,10 @@ func (p *Process) Start(ctx context.Context, spec Spec) error {
 	go p.waitChild(spec.Name, e, cmd)
 	return nil
 }
+
+// busyWait is how long a start retries a binary that is busy (see
+// textBusy).
+const busyWait = 3 * time.Second
 
 // mergeEnv returns base with the KEY=VALUE pairs of set added, each
 // replacing what base had for its key.

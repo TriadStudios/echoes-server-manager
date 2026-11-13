@@ -22,6 +22,10 @@ func detachedAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }
 
+// textBusy reports whether a start failed because the binary is open for
+// writing somewhere ("text file busy").
+func textBusy(err error) bool { return errors.Is(err, syscall.ETXTBSY) }
+
 // interrupt sends the server its one stop signal (gameserver.PoliteStop).
 func interrupt(p *os.Process) error { return p.Signal(syscall.SIGINT) }
 
