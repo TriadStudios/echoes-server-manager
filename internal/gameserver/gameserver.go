@@ -92,8 +92,8 @@ type Launch struct {
 	// DeliveryFile the server is pointed at it and gets no password on its
 	// command line.
 	SecretsFile string
-	// Secrets are the passwords. They are put on the command line with
-	// DeliveryCommandLine, and never otherwise.
+	// Secrets are the passwords and tokens. They are put on the command
+	// line with DeliveryCommandLine, and never otherwise.
 	Secrets   Secrets
 	ExtraArgs []string // appended as-is, one argv entry each
 }
@@ -101,9 +101,10 @@ type Launch struct {
 // Args builds the argument list (without the executable). It never builds a
 // shell string. Order: the map, -unattended, -Port, -QueryPort,
 // -ServerName, -WorldName, -MaxPlayers, -ListInBrowser, -UserDir, -abslog,
-// the rules sorted by key, the passwords (the secrets file switch; or, with
-// DeliveryCommandLine, -ServerPassword and -AdminPassword when set), then
-// the extra args. -MULTIHOME is never part of it: a bind address configured
+// the rules sorted by key, the passwords and tokens (the secrets file
+// switch; or, with DeliveryCommandLine, -ServerPassword, -AdminPassword,
+// -AnnouncementsToken and -ProblemReportToken when set), then the extra
+// args. -MULTIHOME is never part of it: a bind address configured
 // for an instance is not given to the server.
 func (l Launch) Args() []string {
 	argv := []string{
@@ -133,6 +134,12 @@ func (l Launch) Args() []string {
 		if l.Secrets.AdminPassword != "" {
 			argv = append(argv, AdminPasswordSwitch+"="+l.Secrets.AdminPassword)
 		}
+		if l.Secrets.AnnouncementsToken != "" {
+			argv = append(argv, AnnouncementsTokenSwitch+"="+l.Secrets.AnnouncementsToken)
+		}
+		if l.Secrets.ProblemReportToken != "" {
+			argv = append(argv, ProblemReportTokenSwitch+"="+l.Secrets.ProblemReportToken)
+		}
 	} else if l.SecretsFile != "" {
 		argv = append(argv, SecretsFileSwitch+"="+l.SecretsFile)
 	}
@@ -155,6 +162,7 @@ var reserved = []string{
 	switchName(ServerNameSwitch), switchName(WorldNameSwitch), switchName(MaxPlayersSwitch),
 	switchName(ListInBrowserSwitch), switchName(UserDirSwitch), switchName(LogFileSwitch),
 	switchName(ServerPasswordSwitch), switchName(AdminPasswordSwitch), switchName(SecretsFileSwitch),
+	switchName(AnnouncementsTokenSwitch), switchName(ProblemReportTokenSwitch),
 }
 
 // switchName is a switch name as it is compared: lower case, no dashes in

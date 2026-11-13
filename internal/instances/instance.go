@@ -461,7 +461,7 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 // like a secret. what names the offender without repeating any value.
 func secretLike(field, what, why, instance, things string) error {
 	return fault.New(fault.Invalid, "looks_like_secret",
-		"%s: %s looks like a secret (its name %s). Passwords are set only with PUT /api/v1/instances/%s/secrets and are never shown; %s are shown to every role and go on the server command line",
+		"%s: %s looks like a secret (its name %s). Passwords and tokens are set only with PUT /api/v1/instances/%s/secrets and are never shown; %s are shown to every role and go on the server command line",
 		field, what, why, instance, things)
 }
 
@@ -519,40 +519,97 @@ func ParseMemory(s string) (int64, error) {
 	return n << shift, nil
 }
 
-// Secrets is the content of secrets.json (0600): the passwords the
-// instance's server is given at its next start. Nothing else is kept: a
-// server gets its passwords in a file, so no earlier value has to be
-// remembered to keep it out of anything ESM shows.
+// Secrets is the content of secrets.json (0600): the passwords and tokens
+// the instance's server is given at its next start. Nothing else is kept:
+// a server gets them in a file, so no earlier value has to be remembered
+// to keep it out of anything ESM shows.
 type Secrets struct {
 	ServerPassword string `json:"server_password,omitempty"`
 	AdminPassword  string `json:"admin_password,omitempty"`
+	// AnnouncementsToken and ProblemReportToken are the game settings of
+	// those names (see gameserver.GameSettings): secrets, so they are kept
+	// here and never in the rules.
+	AnnouncementsToken string `json:"announcements_token,omitempty"`
+	ProblemReportToken string `json:"problem_report_token,omitempty"`
 }
 
-// forServer returns the passwords as the server is given them.
+// forServer returns the passwords and tokens as the server is given them.
 func (s Secrets) forServer() gameserver.Secrets {
-	return gameserver.Secrets{ServerPassword: s.ServerPassword, AdminPassword: s.AdminPassword}
+	return gameserver.Secrets{ServerPassword: s.ServerPassword, AdminPassword: s.AdminPassword,
+		AnnouncementsToken: s.AnnouncementsToken, ProblemReportToken: s.ProblemReportToken}
 }
 
-// change sets the passwords given in req.
+// change sets the secrets given in req.
 func (s *Secrets) change(req SecretsRequest) {
-	if req.ServerPassword != nil {
-		s.ServerPassword = *req.ServerPassword
+	for _, c := range []struct {
+		to   *string
+		from *string
+	}{{&s.ServerPassword, req.ServerPassword}, {&s.AdminPassword, req.AdminPassword},
+		{&s.AnnouncementsToken, req.AnnouncementsToken}, {&s.ProblemReportToken, req.ProblemReportToken}} {
+		if c.from != nil {
+			*c.to = *c.from
+		}
 	}
-	if req.AdminPassword != nil {
-		s.AdminPassword = *req.AdminPassword
+}
+
+// flags says which secrets are set.
+func (s Secrets) flags() SecretFlags {
+	return SecretFlags{ServerPasswordSet: s.ServerPassword != "", AdminPasswordSet: s.AdminPassword != "",
+		AnnouncementsTokenSet: s.AnnouncementsToken != "", ProblemReportTokenSet: s.ProblemReportToken != ""}
+}
+
+// named lists the secrets that are set, each with the words that name it
+// in a refusal.
+func (s Secrets) named() []struct{ what, v string } {
+	var out []struct{ what, v string }
+	for _, x := range []struct{ what, v string }{{"server password", s.ServerPassword}, {"admin password", s.AdminPassword},
+		{"announcements token", s.AnnouncementsToken}, {"problem report token", s.ProblemReportToken}} {
+		if x.v != "" {
+			out = append(out, x)
+		}
 	}
+	return out
 }
 
 // SecretsRequest changes secrets: nil leaves a value, "" clears it.
 type SecretsRequest struct {
-	ServerPassword *string `json:"server_password,omitempty"`
-	AdminPassword  *string `json:"admin_password,omitempty"`
+	ServerPassword     *string `json:"server_password,omitempty"`
+	AdminPassword      *string `json:"admin_password,omitempty"`
+	AnnouncementsToken *string `json:"announcements_token,omitempty"`
+	ProblemReportToken *string `json:"problem_report_token,omitempty"`
+}
+
+// check checks every value req sets. Its errors never repeat a value.
+func (req SecretsRequest) check() error {
+	for _, pw := range []struct {
+		field string
+		v     *string
+	}{{"server_password", req.ServerPassword}, {"admin_password", req.AdminPassword}} {
+		if pw.v != nil {
+			if err := checkSecret(pw.field, *pw.v); err != nil {
+				return err
+			}
+		}
+	}
+	for _, tok := range []struct {
+		field string
+		v     *string
+	}{{"announcements_token", req.AnnouncementsToken}, {"problem_report_token", req.ProblemReportToken}} {
+		if tok.v != nil {
+			if err := checkToken(tok.field, *tok.v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // SecretFlags says which secrets are set, without showing them.
 type SecretFlags struct {
-	ServerPasswordSet bool `json:"server_password_set"`
-	AdminPasswordSet  bool `json:"admin_password_set"`
+	ServerPasswordSet     bool `json:"server_password_set"`
+	AdminPasswordSet      bool `json:"admin_password_set"`
+	AnnouncementsTokenSet bool `json:"announcements_token_set"`
+	ProblemReportTokenSet bool `json:"problem_report_token_set"`
 }
 
 // checkSecret checks a new password ("" clears it). Its errors never
@@ -567,12 +624,36 @@ func checkSecret(field, v string) error {
 	return nil
 }
 
-// checkPasswordsInSettings refuses passwords that occur, without regard to
-// case, in a setting that is shown to every role or that the server may
-// print: the name, display name, world, map, cluster, the rule keys and
-// values, and the extra arguments. Output filters mask the passwords, so
-// such a setting would show as masked and give the password away. The
-// error names the password and the setting, never a value.
+// maxTokenLength bounds a token.
+const maxTokenLength = 256
+
+// checkToken checks a new token ("" clears it): MinSecretLength to
+// maxTokenLength characters of printable ASCII without white space, a
+// double quote, "," or ")". A token may go on the server command line,
+// where the server ends a value without white space at "," or ")", so a
+// token holding one would arrive cut. Its errors never repeat the value.
+func checkToken(field, v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) < MinSecretLength || len(v) > maxTokenLength || strings.ContainsFunc(v, func(r rune) bool {
+		return r <= ' ' || r > '~' || r == '"' || r == ',' || r == ')'
+	}) {
+		return invalid(field, "must be %d to %d characters of printable ASCII, without white space, '\"', ',' or ')'", MinSecretLength, maxTokenLength)
+	}
+	if why, unsafe := gameserver.UnsafeArgument(v); unsafe {
+		return fault.New(fault.Invalid, "unsafe_argument", "%s: the token %s", field, why)
+	}
+	return nil
+}
+
+// checkPasswordsInSettings refuses passwords and tokens that occur,
+// without regard to case, in a setting that is shown to every role or that
+// the server may print: the name, display name, world, map, cluster, the
+// rule keys and values, and the extra arguments. Output filters mask the
+// passwords and tokens, so such a setting would show as masked and give
+// the secret away. The error names the secret and the setting, never a
+// value.
 func checkPasswordsInSettings(in Instance, s Secrets) error {
 	type text struct{ field, v string }
 	texts := []text{{"name", in.Name}, {"display_name", in.DisplayName}, {"world", in.World}, {"map", in.Map}, {"cluster", in.Cluster}}
@@ -582,15 +663,12 @@ func checkPasswordsInSettings(in Instance, s Secrets) error {
 	for _, a := range in.ExtraArgs {
 		texts = append(texts, text{"extra_args", a})
 	}
-	for _, pw := range []struct{ what, v string }{{"server password", s.ServerPassword}, {"admin password", s.AdminPassword}} {
-		if pw.v == "" {
-			continue
-		}
+	for _, pw := range s.named() {
 		low := strings.ToLower(pw.v)
 		for _, t := range texts {
 			if strings.Contains(strings.ToLower(t.v), low) {
 				return fault.New(fault.Invalid, "password_in_settings",
-					"the %s occurs in %s: a password may not be part of a setting, which every role sees and the server may print; change the password or the setting",
+					"the %s occurs in %s: a password or token may not be part of a setting, which every role sees and the server may print; change the secret or the setting",
 					pw.what, t.field)
 			}
 		}

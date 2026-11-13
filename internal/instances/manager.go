@@ -902,25 +902,19 @@ func (m *Manager) readSecrets(name string) (Secrets, error) {
 
 func (m *Manager) secretFlags(name string) SecretFlags {
 	s, _ := m.readSecrets(name)
-	return SecretFlags{ServerPasswordSet: s.ServerPassword != "", AdminPasswordSet: s.AdminPassword != ""}
+	return s.flags()
 }
 
-// SetSecrets changes the server and admin passwords. They are used from the
-// next start; restartRequired says the instance is running.
+// SetSecrets changes the server and admin passwords and the announcements
+// and problem report tokens. They are used from the next start;
+// restartRequired says the instance is running.
 func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return SecretFlags{}, false, err
 	}
-	if req.ServerPassword != nil {
-		if err := checkSecret("server_password", *req.ServerPassword); err != nil {
-			return SecretFlags{}, false, err
-		}
-	}
-	if req.AdminPassword != nil {
-		if err := checkSecret("admin_password", *req.AdminPassword); err != nil {
-			return SecretFlags{}, false, err
-		}
+	if err := req.check(); err != nil {
+		return SecretFlags{}, false, err
 	}
 	in.op.Lock()
 	defer in.op.Unlock()

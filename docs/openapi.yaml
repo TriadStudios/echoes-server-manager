@@ -23,7 +23,8 @@ info:
     `admin` may do everything, installing builds included (a build is a
     program that runs with ESM's own rights).
 
-    Server passwords are set with `PUT /api/v1/instances/{name}/secrets`
+    Server passwords, and the game's announcements and problem report
+    tokens, are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
     (`secret_delivery: file`). An instance set to
     `secret_delivery: command_line` passes them on the server command line,
@@ -441,14 +442,21 @@ paths:
   /api/v1/instances/{name}/secrets:
     put:
       tags: [instances]
-      summary: Set or clear the server and admin passwords (admin)
+      summary: Set or clear the passwords and tokens (admin)
       description: |
         A field left out stays as it is; an empty string clears it. Secrets
-        are never returned. This is the only way to set a server password. A
-        change reaches the server with its next start. A password has at
-        least 8 characters (422 password_too_short) and may not occur, in
-        any case, in the instance's name, display name, world, map, cluster,
-        rule keys or values, or extra arguments (422 password_in_settings).
+        are never returned. This is the only way to set a server password
+        or one of the two tokens (the game settings AnnouncementsToken and
+        ProblemReportToken, which are never rules). A change reaches the
+        server with its next start, the way the passwords do: in the
+        secrets file, or with `secret_delivery: command_line` as
+        -AnnouncementsToken= and -ProblemReportToken= on the command line,
+        masked in what ESM shows like the passwords. A password has at
+        least 8 characters (422 password_too_short); a token 8 to 256 of
+        printable ASCII without white space, '"', ',' or ')' (422 invalid).
+        Neither may occur, in any case, in the instance's name, display
+        name, world, map, cluster, rule keys or values, or extra arguments
+        (422 password_in_settings).
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -1221,6 +1229,8 @@ components:
       properties:
         server_password_set: { type: boolean }
         admin_password_set: { type: boolean }
+        announcements_token_set: { type: boolean }
+        problem_report_token_set: { type: boolean }
     SecretDelivery:
       type: string
       enum: [file, command_line]
@@ -1488,6 +1498,14 @@ components:
       properties:
         server_password: { type: string, maxLength: 128 }
         admin_password: { type: string, maxLength: 128 }
+        announcements_token:
+          type: string
+          maxLength: 256
+          description: The game setting AnnouncementsToken. 8 to 256 characters of printable ASCII without white space, '"', ',' or ')'.
+        problem_report_token:
+          type: string
+          maxLength: 256
+          description: The game setting ProblemReportToken; the same rules as announcements_token.
     SecretsResult:
       type: object
       properties:

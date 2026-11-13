@@ -66,7 +66,7 @@ const (
 func WarningText(code string) string {
 	switch code {
 	case WarnSecretsOnCommandLine:
-		return "UNSAFE on a shared box: passwords are on the server command line (secret_delivery command_line), where every account on this box can read them from the process list, and the server writes them into its log"
+		return "UNSAFE on a shared box: passwords and tokens are on the server command line (secret_delivery command_line), where every account on this box can read them from the process list, and the server writes them into its log"
 	case WarnLimitsNotEnforced:
 		return "memory and CPU limits are not enforced by the process supervisor"
 	case WarnSecretsUnconfirmed:

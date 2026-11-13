@@ -155,7 +155,7 @@ func checkSecretDelivery(r *Report, root string) {
 		r.add("secret_delivery", OK, "no instance passes passwords on the server command line")
 		return
 	}
-	r.add("secret_delivery", Warn, "UNSAFE on a shared box: %s (%s) with secret_delivery command_line: passwords are on the server command line, where every account on this box can read them from the process list, and the server writes them into its log",
+	r.add("secret_delivery", Warn, "UNSAFE on a shared box: %s (%s) with secret_delivery command_line: passwords and tokens are on the server command line, where every account on this box can read them from the process list, and the server writes them into its log",
 		plural(len(unsafe), "instance", "instances"), strings.Join(unsafe, ", "))
 }
 

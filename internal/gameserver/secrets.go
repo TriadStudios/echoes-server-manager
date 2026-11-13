@@ -9,7 +9,7 @@ import (
 	"unicode"
 )
 
-// Ways to hand a server its passwords.
+// Ways to hand a server its passwords (and its tokens: see Secrets).
 const (
 	// DeliveryFile writes the passwords to the secrets file and points the
 	// server at it with SecretsFileSwitch. Nothing secret is on the command
@@ -51,20 +51,30 @@ const (
 	AdminPasswordSwitch  = "-AdminPassword"
 )
 
-// Secrets are the passwords a server is started with, and the content of
-// the secrets file: one JSON object with the members "server_password" and
-// "admin_password", each a string and each left out when that password is
-// not set. The file is UTF-8 and ends with a line end. UNCONFIRMED, see
+// The switches that carry the announcements and problem report tokens
+// with DeliveryCommandLine: the server's own (see GameSettings).
+const (
+	AnnouncementsTokenSwitch = "-AnnouncementsToken"
+	ProblemReportTokenSwitch = "-ProblemReportToken"
+)
+
+// Secrets are the passwords and tokens a server is started with, and the
+// content of the secrets file: one JSON object with the members
+// "server_password", "admin_password", "announcements_token" and
+// "problem_report_token", each a string and each left out when it is not
+// set. The file is UTF-8 and ends with a line end. UNCONFIRMED, see
 // SecretDelivery.
 type Secrets struct {
-	ServerPassword string `json:"server_password,omitempty"`
-	AdminPassword  string `json:"admin_password,omitempty"`
+	ServerPassword     string `json:"server_password,omitempty"`
+	AdminPassword      string `json:"admin_password,omitempty"`
+	AnnouncementsToken string `json:"announcements_token,omitempty"`
+	ProblemReportToken string `json:"problem_report_token,omitempty"`
 }
 
-// Values returns the passwords that are set.
+// Values returns the passwords and tokens that are set.
 func (s Secrets) Values() []string {
 	var out []string
-	for _, v := range []string{s.ServerPassword, s.AdminPassword} {
+	for _, v := range []string{s.ServerPassword, s.AdminPassword, s.AnnouncementsToken, s.ProblemReportToken} {
 		if v != "" {
 			out = append(out, v)
 		}

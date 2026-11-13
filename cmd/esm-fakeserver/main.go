@@ -46,10 +46,11 @@
 // ready), "cmdline" (print the command line again), "players" (report the
 // player count the file holds, on the query port and in the status file).
 //
-// Passwords come from the secrets file named by the adapter's switch, or,
-// when that switch is absent, from the adapter's password switches. Both at
-// once is an error: with a secrets file no password belongs on the command
-// line. The status file says which passwords are set, never what they are.
+// Passwords and tokens come from the secrets file named by the adapter's
+// switch, or, when that switch is absent, from the adapter's password and
+// token switches. Both at once is an error: with a secrets file no password
+// or token belongs on the command line. The status file says which
+// passwords are set, never what they are.
 //
 // Like a real server it prints its whole command line, with any passwords
 // on it, to its log and its output when it starts, and a new Steam server
@@ -289,9 +290,10 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	return o, err
 }
 
-// readSecrets takes the passwords from the secrets file when its switch is
-// given, and from the password switches otherwise. A password switch next
-// to the secrets file switch is refused. Errors never repeat a value.
+// readSecrets takes the passwords and tokens from the secrets file when its
+// switch is given, and from the password and token switches otherwise. A
+// password or token switch next to the secrets file switch is refused.
+// Errors never repeat a value.
 func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
 	path, fromFile := kv[key(gameserver.SecretsFileSwitch)]
 	if ignore, _ := strconv.ParseBool(kv["FakeIgnoreSecretsFile"]); ignore {
@@ -299,13 +301,15 @@ func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
 	}
 	if !fromFile {
 		return gameserver.Secrets{
-			ServerPassword: kv[key(gameserver.ServerPasswordSwitch)],
-			AdminPassword:  kv[key(gameserver.AdminPasswordSwitch)],
+			ServerPassword:     kv[key(gameserver.ServerPasswordSwitch)],
+			AdminPassword:      kv[key(gameserver.AdminPasswordSwitch)],
+			AnnouncementsToken: kv[key(gameserver.AnnouncementsTokenSwitch)],
+			ProblemReportToken: kv[key(gameserver.ProblemReportTokenSwitch)],
 		}, nil
 	}
 	for k := range kv {
-		if strings.Contains(strings.ToLower(k), "password") {
-			return gameserver.Secrets{}, fmt.Errorf("-%s is not accepted together with %s: with a secrets file no password belongs on the command line",
+		if low := strings.ToLower(k); strings.Contains(low, "password") || strings.HasSuffix(low, "token") {
+			return gameserver.Secrets{}, fmt.Errorf("-%s is not accepted together with %s: with a secrets file no password or token belongs on the command line",
 				k, gameserver.SecretsFileSwitch)
 		}
 	}

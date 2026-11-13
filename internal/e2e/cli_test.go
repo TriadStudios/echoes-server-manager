@@ -135,7 +135,7 @@ func TestCLIShowsUnsafeDelivery(t *testing.T) {
 	t.Parallel()
 	h := newESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	const long = "UNSAFE on a shared box: passwords are on the server command line"
+	const long = "UNSAFE on a shared box: passwords and tokens are on the server command line"
 	const short = "UNSAFE: passwords on the command line"
 
 	code, out, errOut := h.runCLI("create", "safe", "--bind", "127.0.0.1", "--set", "FakeReadyDelay=100ms")
