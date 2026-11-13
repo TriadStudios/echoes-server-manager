@@ -33,7 +33,7 @@ func TestLoadWritesDefaultsOnFirstRun(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:8740" || cfg.GamePorts != "7777-7786" || cfg.QueryPorts != "27015-27024" ||
 		cfg.Supervisor != "auto" || cfg.StopTimeout.D() != 120*time.Second || cfg.ReadyTimeout.D() != 120*time.Second ||
 		cfg.KeepPreviousBuilds != 2 || cfg.Backoff.Window.D() != 10*time.Minute || cfg.Backoff.MaxCrashes != 5 ||
-		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute || cfg.BehindTLSProxy {
+		cfg.LogLevel != "info" || cfg.BackupSaveWait.D() != 2*time.Minute || cfg.BehindTLSProxy || cfg.KeepSteamBuilds != 3 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.SocketPath() != filepath.Join(st.Path(), "esm.sock") {
@@ -83,6 +83,7 @@ func TestLoadRefusesBadFiles(t *testing.T) {
 		"bad duration":     `{"stop_timeout":"soon"}`,
 		"zero ready":       `{"ready_timeout":"0s"}`,
 		"negative builds":  `{"keep_previous_builds":-1}`,
+		"no steam builds":  `{"keep_steam_builds":0}`,
 		"bad level":        `{"log_level":"loud"}`,
 		"host with path":   `{"public_hosts":["esm.example.com/x"]}`,
 		"host with scheme": `{"public_hosts":["https://esm.example.com"]}`,

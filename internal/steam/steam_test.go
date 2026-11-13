@@ -441,6 +441,49 @@ func TestSteamInstallWithoutFreeSpaceReading(t *testing.T) {
 	}
 }
 
+// Surplus orders a source's builds by build id as numbers, keeps the
+// newest keep_steam_builds and the build the source installed last, and
+// leaves out every other build.
+func TestSurplusOrdersByBuildID(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	r.m.cfg.KeepSteamBuilds = 2
+	for _, id := range []string{"99", "100", "7"} {
+		r.ctl.BuildID = id
+		testkit.SetSteamControl(t, r.steam, r.ctl)
+		if _, _, err := r.m.Install(ctx, "main", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Builds not of this source, some with names that start like its own.
+	for _, v := range []string{"steam-mainx-1", "steam-main-x-1", "steam-other-1", "1.0.0"} {
+		dir := filepath.Join(t.TempDir(), "b")
+		exes := testkit.MakeContent(t, dir, testkit.BuildOptions{Version: v})
+		if _, err := r.builds.InstallFolder(ctx, dir, builds.ManifestSpec{Version: v, Channel: "live", Executables: exes}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := r.m.Surplus("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100 and 99 are the newest two; 7 was installed last, so it stays.
+	if len(got) != 0 {
+		t.Fatalf("surplus %v, want none", got)
+	}
+	r.ctl.BuildID = "100"
+	testkit.SetSteamControl(t, r.steam, r.ctl)
+	if _, installed, err := r.m.Install(ctx, "main", false); err != nil || installed {
+		t.Fatalf("same build id: %v %v", installed, err)
+	}
+	if got, err := r.m.Surplus("main"); err != nil || strings.Join(got, " ") != "steam-main-7" {
+		t.Fatalf("surplus %v %v, want steam-main-7", got, err)
+	}
+}
+
 func TestSteamRefusesLinks(t *testing.T) {
 	r := newRig(t)
 	if err := os.Symlink(filepath.Join(r.content, "Data"), filepath.Join(r.content, "link")); err != nil {

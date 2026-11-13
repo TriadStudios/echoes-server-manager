@@ -44,6 +44,9 @@ const (
 	// DefaultBackupSaveWait is how long a backup of a running server waits
 	// for the next world save before copying the save files anyway.
 	DefaultBackupSaveWait = 2 * time.Minute
+	// DefaultKeepSteamBuilds is how many builds of a Steam source, the
+	// newest by build id, an install from that source leaves in place.
+	DefaultKeepSteamBuilds = 3
 	// DefaultRootName is the folder under the user's home used when neither
 	// --root nor ESM_ROOT is given. A service install would pass
 	// --root /opt/durinn instead.
@@ -145,6 +148,10 @@ type Config struct {
 	SteamCMD string `json:"steamcmd,omitempty"`
 	// SteamSources are Steam apps ESM installs builds from (see SteamSource).
 	SteamSources []SteamSource `json:"steam_sources,omitempty"`
+	// KeepSteamBuilds is how many builds of each Steam source are kept, the
+	// newest by build id: after an install from a source, its older builds
+	// that no instance uses are removed. At least 1.
+	KeepSteamBuilds int `json:"keep_steam_builds"`
 
 	// Root is the ESM root this config was loaded from. Not stored.
 	Root string `json:"-"`
@@ -166,6 +173,7 @@ func Defaults(root string) *Config {
 		StopTimeout:        Duration(DefaultStopTimeout),
 		ReadyTimeout:       Duration(DefaultReadyTimeout),
 		KeepPreviousBuilds: DefaultKeepPreviousBuilds,
+		KeepSteamBuilds:    DefaultKeepSteamBuilds,
 		BackupSaveWait:     Duration(DefaultBackupSaveWait),
 		LogLevel:           DefaultLogLevel,
 		UpdateCheck:        true,
@@ -312,6 +320,9 @@ func (c *Config) Validate() error {
 	}
 	if c.KeepPreviousBuilds < 0 {
 		return errors.New("config: keep_previous_builds must not be negative")
+	}
+	if c.KeepSteamBuilds < 1 {
+		return errors.New("config: keep_steam_builds must be at least 1")
 	}
 	if c.BackupSaveWait < 0 {
 		return errors.New("config: backup_save_wait must not be negative")

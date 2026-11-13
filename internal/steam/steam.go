@@ -20,6 +20,7 @@ package steam
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -547,6 +548,44 @@ func sizeText(n uint64) string {
 		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d bytes", n)
+}
+
+// Surplus lists the installed builds of a source beyond its newest
+// keep_steam_builds by build id (compared as numbers), newest first: the
+// builds that may be removed after an install from the source, when no
+// instance uses them. The build the source installed last is never in it,
+// even when its branch went back to an older build id.
+func (m *Manager) Surplus(name string) ([]string, error) {
+	list, err := m.builds.List()
+	if err != nil {
+		return nil, err
+	}
+	type own struct{ id, version string }
+	var mine []own
+	for _, b := range list {
+		if src, id, ok := SourceOf(b.Version); ok && src == name {
+			mine = append(mine, own{id, b.Version})
+		}
+	}
+	slices.SortFunc(mine, func(a, b own) int { return compareBuildIDs(b.id, a.id) })
+	keep := max(m.cfg.KeepSteamBuilds, 1)
+	current := m.readState(name).Version
+	out := []string{}
+	for i, b := range mine {
+		if i >= keep && b.version != current {
+			out = append(out, b.version)
+		}
+	}
+	return out, nil
+}
+
+// compareBuildIDs compares two build ids (digits) as numbers.
+func compareBuildIDs(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	if c := cmp.Compare(len(a), len(b)); c != 0 {
+		return c
+	}
+	return strings.Compare(a, b)
 }
 
 // readAppManifest reads and checks the app manifest SteamCMD left.

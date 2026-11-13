@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,7 +184,8 @@ func Start(o Options) (_ *Service, err error) {
 	if err := bm.CleanTemp(); err != nil {
 		log.Warn("cannot clean the tmp folder", "err", err)
 	}
-	s.steam = steam.New(steam.Options{Store: st, Config: cfg, Builds: bm, Audit: s.audit, Logger: log, Tick: o.SteamTick})
+	s.steam = steam.New(steam.Options{Store: st, Config: cfg, Builds: bm, Audit: s.audit, Logger: log, Tick: o.SteamTick,
+		Installed: s.steamInstalled})
 	cleanups = append(cleanups, s.steam.Close)
 	if s.inst, err = instances.New(instances.Options{
 		Store: st, Config: cfg, Supervisor: s.sup, Builds: bm, Bus: s.bus, Logger: log,
@@ -245,6 +247,33 @@ func Start(o Options) (_ *Service, err error) {
 		log.Warn("memory and CPU limits are not enforced in process mode")
 	}
 	return s, nil
+}
+
+// steamInstalled runs after a Steam source installed a new build. The
+// source's builds beyond its newest keep_steam_builds (steam.Manager.Surplus)
+// that no instance uses are removed; builds of other sources and builds not
+// from Steam are left alone. A removal is logged and audited.
+func (s *Service) steamInstalled(source string, _ builds.Build) {
+	surplus, err := s.steam.Surplus(source)
+	var removed []string
+	if err == nil && len(surplus) > 0 {
+		removed, err = s.inst.RemoveUnusedBuilds(surplus)
+	}
+	if len(removed) == 0 && err == nil {
+		return
+	}
+	e := audit.Entry{Actor: audit.Actor{Kind: audit.ActorSystem, ID: "steam"}, Action: "build.prune",
+		Target: strings.TrimSpace(steam.SourcePrefix + source + " " + strings.Join(removed, " ")), OK: err == nil}
+	if len(removed) > 0 {
+		s.log.Info("older builds of a Steam source removed", "source", source, "removed", removed, "keep_steam_builds", s.cfg.KeepSteamBuilds)
+	}
+	if err != nil {
+		e.Error = err.Error()
+		s.log.Warn("cannot remove older builds of a Steam source", "source", source, "err", err)
+	}
+	if aerr := s.audit.Append(e); aerr != nil {
+		s.log.Error("cannot write the audit log", "err", aerr)
+	}
 }
 
 // Timeouts of the HTTP servers.

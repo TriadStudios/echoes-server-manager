@@ -1014,10 +1014,21 @@ func (m *Manager) DeleteBuild(version string) error {
 
 // PruneBuilds removes every build that no instance uses (see BuildUsers).
 func (m *Manager) PruneBuilds() ([]string, error) {
+	return m.pruneBuilds(func(string) bool { return true })
+}
+
+// RemoveUnusedBuilds removes those of versions that no instance uses (see
+// BuildUsers) and returns the ones it removed. Other builds are left alone.
+func (m *Manager) RemoveUnusedBuilds(versions []string) ([]string, error) {
+	return m.pruneBuilds(func(v string) bool { return slices.Contains(versions, v) })
+}
+
+// pruneBuilds removes every build that may go and that no instance uses.
+func (m *Manager) pruneBuilds(mayGo func(version string) bool) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	users := m.buildUsersLocked()
-	return m.builds.Prune(func(v string) bool { return len(users[v]) > 0 })
+	return m.builds.Prune(func(v string) bool { return len(users[v]) > 0 || !mayGo(v) })
 }
 
 // setBuild switches the instance to build b with the given previous
