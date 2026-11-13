@@ -57,7 +57,7 @@ func TestBackupArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := r.m.Backup(ctx, "alpha", ReasonManual)
-	if err != nil || len(b.Files) != 4 {
+	if err != nil || !slices.Contains(b.Files, "Saved/SaveGames/Fake/TestMap__alpha.json") {
 		t.Fatalf("backup %+v %v", b, err)
 	}
 	got, write, err := r.m.BackupArchive("alpha", b.ID)

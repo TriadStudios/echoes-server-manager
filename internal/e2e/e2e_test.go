@@ -233,6 +233,9 @@ func TestBackupRestore(t *testing.T) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
 	h.create("alpha", "", nil)
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
+	// The save and both older copies exist once the fake saved three
+	// times; wait for that instead of assuming it.
+	testkit.Eventually(t, 10*time.Second, func() bool { return h.liveCounter("alpha", "alpha") >= 3 }, "fewer than three saves")
 	var b instances.Backup
 	h.must(http.StatusCreated, "POST", "/api/v1/instances/alpha/backup", struct{}{}, &b)
 	// The whole save folder: the save, its metadata and its older copies.

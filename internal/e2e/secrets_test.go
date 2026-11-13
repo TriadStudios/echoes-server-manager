@@ -506,8 +506,11 @@ func secretsFileDelivery(t *testing.T, h *harness, name string) {
 			t.Fatalf("the secrets file has mode %v (%v), want 600", fi.Mode().Perm(), err)
 		}
 	}
-	gs, err := gameserver.ReadStatus(h.dataDir(name))
-	if err != nil || !gs.ServerPasswordSet || !gs.AdminPasswordSet {
+	// The fake replaces its status file now and then; on Windows a read
+	// during the replace fails, so read until a read works.
+	var gs gameserver.Status
+	testkit.Eventually(t, 5*time.Second, func() bool { gs, err = gameserver.ReadStatus(h.dataDir(name)); return err == nil }, "status file unreadable")
+	if !gs.ServerPasswordSet || !gs.AdminPasswordSet {
 		t.Fatalf("the server does not say it has both passwords: %+v %v", gs, err)
 	}
 	if !h.serverHas(v.View, want) || h.serverHas(v.View, gameserver.Secrets{}) {

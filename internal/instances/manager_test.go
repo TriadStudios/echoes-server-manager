@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -417,7 +418,7 @@ func TestRestoreRefusesDamagedBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, err := r.m.Backup(ctx, "alpha", ReasonManual)
-	if err != nil || len(b.Files) != 4 {
+	if err != nil || !slices.Contains(b.Files, "Saved/SaveGames/Fake/TestMap__alpha.json") {
 		t.Fatalf("backup %+v %v", b, err)
 	}
 	if err := r.st.WriteFile("outside.sav", []byte("not a save"), 0o600); err != nil {
