@@ -156,6 +156,14 @@ characters. The command line is always built as an argument list, never as
 a shell string, and ESM never writes it anywhere: not into its log, an
 error, the state or an audit entry.
 
+The server joins its arguments back into one command line and searches it
+for switches, so separate arguments are no boundary. Every setting that
+goes onto the command line (the display name, world, map, rule keys and
+values, extra arguments) is refused with 422 `unsafe_argument` when it
+holds a double quote, the name `MULTIHOME` in any case, or white space
+followed by `-` and more (a lone ` - ` is fine): any of those could add a
+switch of its own. The answer names the setting, never its value.
+
 The command line, in this order: the map, `-unattended`, `-Port=`,
 `-QueryPort=`, `-ServerName=` (the display name, or the instance name),
 `-WorldName=`, `-MaxPlayers=`, `-ListInBrowser=`, `-UserDir=<instance>/data`,
@@ -364,11 +372,15 @@ the flush succeeded.`). The logon line names the server's Steam id, which
 is new at every start; ESM shows it in the instance's `live` view while the
 server runs and never stores it.
 
-Each of these lines counts only when its words start the message: after
-nothing but the engine's usual prefix, the time and frame in square
-brackets and up to three `Name: ` parts (category, verbosity, a tag), as in
-`[2026.01.02-03.04.05:678][  0]LogExample: `. The same words anywhere else
-in a line do not count. A server repeats text that users chose (its command
+Each of these lines counts only when its words start the message, right
+after the engine's prefix, which the line must have in full: the time and
+frame in square brackets, exactly one log category, and at most one
+verbosity word (`Fatal`, `Error`, `Warning`, `Display`, `Log`, `Verbose`,
+`VeryVerbose`), as in `[2026.01.02-03.04.05:678][  0]LogExample: Display: `.
+A chat line, which has the player's name or a tag between the category and
+the text, never counts; neither do the same words anywhere else in a line.
+The flush line counts only with its `[SHUTDOWN]` or `[EXIT]` tag. The
+server id of a run is the first one its log names. A server repeats text that users chose (its command
 line with the server name, rule values and extra arguments; names; chat),
 but none of it can hold a line break, so none of it can stand at the start
 of a line. ESM reads the log in whole lines, as the server wrote them and
@@ -404,10 +416,16 @@ count).
   `esm-<name>` started with `systemd-run --user`, which applies memory and
   CPU limits. ESM only touches units named for instances in its root and
   marked with its root in the description. ESM stops a unit with
-  `systemctl --user kill --kill-whom=main --signal=SIGINT`, and every unit
-  has `KillSignal=SIGINT`, `KillMode=mixed`, `SendSIGKILL=no` and
-  `TimeoutStopSec=` equal to `stop_timeout`, so even a `systemctl --user
-  stop` from outside ESM sends the server one SIGINT and never a SIGKILL.
+  `systemctl --user kill --kill-whom=main --signal=SIGINT` and waits
+  `stop_timeout` itself. Every unit has `KillSignal=SIGINT`,
+  `KillMode=mixed`, `SendSIGKILL=no` and `TimeoutStopSec=infinity`, so even
+  a `systemctl --user stop` from outside ESM sends the server one SIGINT and
+  nothing after it: with a stop timeout on the unit, systemd would send the
+  kill signal again when it ran out, even with `SendSIGKILL=no`. (So an
+  outside `systemctl --user stop` waits for as long as the server takes.)
+  A stop by ESM while the unit is already being stopped sends nothing. The
+  check, the record and the signal of a stop happen under one lock per
+  instance, so stops at the same time send one signal between them.
   The box owner turns on lingering once (`loginctl enable-linger
   <account>`) so units survive logouts.
 - *process* (Linux and Windows): a detached child process. ESM records its
@@ -939,8 +957,15 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   may still be taken on another one, where the server also listens.
 - **Separate arguments are not a boundary for the real server.** ESM hands
   a server each setting as its own argument, but an Unreal server joins its
-  command line back together and searches it for switches. A display name
-  or rule value such as `x -SecretsFile=...` could then act as a switch.
+  command line back together and searches it for switches. ESM refuses
+  quotes, `MULTIHOME` and white space followed by `-` in every setting that
+  goes onto the command line (see [Instances](#instances)); a value that
+  holds another switch's name without a space before it (`x-Port=1`) is
+  left to the server's own parsing.
+- **Chat that imitates a log line.** ESM only takes lines that carry the
+  engine's full prefix with the words right after the category (and an
+  optional verbosity). Should the game ever log what a player types right
+  after the category, such text could pass for one of those lines.
 
 ## Open items
 

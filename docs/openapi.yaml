@@ -818,7 +818,9 @@ components:
                 already_running, instance_exists, instance_running, busy,
                 port_in_use, no_free_ports, build_exists, build_in_use,
                 hash_mismatch, unsafe_archive, bad_manifest, too_large,
-                no_build, no_map (409: neither the instance nor its build
+                unsafe_argument (422: a setting that goes onto the server
+                command line holds a double quote, MULTIHOME, or white
+                space followed by "-"), no_build, no_map (409: neither the instance nor its build
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
