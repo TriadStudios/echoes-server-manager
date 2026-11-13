@@ -325,10 +325,13 @@ type server struct {
 
 // logf writes one log line the way the engine does: time and frame in
 // square brackets, then the category.
-func (s *server) logf(format string, args ...any) {
+func (s *server) logf(format string, args ...any) { s.logIn("LogFake", format, args...) }
+
+// logIn writes one log line under category.
+func (s *server) logIn(category, format string, args ...any) {
 	now := time.Now().UTC()
-	line := fmt.Sprintf("[%s:%03d][%3d]LogFake: %s\n", now.Format("2006.01.02-15.04.05"), now.Nanosecond()/1e6, 0,
-		fmt.Sprintf(format, args...))
+	line := fmt.Sprintf("[%s:%03d][%3d]%s: %s\n", now.Format("2006.01.02-15.04.05"), now.Nanosecond()/1e6, 0,
+		category, fmt.Sprintf(format, args...))
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
 	if s.logFile != nil {
@@ -396,7 +399,7 @@ func run(args []string) int {
 		s.logf("%s (slot %s)", gameserver.NewWorldLine(o.worldName), s.slot())
 	}
 	s.save()
-	s.logf("%s", gameserver.ServerIDLine(newServerID()))
+	s.logIn(gameserver.ServerIDCategory, "%s", gameserver.ServerIDLine(newServerID()))
 
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)

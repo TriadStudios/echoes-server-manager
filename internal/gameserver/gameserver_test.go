@@ -157,7 +157,6 @@ func TestLogLinesAreAnchored(t *testing.T) {
 		{"world saved", saved, IsWorldSavedLine},
 		{"flushed", FlushedLine, IsWorldSavedLine},
 		{"flushed at exit", "[EXIT] Synchronous write after the flush succeeded.", IsWorldSavedLine},
-		{"server id", ServerIDLine("12345678901234567"), func(l string) bool { _, ok := ServerID(l); return ok }},
 		{"resumed", ResumedLine("main") + " (slot TestMap__main)", IsWorldResumedLine},
 	} {
 		yes := []string{
@@ -216,6 +215,9 @@ func TestLogLinesAreAnchored(t *testing.T) {
 		"resumed": ResumedLine("w"), "new": NewWorldLine("w")}
 	for name, text := range others {
 		l := stamp + "LogExample: " + text
+		if name == "id" {
+			l = stamp + ServerIDCategory + ": " + text
+		}
 		if IsReadyLine(l) != (name == "ready") || IsWorldSavedLine(l) != (name == "saved" || name == "flushed") ||
 			IsWorldResumedLine(l) != (name == "resumed") {
 			t.Errorf("%s line %q is mistaken for another", name, l)
@@ -250,18 +252,37 @@ func TestLogLinesAreAnchored(t *testing.T) {
 	}
 }
 
+// The logon line comes from the online subsystem: the LogOnline category,
+// then its tag, then the words. Category and tag are pinned, so text a
+// player types (after their name in a chat line) never matches.
 func TestServerID(t *testing.T) {
 	for line, want := range map[string]string{
-		stamp + "LogOnline: " + ServerIDLine("90000000000000001"):   "90000000000000001",
-		stamp + "LogOnline: " + ServerIDLine("42") + " (anonymous)": "42",
-		stamp + "LogOnline: Display: " + ServerIDLine("123") + "\r": "123",
+		stamp + "LogOnline: STEAM: Steam game server logged on with UID: 90000000000000001": "90000000000000001",
+		stamp2 + "LogOnline: STEAM: Steam game server logged on with UID: 42 (anonymous)":   "42",
+		stamp + "LogOnline: Display: STEAM: Steam game server logged on with UID: 123\r":    "123",
+		stamp + "LogOnline: Verbose: OSS: Steam game server logged on with UID: 7":          "7",
+		stamp + ServerIDCategory + ": " + ServerIDLine("90000000000000002"):                 "90000000000000002",
 	} {
 		if got, ok := ServerID(line); !ok || got != want {
 			t.Errorf("ServerID(%q) = %q, %v; want %q", line, got, ok, want)
 		}
 	}
-	for _, line := range []string{ServerIDLine("7"), stamp + "LogOnline: Display: TAG: " + ServerIDLine("123"),
-		stamp + "LogChat: Bob: " + ServerIDLine("1")} {
+	for _, line := range []string{
+		"LogOnline: STEAM: Steam game server logged on with UID: 1",
+		"Steam game server logged on with UID: 1",
+		stamp + "LogOnline: Steam game server logged on with UID: 1",
+		stamp + "LogExample: STEAM: Steam game server logged on with UID: 1",
+		stamp + "LogChat: Bob: STEAM: Steam game server logged on with UID: 1",
+		stamp + "LogChat: Display: Bob: STEAM: Steam game server logged on with UID: 1",
+		stamp + "LogOnline: Bob: STEAM: Steam game server logged on with UID: 1",
+		stamp + "LogOnline: STEAM: Bob: Steam game server logged on with UID: 1",
+		stamp + "LogOnline: Display: TAG: Steam game server logged on with UID: 1",
+		stamp + "LogOnline: STEAM:  Steam game server logged on with UID: 1",
+		stamp + "LogOnline: STEAM: Steam game server logged on with UID: ",
+		stamp + "LogOnline: STEAM: Steam game server logged on with UID: 12x",
+		stamp + "LogOnline: STEAM: Steam game server logged on with UID: 123456789012345678901",
+		stamp + "LogInit: Command line: -Motd=STEAM: Steam game server logged on with UID: 1",
+	} {
 		if id, ok := ServerID(line); ok {
 			t.Errorf("ServerID(%q) = %q", line, id)
 		}

@@ -208,8 +208,17 @@ func UnsafeArgument(value string) (why string, unsafe bool) {
 // start: a chat line has the player's name, or a tag, between the
 // category and the text. UNCONFIRMED: the categories the real lines carry;
 // any name of letters, digits and "_" is accepted.
-const logPrefix = `^\[[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}:[0-9]{3}\]\[ *[0-9]+\]` +
-	`[A-Za-z][A-Za-z0-9_]*: (?:(?:Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose): )?`
+const logPrefix = logStamp + `[A-Za-z][A-Za-z0-9_]*: ` + logVerbosity
+
+// logStamp is the time and frame at the start of every line of the log
+// file, and logVerbosity the optional verbosity word after the category.
+const (
+	logStamp     = `^\[[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]{2}\.[0-9]{2}\.[0-9]{2}:[0-9]{3}\]\[ *[0-9]+\]`
+	logVerbosity = `(?:(?:Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose): )?`
+)
+
+// ServerIDCategory is the log category of the Steam logon line.
+const ServerIDCategory = "LogOnline"
 
 // The shapes of the server log lines ESM reads. Only the fixed words are
 // matched; names and numbers in them are the server's own. Each must start
@@ -227,10 +236,13 @@ var (
 	// words; UNCONFIRMED whether "Wrote save" starts its message.
 	worldSavedLine = regexp.MustCompile(logPrefix + `(?:Wrote save |\[(?:SHUTDOWN|EXIT)\] Synchronous write after the flush succeeded)`)
 	// serverIDLine: the server logged on to Steam anonymously and names
-	// the Steam id it got. CONFIRMED: the id is new at every start.
-	// UNCONFIRMED: whether the words start the message (a subsystem tag in
-	// front of them would hide the id; it is only shown, never relied on).
-	serverIDLine = regexp.MustCompile(logPrefix + `Steam game server logged on with UID: ([0-9]{1,20})(?:[^0-9A-Za-z_]|$)`)
+	// the Steam id it got. CONFIRMED: the id is new at every start, and
+	// the line comes from the online subsystem, under the LogOnline
+	// category with the subsystem's tag ("STEAM: ") before the words. Both
+	// are pinned here (the tag may also read "OSS: "), so a chat line,
+	// which has the player's name after its own category, never matches.
+	serverIDLine = regexp.MustCompile(logStamp + ServerIDCategory + `: ` + logVerbosity +
+		`(?:STEAM|OSS): Steam game server logged on with UID: ([0-9]{1,20})(?:[^0-9A-Za-z_]|$)`)
 	// resumedLine: the server found a save of its world and carries on
 	// with it (instead of a new world). CONFIRMED for the words.
 	resumedLine = regexp.MustCompile(logPrefix + `\[SERVER\] Resuming world `)
@@ -277,8 +289,9 @@ func WorldSavedLine(file string, size int) string {
 // FlushedLine is the line that confirms the last write at a stop.
 const FlushedLine = "[SHUTDOWN] Synchronous write after the flush succeeded."
 
-// ServerIDLine is the logon line naming the Steam id id.
-func ServerIDLine(id string) string { return "Steam game server logged on with UID: " + id }
+// ServerIDLine is the message of the logon line naming the Steam id id,
+// as it follows the ServerIDCategory category.
+func ServerIDLine(id string) string { return "STEAM: Steam game server logged on with UID: " + id }
 
 // ResumedLine is the line of a server that carries on with a saved world.
 func ResumedLine(world string) string { return "[SERVER] Resuming world '" + world + "'" }
