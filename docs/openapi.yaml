@@ -275,7 +275,11 @@ paths:
         `steam-<name>-<buildid>` when no build of that build id is installed
         yet (201). When it is installed already the answer is 200 with that
         build. A wrong branch password is 422 `wrong_password`; SteamCMD
-        missing is 422 `steamcmd_missing`.
+        missing is 422 `steamcmd_missing`. With less than twice the build's
+        size free on the disk that holds the builds, nothing is installed
+        and the answer is 409 `not_enough_space`. After a new install, the
+        source's builds beyond the newest `keep_steam_builds` by build id
+        that no instance uses are removed.
       requestBody:
         required: true
         content:

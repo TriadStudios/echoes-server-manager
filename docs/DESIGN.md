@@ -132,6 +132,7 @@ are refused, so typos are reported.
 | `update_check`         | `true`            | Let the service look up the newest ESM release (at most every 6 hours, only while someone looks at the box). It never updates anything by itself. |
 | `steamcmd`             | `<root>/steamcmd/steamcmd.sh` | SteamCMD (`steamcmd.exe` on Windows). A relative path is taken from the root. |
 | `steam_sources`        | (none)            | Steam apps builds come from: `name`, `app_id`, `branch` (empty for the default branch), `executable` (per system, a path inside the app's files), `default_map`, `channel`, `check_every` (default `15m`, `"0"` off, else at least `1m`). See [Builds from Steam](#builds-from-steam). |
+| `keep_steam_builds`    | `3`               | Builds of each Steam source kept, the newest by build id. After each install from a source, its older builds that no instance uses are removed. At least `1`. |
 
 ## Instances
 
@@ -528,7 +529,9 @@ rolled back. World data is not touched by a rollback.
 as one of its newest `keep_previous_builds` previous builds, or as the
 build an unproven automatic update goes back to (`update_rollback_build`,
 see [Automatic updates](#automatic-updates)). A single build can be
-deleted when no instance uses it.
+deleted when no instance uses it. Builds of a Steam source are also pruned
+after each install from that source (see
+[Builds from Steam](#builds-from-steam)).
 
 **Making a manifest.** `esm build manifest <folder> --version V
 --executable linux=<path> ...` writes the manifest of a build folder: the
@@ -559,11 +562,24 @@ source's own checks every `check_every` do the same:
    4 KiB): the app id must match, `StateFlags` must say "fully installed",
    and `buildid` gives the version `steam-<name>-<buildid>`.
 4. When that build is installed already, nothing more happens. Otherwise
-   the app's files (without `steamapps/`) are copied into the install work
-   folder (links and special files refused), a manifest is made for the
-   copy (channel, default map and executables from the source), and the
-   install finishes like any other: hashes checked, `steam_appid.txt`
-   placed, read-only, moved into `builds/`.
+   ESM adds up the size of the app's files (without `steamapps/`) and
+   reads the free space of the file system that holds `builds/`. With less
+   than twice that size free, the install is refused (409
+   `not_enough_space`, with both sizes; also in the service log and the
+   source's state) and nothing is copied; the next check or install tries
+   again. Where the free space cannot be read, the install goes ahead and
+   the service log says so once. Then the app's files are copied into the
+   install work folder (links and special files refused), a manifest is
+   made for the copy (channel, default map and executables from the
+   source), and the install finishes like any other: hashes checked,
+   `steam_appid.txt` placed, read-only, moved into `builds/`.
+5. After a new build is installed, the source's builds are ordered by
+   build id (as numbers) and those beyond the newest `keep_steam_builds`
+   (default 3) are removed when no instance uses them (see Pruning above).
+   The build just installed is always kept, even when the branch went back
+   to an older build id. Builds of other sources and builds not from Steam
+   are never touched. A removal is in the service log and in the audit log
+   (`build.prune`, by the system).
 
 The cache keeps the app's files, so a check when nothing changed is quick
 and a new build is a delta download. A box holds each build twice (the
