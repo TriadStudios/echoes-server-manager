@@ -37,14 +37,24 @@ const (
 	procForeign                  // alive, but a different process now owns the pid
 )
 
+// entry is one server this supervisor watches. rec is set when the entry
+// is made and never changed after it is shared, so any goroutine may read
+// it without a lock. stopSentAt is guarded by Process.mu. exitCode and
+// exitedAt are written once, under Process.mu, before done is closed, and
+// read only after done is closed.
+//
+// Lock order: the store's per-instance stop lock (stopLockKey), then
+// Process.mu. Process.mu is held only for short reads and writes of
+// fields, never across file I/O, a signal or a wait.
 type entry struct {
-	name     string
-	rec      pidRecord
-	proc     *os.Process
-	child    bool          // started by this supervisor (a goroutine Waits)
-	done     chan struct{} // closed once the process has exited
-	exitCode *int
-	exitedAt time.Time
+	name       string
+	rec        pidRecord
+	proc       *os.Process
+	child      bool          // started by this supervisor (a goroutine Waits)
+	done       chan struct{} // closed once the process has exited
+	exitCode   *int
+	exitedAt   time.Time
+	stopSentAt time.Time // when this process was sent its one stop signal
 }
 
 func (e *entry) exited() bool {
@@ -389,7 +399,7 @@ func (p *Process) adoptOne(name string, rec pidRecord) (*entry, procState) {
 		proc.Release()
 		return nil, state
 	}
-	return &entry{name: name, rec: rec, proc: proc, done: make(chan struct{})}, procOurs
+	return &entry{name: name, rec: rec, proc: proc, done: make(chan struct{}), stopSentAt: rec.StopSentAt}, procOurs
 }
 
 // Stop asks the process to stop and waits up to timeout (or until ctx
@@ -509,7 +519,7 @@ func (p *Process) signalOnce(name string, e *entry) (gone bool, err error) {
 	unlock := p.st.Lock(stopLockKey(name))
 	defer unlock()
 	p.mu.Lock()
-	sent := e.rec.StopSentAt
+	sent := e.stopSentAt
 	p.mu.Unlock()
 	// Another supervisor on this root may have sent it: its record is in
 	// the pid file.
@@ -520,7 +530,7 @@ func (p *Process) signalOnce(name string, e *entry) (gone bool, err error) {
 	}
 	if !sent.IsZero() {
 		p.mu.Lock()
-		e.rec.StopSentAt = sent
+		e.stopSentAt = sent
 		p.mu.Unlock()
 		p.log.Info("the server has had its stop signal already; waiting again, sending none", "instance", name,
 			"pid", e.rec.PID, "sent", sent)
@@ -530,11 +540,14 @@ func (p *Process) signalOnce(name string, e *entry) (gone bool, err error) {
 		testHookBeforeStopSignal(name)
 	}
 	// Recorded before it is sent: whatever happens next, this process
-	// never gets a second one from ESM.
+	// never gets a second one from ESM. The record on disk is a copy of
+	// rec with the time; rec itself stays as it was.
+	now := time.Now().UTC()
 	p.mu.Lock()
-	e.rec.StopSentAt = time.Now().UTC()
-	rec := e.rec
+	e.stopSentAt = now
 	p.mu.Unlock()
+	rec := e.rec
+	rec.StopSentAt = now
 	if err := p.st.WriteJSON(pidFile(name), rec, 0o600); err != nil {
 		return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
 	}
