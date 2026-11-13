@@ -236,8 +236,9 @@ func (s *Systemd) Start(ctx context.Context, spec Spec) error {
 		// server exactly one SIGINT, to the main process only. No stop
 		// timeout on the unit: when one runs out, systemd sends the kill
 		// signal again (and SIGKILL unless SendSIGKILL=no), which could
-		// end the server before its save is written. ESM's own stop does
-		// not wait on the unit; it waits stop_timeout itself.
+		// end the server before its save is written. ESM stops the unit
+		// the same way (systemctl stop --no-block), so a later stop from
+		// outside sends nothing more, and waits stop_timeout itself.
 		"-p", "KillSignal=SIGINT",
 		"-p", "KillMode=mixed",
 		"-p", "SendSIGKILL=no",
@@ -348,10 +349,11 @@ type stopRecord struct {
 
 func stopRecordFile(name string) string { return runDir(name) + "/stop-signal.json" }
 
-// Stop sends the unit's main process exactly one SIGINT (systemctl --user
-// kill --kill-whom=main --signal=SIGINT) and waits up to timeout for the
-// unit to end. A run that was sent its signal already (an earlier stop
-// that ran out of time, even one of an earlier ESM) is not sent another:
+// Stop stops the unit with systemctl --user stop --no-block, which sends
+// its main process exactly one SIGINT (KillSignal=SIGINT,
+// KillMode=mixed), and waits up to timeout for the unit to end. A run that
+// was sent its signal already (an earlier stop that ran out of time, even
+// one of an earlier ESM, or a stop from outside ESM) is not sent another:
 // the stop only waits again. A server still running when the wait ends is
 // left alone and ErrStopTimeout is returned. ESM never sends SIGKILL.
 func (s *Systemd) Stop(ctx context.Context, name string, timeout time.Duration) error {
@@ -421,7 +423,10 @@ func (s *Systemd) signalOnce(ctx context.Context, name string) (gone bool, err e
 	if err := s.st.WriteJSON(stopRecordFile(name), rec, 0o600); err != nil {
 		return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
 	}
-	if _, err := s.systemctl(ctx, "systemctl", "--user", "kill", "--kill-whom=main", "--signal=SIGINT", unitName(name)); err != nil {
+	// Stopped the way systemd stops a unit, so the unit is deactivating
+	// from now on and a later stop from outside sends nothing more; with
+	// KillMode=mixed the SIGINT goes to the main process only.
+	if _, err := s.systemctl(ctx, "systemctl", "--user", "stop", "--no-block", unitName(name)); err != nil {
 		if u, serr := s.show(name); serr == nil && !u.running() {
 			return true, nil
 		}

@@ -415,15 +415,16 @@ count).
 - *systemd* (Linux, preferred): each server is a transient user unit
   `esm-<name>` started with `systemd-run --user`, which applies memory and
   CPU limits. ESM only touches units named for instances in its root and
-  marked with its root in the description. ESM stops a unit with
-  `systemctl --user kill --kill-whom=main --signal=SIGINT` and waits
-  `stop_timeout` itself. Every unit has `KillSignal=SIGINT`,
-  `KillMode=mixed`, `SendSIGKILL=no` and `TimeoutStopSec=infinity`, so even
-  a `systemctl --user stop` from outside ESM sends the server one SIGINT and
-  nothing after it: with a stop timeout on the unit, systemd would send the
-  kill signal again when it ran out, even with `SendSIGKILL=no`. (So an
-  outside `systemctl --user stop` waits for as long as the server takes.)
-  A stop by ESM while the unit is already being stopped sends nothing. The
+  marked with its root in the description. Every unit has
+  `KillSignal=SIGINT`, `KillMode=mixed`, `SendSIGKILL=no` and
+  `TimeoutStopSec=infinity`, and ESM stops a unit with `systemctl --user
+  stop --no-block` (the main process gets the one SIGINT) and then waits
+  `stop_timeout` itself. The unit is then deactivating, so a `systemctl
+  --user stop` from outside ESM, before or after ESM's own, sends nothing
+  more; with a stop timeout on the unit, systemd would send the kill signal
+  again when it ran out, even with `SendSIGKILL=no`. (So an outside
+  `systemctl --user stop` waits for as long as the server takes.) A stop by
+  ESM while the unit is already being stopped sends nothing. The
   check, the record and the signal of a stop happen under one lock per
   instance, so stops at the same time send one signal between them.
   The box owner turns on lingering once (`loginctl enable-linger

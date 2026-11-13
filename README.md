@@ -129,8 +129,9 @@ What a box needs before ESM can run an Echoes of Durinn dedicated server
   its world and exits within seconds. ESM waits up to `stop_timeout`
   (default 120 s) and never sends a second signal or kills the server; one
   that is still running is left running and reported as `stop_timeout`.
-  The same holds for a `systemctl --user stop` of its unit (units have no
-  stop timeout, so systemd never sends a second signal).
+  The same holds for a `systemctl --user stop` of its unit, before or
+  after ESM's own stop: ESM stops the unit the same way, and units have no
+  stop timeout, so systemd never sends a second signal.
 - **Saves.** Each instance's server keeps its saves in
   `<root>/instances/<name>/data/Saved/SaveGames/`; backups and restores
   copy that whole folder. Installing or removing a build never touches it.
