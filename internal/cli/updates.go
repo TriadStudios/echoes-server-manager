@@ -72,12 +72,18 @@ func (e *env) updateSelf(args []string) error {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
+	// This replaces the binary only; a running esm serve goes on with the
+	// old one until it is restarted, so nothing here ends it.
 	res, err := releaseClient(e.version).Update(e.ctx, e.version, exe, runtime.GOOS, runtime.GOARCH, *force)
 	if err != nil {
 		return err
 	}
-	return e.result(res, fmt.Sprintf("esm updated from %s to %s at %s (the old binary is %s); restart the service to run it: systemctl --user restart esm",
-		res.From, res.To, res.Binary, res.Previous))
+	restart := "restart esm serve to run it"
+	if runtime.GOOS == "linux" {
+		restart = "restart the service to run it: systemctl --user restart esm"
+	}
+	return e.result(res, fmt.Sprintf("esm updated from %s to %s at %s (the old binary is %s); %s",
+		res.From, res.To, res.Binary, res.Previous, restart))
 }
 
 // --- service install ---

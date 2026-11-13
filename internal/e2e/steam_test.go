@@ -209,10 +209,12 @@ func TestSteamAndSelfUpdateRoles(t *testing.T) {
 	}
 }
 
-// A self-update through the API takes a signed release from a release
-// server, replaces the binary, keeps the old one, and asks the service to
-// end so its service manager starts the new one.
-func TestSelfUpdateThroughTheAPI(t *testing.T) {
+// releaseServer serves release v9.9.9 over TLS on loopback, with the binary
+// "the new esm" for this system, signed by a key of its own. tune points a
+// service at it, with exe (holding "the old esm") as the binary to replace
+// and restartedBy as what starts ESM again.
+func releaseServer(t *testing.T, restartedBy string) (exe string, tune func(*service.Options)) {
+	t.Helper()
 	pub, priv, _ := release.NewKey()
 	name := release.AssetName(runtime.GOOS, runtime.GOARCH)
 	bin := []byte("the new esm")
@@ -234,12 +236,21 @@ func TestSelfUpdateThroughTheAPI(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer srv.Close()
-	exe := filepath.Join(t.TempDir(), "esm-under-test")
+	t.Cleanup(srv.Close)
+	exe = filepath.Join(t.TempDir(), "esm-under-test")
 	os.WriteFile(exe, []byte("the old esm"), 0o755)
-	h := newESMTuned(t, "process", func(o *service.Options) {
+	return exe, func(o *service.Options) {
 		o.ReleaseAPI, o.ReleaseHTTP, o.ReleaseKey, o.Executable = srv.URL+"/latest", srv.Client(), pub, exe
-	})
+		o.RestartedBy = func() string { return restartedBy }
+	}
+}
+
+// A self-update through the API takes a signed release from a release
+// server, replaces the binary, keeps the old one, and asks the service to
+// end so its service manager starts the new one.
+func TestSelfUpdateThroughTheAPI(t *testing.T) {
+	exe, tune := releaseServer(t, "systemd")
+	h := newESMTuned(t, "process", tune)
 	var eb api.ErrorBody
 	if st := h.call("POST", "/api/v1/box/self-update", h.admin, struct{}{}, &eb); st != http.StatusConflict || eb.Error.Code != "unknown_version" {
 		t.Fatalf("a development build without force: %d %+v", st, eb)
@@ -276,4 +287,43 @@ func TestSelfUpdateThroughTheAPI(t *testing.T) {
 		h.must(http.StatusOK, "GET", "/api/v1/box", nil, &box)
 		return box.Release.Latest == "v9.9.9"
 	}, "the release check: %+v", box.Release)
+}
+
+// When nothing would start ESM again after it ends (not under systemd, or
+// on Windows), a self-update through the API is refused and changes
+// nothing, unless the caller sets exit_anyway: then ESM updates, says that
+// it has to be started by hand, and ends.
+func TestSelfUpdateWithoutAServiceManager(t *testing.T) {
+	exe, tune := releaseServer(t, "")
+	h := newESMTuned(t, "process", tune)
+	var eb api.ErrorBody
+	if st := h.call("POST", "/api/v1/box/self-update", h.admin, api.SelfUpdateRequest{Force: true}, &eb); st != http.StatusConflict ||
+		eb.Error.Code != "no_service_manager" || !strings.Contains(eb.Error.Message, "exit_anyway") {
+		t.Fatalf("self-update with nothing to restart ESM: %d %+v", st, eb)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "the old esm" {
+		t.Fatalf("binary changed to %q", b)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(exe)); len(entries) != 1 {
+		t.Fatalf("files next to the binary: %v", entries)
+	}
+	select {
+	case <-h.svc.Exit():
+		t.Fatal("the service was asked to end after a refused update")
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	var res api.SelfUpdateResult
+	h.must(http.StatusOK, "POST", "/api/v1/box/self-update", api.SelfUpdateRequest{Force: true, ExitAnyway: true}, &res)
+	if res.To != "v9.9.9" || res.Restarting || !strings.Contains(res.Note, "by hand") {
+		t.Fatalf("result %+v", res)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "the new esm" {
+		t.Fatalf("binary %q", b)
+	}
+	select {
+	case <-h.svc.Exit():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the service was not asked to end after an update with exit_anyway")
+	}
 }

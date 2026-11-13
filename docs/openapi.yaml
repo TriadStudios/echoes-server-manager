@@ -215,6 +215,21 @@ paths:
         `unknown_version` for a development build. SHA256SUMS starts with
         `version <tag>`; the signed version must be the release's tag (also
         with `force`) and decides whether the release is newer.
+
+        ESM ends only when something starts it again: on Linux, when
+        systemd runs it as a service (it sets `INVOCATION_ID`; the unit of
+        `esm service install` has `Restart=always`). Otherwise, and always
+        on Windows, the call is refused with 409 `no_service_manager` and
+        nothing is changed, unless `exit_anyway` is set: then ESM updates
+        and ends all the same (`restarting` false) and has to be started
+        by hand.
+
+        While an update runs it holds the lock file
+        `<binary>.update.lock` next to the binary; a second update, from
+        the API or from `esm update-self`, gets 409 `busy`, and so does one
+        after an update worked and before ESM has ended. A lock older than
+        15 minutes was left by an update that did not finish and is taken
+        over.
       requestBody:
         content:
           application/json:
@@ -1015,6 +1030,9 @@ components:
       additionalProperties: false
       properties:
         force: { type: boolean, description: Take the newest release even when it is not newer. }
+        exit_anyway:
+          type: boolean
+          description: Update and end ESM also when nothing starts it again (it then has to be started by hand). Without it, such an update is refused with 409 no_service_manager.
     SelfUpdateResult:
       type: object
       properties:
@@ -1022,7 +1040,9 @@ components:
         to: { type: string }
         binary: { type: string, description: The replaced binary. }
         previous: { type: string, description: Where the old binary was kept (move it back to roll back). }
-        restarting: { type: boolean }
+        restarting:
+          type: boolean
+          description: ESM ends in a moment and its service manager starts the new binary. False after exit_anyway with nothing to start ESM again; ESM ends all the same.
         note: { type: string }
     SteamSource:
       type: object

@@ -109,8 +109,11 @@ type Options struct {
 	Steam *steam.Manager
 	// Release says whether a newer ESM release is out (optional), and
 	// SelfUpdate puts it in place of the running binary (optional).
+	// SelfUpdate refuses with a Conflict when nothing would start ESM again
+	// after it ends, unless exitAnyway is set; restarting says whether
+	// something does.
 	Release    *release.Checker
-	SelfUpdate func(ctx context.Context, force bool) (release.Result, error)
+	SelfUpdate func(ctx context.Context, force, exitAnyway bool) (res release.Result, restarting bool, err error)
 }
 
 // Server serves the API and the page.

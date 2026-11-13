@@ -30,6 +30,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
+	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/page"
@@ -76,6 +77,9 @@ type Options struct {
 	// Executable is the binary a self-update replaces (default: the
 	// running one).
 	Executable string
+	// RestartedBy says what starts ESM again after it ends, "" for nothing
+	// (default: restartedBy).
+	RestartedBy func() string
 }
 
 // Service is a running ESM.
@@ -108,6 +112,8 @@ type Service struct {
 	version  string
 	// releaseOff says why no release is ever looked up ("" when they are).
 	releaseOff string
+	// restartedBy says what starts ESM again after it ends ("" nothing).
+	restartedBy func() string
 }
 
 // Start opens the root and starts serving. It fails when the listen rule
@@ -149,7 +155,11 @@ func Start(o Options) (_ *Service, err error) {
 	if created {
 		log.Info("wrote the default config", "path", config.FileName)
 	}
-	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 2), exit: make(chan struct{}), exe: o.Executable, version: o.Version}
+	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 2), exit: make(chan struct{}), exe: o.Executable, version: o.Version,
+		restartedBy: o.RestartedBy}
+	if s.restartedBy == nil {
+		s.restartedBy = restartedBy
+	}
 
 	if s.audit, err = audit.Open(st); err != nil {
 		return nil, err
@@ -360,42 +370,75 @@ func (s *Service) Err() <-chan error { return s.errc }
 // service manager: after a self-update put a new binary in place.
 func (s *Service) Exit() <-chan struct{} { return s.exit }
 
+// restartedBy says what starts ESM again after it ends: "systemd" when
+// systemd runs ESM as a service (systemd sets INVOCATION_ID for every
+// service it starts; the unit of esm service install has Restart=always),
+// "" otherwise. ESM knows of nothing on Windows that does.
+func restartedBy() string {
+	if runtime.GOOS == "linux" && os.Getenv("INVOCATION_ID") != "" {
+		return "systemd"
+	}
+	return ""
+}
+
+// noServiceManager is why a self-update is refused when nothing starts ESM
+// again after it ends.
+func noServiceManager() string {
+	why := "ESM does not run under systemd (esm service install writes a unit that starts it again)"
+	if runtime.GOOS != "linux" {
+		why = "ESM has no service manager on " + runtime.GOOS
+	}
+	return "nothing would start ESM again after the update ends it: " + why +
+		". Update on the box with esm update-self and restart ESM yourself, or set exit_anyway to update and end ESM anyway; it then has to be started by hand"
+}
+
 // selfUpdate replaces ESM's binary with the newest release's (see
 // release.Client.Update) and, when that worked, asks the service to end a
 // moment later so the answer still reaches the caller. Game servers keep
-// running; the new ESM adopts them.
-func (s *Service) selfUpdate(ctx context.Context, force bool) (release.Result, error) {
+// running; the new ESM adopts them. When nothing starts ESM again after it
+// ends, it refuses (409 no_service_manager) and changes nothing, unless
+// exitAnyway is set. restarting says whether something starts ESM again.
+func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res release.Result, restarting bool, err error) {
 	if s.releaseOff != "" {
-		return release.Result{}, errors.New(s.releaseOff)
+		return release.Result{}, false, errors.New(s.releaseOff)
+	}
+	by := s.restartedBy()
+	if by == "" && !exitAnyway {
+		return release.Result{}, false, fault.New(fault.Conflict, "no_service_manager", "%s", noServiceManager())
 	}
 	// One at a time, and none after one worked: a second update before
 	// this ESM ends would keep the new binary as the previous one.
 	if !s.updating.TryLock() {
-		return release.Result{}, release.ErrBusy
+		return release.Result{}, false, release.ErrBusy
 	}
 	defer s.updating.Unlock()
 	if s.updated {
-		return release.Result{}, fmt.Errorf("%w: ESM was updated already and ends in a moment", release.ErrBusy)
+		return release.Result{}, false, fmt.Errorf("%w: ESM was updated already and ends in a moment", release.ErrBusy)
 	}
 	exe := s.exe
 	if exe == "" {
-		var err error
 		if exe, err = os.Executable(); err != nil {
-			return release.Result{}, err
+			return release.Result{}, false, err
 		}
 		// Like esm update-self, so both use the same lock file.
 		if exe, err = filepath.EvalSymlinks(exe); err != nil {
-			return release.Result{}, err
+			return release.Result{}, false, err
 		}
 	}
-	res, err := s.rel.Update(ctx, s.version, exe, runtime.GOOS, runtime.GOARCH, force)
+	res, err = s.rel.Update(ctx, s.version, exe, runtime.GOOS, runtime.GOARCH, force)
 	if err != nil {
-		return res, err
+		return res, false, err
 	}
 	s.updated = true
-	s.log.Info("ESM binary updated; ending so the service manager starts the new one", "from", res.From, "to", res.To, "previous", res.Previous)
+	if by != "" {
+		s.log.Info("ESM binary updated; ending so the service manager starts the new one", "from", res.From, "to", res.To,
+			"previous", res.Previous, "restarted_by", by)
+	} else {
+		s.log.Warn("ESM binary updated; ending, and nothing starts ESM again: start it by hand", "from", res.From, "to", res.To,
+			"previous", res.Previous)
+	}
 	time.AfterFunc(time.Second, func() { s.exitOnce.Do(func() { close(s.exit) }) })
-	return res, nil
+	return res, by != "", nil
 }
 
 // Shutdown stops accepting requests, ends event streams, stops watching

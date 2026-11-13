@@ -137,8 +137,22 @@
       done('removed');
     },
     'self-update': async function () {
-      var r = await call('POST', '/api/v1/box/self-update');
-      say('ESM ' + r.to + ' is in place and ESM restarts now. Reload this page in a few seconds.');
+      var r;
+      try {
+        r = await call('POST', '/api/v1/box/self-update');
+      } catch (e) {
+        // Nothing would start ESM again: only on a second, explicit yes.
+        if (e.code !== 'no_service_manager' ||
+            !window.confirm(e.message + '\n\nUpdate and end ESM anyway? It then has to be started again by hand on the box.')) {
+          throw e;
+        }
+        r = await call('POST', '/api/v1/box/self-update', { exit_anyway: true });
+      }
+      if (r.restarting) {
+        say('ESM ' + r.to + ' is in place and ESM restarts now. Reload this page in a few seconds.');
+      } else {
+        say('ESM ' + r.to + ' is in place and ESM ends now. Start it again on the box (esm serve), then reload this page.');
+      }
     },
     revoke: async function (b) {
       await call('DELETE', '/api/v1/tokens/' + enc(b.dataset.id));
