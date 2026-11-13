@@ -208,16 +208,66 @@ const MaxPlayersLimit = 70
 // a switch that must never reach the server, and says why. Besides
 // -MULTIHOME these are the engine's overrides of its configuration files:
 // "-ini:<File>:[<Section>]:<Key>=<Value>" (the name is "ini", up to the
-// ":") and -iniFile=, which could change what ESM sets itself (ports,
-// networking, where the server keeps its files).
+// ":"), -iniFile= and -CustomConfig=, which could change what ESM sets
+// itself (ports, networking, where the server keeps its files).
 func RefusedSwitch(key string) (why string, refused bool) {
 	switch switchName(key) {
 	case switchName(MultihomeSwitch):
 		return MultihomeSwitch + " is never passed: with it the server advertises the bind address instead of its Steam identity and players cannot join; the box's firewall decides where the query port is reachable", true
-	case "ini", "inifile":
-		return "-ini: and -iniFile= override the engine's configuration files and are never passed: they could change what ESM sets itself (ports, networking, the server's folders)", true
+	case "ini", "inifile", "customconfig":
+		return "-ini:, -iniFile= and -CustomConfig= change the engine's configuration files and are never passed: they could change what ESM sets itself (ports, networking, the server's folders)", true
 	}
 	return "", false
+}
+
+// lookedUp are the names, besides the catalog's, by which the server or
+// the engine looks a value up on the command line ("Name=") and that no
+// value may hold: ESM's own switches, the passwords, and the engine's
+// configuration overrides. Each is written as SwitchInValue names it.
+var lookedUp = []string{
+	"Unattended", "Port", "QueryPort", "ServerName", "WorldName", "MaxPlayers", "ListInBrowser", "UserDir", "abslog",
+	"Password", "AdminPassword", "SecretsFile", "iniFile", "CustomConfig",
+}
+
+// SwitchInValue reports whether value holds a switch the server would read,
+// and names it. The server finds "Name=" anywhere in its command line,
+// without regard to case, where the character before the name is not a
+// letter or digit (or the name starts an argument), also inside the value
+// of another switch: "-MOTD=x,PvP=True" sets PvP. The names looked for are
+// those of the catalog and of lookedUp. Values that hold one are refused
+// when they are set.
+func SwitchInValue(value string) (name string, found bool) {
+	low := strings.ToLower(value)
+	alnum := func(c byte) bool { return 'a' <= c && c <= 'z' || '0' <= c && c <= '9' }
+	check := func(n string) bool {
+		k := strings.ToLower(n) + "="
+		for i := 0; ; {
+			j := strings.Index(low[i:], k)
+			if j < 0 {
+				return false
+			}
+			if at := i + j; at == 0 || !alnum(low[at-1]) {
+				return true
+			}
+			i += j + 1
+		}
+	}
+	for _, s := range gameSettings {
+		if check(s.Key) {
+			return s.Key, true
+		}
+	}
+	for _, n := range lookedUp {
+		if check(n) {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// SwitchInValueWhy is the refusal of a value that holds the switch name.
+func SwitchInValueWhy(name string) string {
+	return `holds "` + name + `=", which the server would read as its own switch ` + name
 }
 
 // UnsafeArgument reports whether value, a setting that goes onto the

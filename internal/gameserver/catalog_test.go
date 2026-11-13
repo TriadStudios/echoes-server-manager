@@ -154,7 +154,7 @@ func TestGameSettingCheck(t *testing.T) {
 		"ChatBlockedWords":          {"rude", "rude,ruder", "rude, ruder , rudest", "a,,b", strings.Repeat("abcd,", 400)[:1999]},
 		"AdminPlayerIds":            {"76561190000000001", "76561190000000001,76561190000000002", "net:76561190000000001"},
 		"MOTD":                      {"Welcome!", "Welcome, traveller", "Be nice (please)", "well-met friends", strings.Repeat("x", 256)},
-		"AnnouncementsUrl":          {"https://example.com/api", "http://127.0.0.1:8080/x?y=1"},
+		"AnnouncementsUrl":          {"https://example.com/api", "http://127.0.0.1:8080/x"},
 		"ProblemReportUrl":          {"https://example.com/reports"},
 		"BossSummonCooldownSeconds": {"0", "600"},
 	}
@@ -274,5 +274,50 @@ func TestLaunchArgsNeverEndInEquals(t *testing.T) {
 				t.Errorf("%s: %q is not on the command line %q", delivery, want, argv)
 			}
 		}
+	}
+}
+
+// The server finds a switch anywhere in its command line where "Name="
+// follows something that is not a letter or digit, so a value that holds
+// one would set that switch too.
+func TestSwitchInValue(t *testing.T) {
+	for v, want := range map[string]string{
+		"https://example.com/news?AdminPassword=x": "AdminPassword",
+		"-PvP=True":             "PvP",
+		"123;Password=x":        "Password",
+		"-iniFile=/x":           "iniFile",
+		"x,customconfig=y":      "CustomConfig",
+		"a_MaxPlayers=5":        "MaxPlayers",
+		"PORT=1":                "Port",
+		"x-Port=1":              "Port",
+		"(motd=hi)":             "MOTD",
+		"x.AnnouncementsToken=": "AnnouncementsToken",
+	} {
+		if got, found := SwitchInValue(v); !found || got != want {
+			t.Errorf("%q: %q %v, want %q", v, got, found, want)
+		}
+	}
+	for _, v := range []string{"abcPassword=x", "PvP is fun", "Password: x", "ServerPassword=x", "mypvp=1", "a=b", "", "Port 7777"} {
+		if got, found := SwitchInValue(v); found {
+			t.Errorf("%q: found %q", v, got)
+		}
+	}
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	for key, values := range map[string][]string{
+		"MOTD":             {"-PvP=True", "Welcome x-Port=1 to all", "join,Password=x"},
+		"AdminPlayerIds":   {"123;Password=x", "1,2,x_LAN=1"},
+		"ChatBlockedWords": {"rude,PvP=1"},
+		"AnnouncementsUrl": {"https://example.com/news?AdminPassword=x", "https://example.com/news?x=1", "https://example.com/news#top"},
+		"ProblemReportUrl": {"https://example.com/r?token=1"},
+	} {
+		s, _ := LookupGameSetting(key)
+		for _, v := range values {
+			if err := s.Check(v, now); err == nil {
+				t.Errorf("%s=%q accepted", key, v)
+			}
+		}
+	}
+	if why, refused := RefusedSwitch("-CustomConfig"); !refused || !strings.Contains(why, "never passed") {
+		t.Errorf("-CustomConfig: %q %v", why, refused)
 	}
 }

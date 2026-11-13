@@ -445,6 +445,11 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 	if (old == nil || in.MaxPlayers != old.MaxPlayers) && in.MaxPlayers > gameserver.MaxPlayersLimit {
 		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
 	}
+	if old == nil || in.DisplayName != old.DisplayName {
+		if name, found := gameserver.SwitchInValue(in.DisplayName); found {
+			return unsafeValue("display_name", "the display name", name)
+		}
+	}
 	var before map[string]string
 	if old != nil {
 		before = old.Rules
@@ -454,6 +459,10 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		if prev, ok := before[k]; ok && prev == v {
 			continue
 		}
+		// "-x_PvP=" is the switch PvP to the server.
+		if name, found := switchInName(k); found {
+			return unsafeValue("rules", fmt.Sprintf("key %q", k), name)
+		}
 		s, ok := gameserver.LookupGameSetting(k)
 		if !ok {
 			if f, folded := gameserver.FoldGameSetting(k); folded {
@@ -462,6 +471,9 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 			// The server reads an empty value as the argument after it.
 			if v == "" {
 				return invalid("rules", "%s needs a value; leave the rule out to use the server's default", k)
+			}
+			if name, found := gameserver.SwitchInValue(v); found {
+				return unsafeValue("rules", "the value of "+k, name)
 			}
 			continue
 		}
@@ -477,11 +489,52 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		if slices.Contains(argsBefore, a) {
 			continue
 		}
+		pos := fmt.Sprintf("argument %d", i+1)
 		if strings.HasSuffix(a, "=") {
-			return invalid("extra_args", "argument %d ends in \"=\" without a value, and the server would read the next argument as its value; give it a value or leave out the \"=\"", i+1)
+			return invalid("extra_args", "%s ends in \"=\" without a value, and the server would read the next argument as its value; give it a value or leave out the \"=\"", pos)
+		}
+		// The argument's own switch is what it is for; what follows its
+		// name may not hold another one.
+		name, rest := extraArgName(a)
+		if n, found := switchInName(name); found {
+			return unsafeValue("extra_args", pos, n)
+		}
+		if n, found := gameserver.SwitchInValue(rest); found {
+			return unsafeValue("extra_args", pos, n)
 		}
 	}
 	return nil
+}
+
+// switchInName reports whether a rule key or switch name holds, after a
+// "_", ".", or "-" inside it, the name of a switch the server reads ("x_PvP"
+// is PvP to the server), and names it.
+func switchInName(name string) (string, bool) {
+	for i := 1; i < len(name); i++ {
+		if c := name[i]; c == '_' || c == '.' || c == '-' {
+			if n, found := gameserver.SwitchInValue(name[i:] + "="); found {
+				return n, true
+			}
+		}
+	}
+	return "", false
+}
+
+// extraArgName splits an extra argument into its switch name (after the
+// dashes, up to "=", ":" or white space) and the rest.
+func extraArgName(a string) (name, rest string) {
+	s := strings.TrimLeft(a, "-")
+	i := strings.IndexFunc(s, func(r rune) bool { return r == '=' || r == ':' || unicode.IsSpace(r) })
+	if i < 0 {
+		return s, ""
+	}
+	return s[:i], s[i:]
+}
+
+// unsafeValue is the refusal of a setting that holds a switch the server
+// would read. what names the setting without repeating its value.
+func unsafeValue(field, what, name string) error {
+	return fault.New(fault.Invalid, "unsafe_argument", "%s: %s %s; the server finds its switches anywhere in its command line", field, what, gameserver.SwitchInValueWhy(name))
 }
 
 // secretLike is the refusal of a rule key or an extra argument that looks
@@ -670,6 +723,9 @@ func checkToken(field, v string) error {
 	}
 	if why, unsafe := gameserver.UnsafeArgument(v); unsafe {
 		return fault.New(fault.Invalid, "unsafe_argument", "%s: the token %s", field, why)
+	}
+	if name, found := gameserver.SwitchInValue(v); found {
+		return unsafeValue(field, "the token", name)
 	}
 	return nil
 }

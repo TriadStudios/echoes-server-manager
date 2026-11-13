@@ -299,6 +299,9 @@ func (s GameSetting) Check(value string, now time.Time) error {
 				return bad("%s", why)
 			}
 		}
+		if name, found := SwitchInValue(value); found {
+			return bad("%s", SwitchInValueWhy(name))
+		}
 		return nil
 	case TypeString:
 		if len(value) > s.MaxLength {
@@ -307,6 +310,9 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		if why, unsafe := UnsafeArgument(value); unsafe {
 			return bad("%s", why)
 		}
+		if name, found := SwitchInValue(value); found {
+			return bad("%s", SwitchInValueWhy(name))
+		}
 		if !strings.ContainsFunc(value, unicode.IsSpace) && strings.ContainsAny(value, ",)") {
 			return bad("may not hold ',' or ')' unless it also holds a space: the server ends a value without spaces there")
 		}
@@ -314,6 +320,11 @@ func (s GameSetting) Check(value string, now time.Time) error {
 			u, err := url.Parse(value)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsFunc(value, unicode.IsSpace) {
 				return bad("must be an http or https address like https://example.com/path")
+			}
+			// A base address: the server adds its own path and query to the
+			// announcements address, and a query could hold a switch.
+			if strings.ContainsAny(value, "?#") {
+				return bad("must be a base address, without a query (?) or a fragment (#)")
 			}
 		}
 		return nil
