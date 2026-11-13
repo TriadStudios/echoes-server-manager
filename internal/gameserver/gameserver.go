@@ -290,6 +290,12 @@ func StopRequestPath(dataDir string) string {
 	return filepath.Join(dataDir, ControlDirRel, ControlStop)
 }
 
+// PortProtocols are the protocols that players and server browsers reach a
+// server's game and query ports with, so the ones a firewall must let in.
+// UNCONFIRMED: UDP for both, as for the query probe; the real server may
+// need TCP as well.
+var PortProtocols = []string{"udp"}
+
 // Probe asks the query port whether the server answers: it sends "PING" over
 // UDP and expects "PONG". A server on all interfaces (host empty, 0.0.0.0
 // or ::) is asked on 127.0.0.1. UNCONFIRMED: the real query protocol is

@@ -65,13 +65,16 @@ type Options struct {
 }
 
 // View is an instance as the API shows it: settings, which secrets are set,
-// the live status, and warnings (codes, see WarningText) about things an
-// operator should know.
+// the live status, what ESM can read about the running server right now,
+// the next scheduled work, and warnings (codes, see WarningText) about
+// things an operator should know.
 type View struct {
 	Instance
-	Secrets  SecretFlags `json:"secrets"`
-	Status   Status      `json:"status"`
-	Warnings []string    `json:"warnings"`
+	Secrets   SecretFlags `json:"secrets"`
+	Status    Status      `json:"status"`
+	Live      Live        `json:"live"`
+	Scheduled Scheduled   `json:"scheduled"`
+	Warnings  []string    `json:"warnings"`
 }
 
 // LogLine is the data of a "log" event.
@@ -444,9 +447,10 @@ func (m *Manager) publishState(name string, st Status, hidden bool) {
 
 func (m *Manager) view(in *rt) View {
 	in.mu.Lock()
-	v := View{Instance: in.cfg.clone(), Status: in.status}
+	v := View{Instance: in.cfg.clone(), Status: in.status, Scheduled: m.scheduledLocked(in)}
 	in.mu.Unlock()
 	v.Secrets = m.secretFlags(in.name)
+	v.Live = m.live(v)
 	v.Warnings = m.warnings(v)
 	return v
 }

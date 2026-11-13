@@ -558,15 +558,20 @@ func TestErrorsAndPage(t *testing.T) {
 	if st := h.call("POST", "/api/v1/instances", h.admin, big, &eb); st != http.StatusRequestEntityTooLarge || eb.Error.Code != "too_large" {
 		t.Fatalf("large body: %d %+v", st, eb)
 	}
-	for _, p := range []string{"/", "/instances/alpha/logs"} {
+	// The page: without a login every screen leads to the login (setup on
+	// a new root); a path that is no screen is a page of its own saying so.
+	for p, want := range map[string]int{"/": http.StatusOK, "/servers/alpha/log": http.StatusOK, "/instances/alpha/logs": http.StatusNotFound} {
 		resp, err := h.http.Get(h.base + p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
+		if resp.StatusCode != want || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
 			!strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'none'") {
 			t.Fatalf("page %s: %d %v", p, resp.StatusCode, resp.Header)
+		}
+		if want == http.StatusOK && resp.Request.URL.Path != "/setup" {
+			t.Fatalf("page %s without a login ended at %s", p, resp.Request.URL)
 		}
 	}
 	var doc struct {

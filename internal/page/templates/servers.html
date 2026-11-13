@@ -1,0 +1,32 @@
+{{define "content"}}{{$v := .}}
+<div class="headrow">
+<h1 class="title">Servers</h1>
+<p class="dim">{{len .Data}} servers</p>
+</div>
+{{if .Data}}<div class="panel flush scroll">
+<table class="list">
+<caption class="sr">Every server on this box</caption>
+<thead><tr>
+<th scope="col">Name</th>
+<th scope="col">Display name</th>
+<th scope="col">State</th>
+<th scope="col">Players</th>
+<th scope="col">Ports (game / query)</th>
+<th scope="col">Build</th>
+<th scope="col">Cluster</th>
+</tr></thead>
+<tbody>
+{{range .Data}}<tr>
+<th scope="row"><a href="/servers/{{.Name}}" class="mono">{{.Name}}</a></th>
+<td>{{.DisplayName}}</td>
+<td>{{template "pill" .}}{{if has .Warnings "secrets_on_command_line"}} <span class="badge bad">unsafe</span>{{end}}</td>
+<td class="mono">{{players .}}</td>
+<td class="mono">{{.Ports.Game}} / {{.Ports.Query}}</td>
+<td class="mono">{{.Build}} <span class="dim">{{.Channel}}</span></td>
+<td>{{if .Cluster}}<span class="mono">{{.Cluster}}</span>{{else}}<span class="dim">none</span>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+</div>{{else}}<p class="panel empty">No servers yet.</p>{{end}}
+<p class="note">Servers are created on the box with the command line (<span class="mono">esm create &lt;name&gt;</span>). This page shows and runs the ones that exist.</p>
+{{end}}

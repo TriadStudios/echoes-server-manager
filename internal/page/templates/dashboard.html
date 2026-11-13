@@ -1,0 +1,57 @@
+{{define "content"}}{{$v := .}}{{$d := .Data}}
+<div class="headrow">
+<h1 class="title">Dashboard</h1>
+<p class="dim">{{len $d.Servers}} servers, {{$d.Running}} running, {{$d.Players}} players online{{if $d.Unknown}} ({{$d.Unknown}} running servers do not report a count){{end}}</p>
+</div>
+
+<section class="stack" aria-labelledby="budget-h">
+<h2 class="label" id="budget-h">Box budget</h2>
+<div class="grid">
+{{range $d.Budget}}<div class="panel tight">
+<div class="spread"><span class="strong">{{.Label}}</span><span class="mono small">{{.Value}}</span></div>
+{{if .Known}}<div class="bar" aria-hidden="true"><span class="fill w{{.Step}}"></span></div>{{end}}
+<p class="note">{{.Note}}</p>
+</div>{{end}}
+</div>
+</section>
+
+<section class="stack" aria-labelledby="servers-h">
+<div class="spread">
+<h2 class="label" id="servers-h">Servers</h2>
+{{if $v.Admin}}<p class="note">New servers: <span class="mono">esm create &lt;name&gt;</span> on the box.</p>{{end}}
+</div>
+{{if not $d.Servers}}<p class="panel empty">No servers yet. Install a build under <a href="/builds">Builds</a>, then create one on the box with <span class="mono">esm create &lt;name&gt;</span>.</p>{{end}}
+<div class="grid cards">
+{{range $d.Servers}}<article class="panel card">
+<div class="spread lead">
+<div class="names">
+<a class="cardname" href="/servers/{{.Name}}">{{.Name}}</a>
+<span class="dim small">{{if .DisplayName}}{{.DisplayName}}{{else}}no display name{{end}}</span>
+</div>
+{{template "pill" .}}
+</div>
+<dl class="facts">
+<div><dt>Players</dt><dd class="mono">{{players .}}</dd></div>
+<div><dt>Memory</dt><dd class="mono">{{memory .}}</dd></div>
+<div><dt>Ports (game / query)</dt><dd class="mono">{{.Ports.Game}} / {{.Ports.Query}}</dd></div>
+<div><dt>Build</dt><dd class="mono">{{.Build}} {{.Channel}}</dd></div>
+</dl>
+{{if has .Warnings "secrets_on_command_line"}}<p class="alert danger small">UNSAFE: passwords on the command line.</p>{{end}}
+<p class="note"><span data-reason-of="{{.Name}}">{{if .Status.Reason}}{{.Status.Reason}}{{else}}{{state .Status.State}}{{end}}</span>{{if not .Status.Since.IsZero}} (since <time datetime="{{iso .Status.Since}}">{{when .Status.Since}}</time>){{end}}</p>
+<div class="actions">
+{{if $v.Operator}}{{template "lifecycle" .}}{{end}}
+<a class="btn link" href="/servers/{{.Name}}">Open</a>
+</div>
+</article>{{end}}
+</div>
+</section>
+
+<section class="stack" aria-labelledby="activity-h">
+<h2 class="label" id="activity-h">Recent activity</h2>
+{{if $v.Admin}}<div class="panel rows" data-activity>
+{{range $d.Activity}}{{template "activity" .}}{{else}}<p class="row empty" data-empty>Nothing yet.</p>{{end}}
+</div>
+<p class="note"><a href="/audit">Open the audit log</a></p>
+{{else}}<p class="panel empty">Recent activity comes from the audit log, which needs the admin role.</p>{{end}}
+</section>
+{{end}}

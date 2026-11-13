@@ -23,6 +23,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
+	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
 
 // Check results.
@@ -210,7 +211,7 @@ func checkDisk(r *Report, root string) {
 		}
 		dir = parent
 	}
-	free, err := freeBytes(dir)
+	_, free, err := sysinfo.DiskSpace(dir)
 	if err != nil {
 		r.add("disk", Warn, "cannot read free space: %v", err)
 		return

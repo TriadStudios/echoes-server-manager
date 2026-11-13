@@ -1,0 +1,34 @@
+{{define "content"}}{{$v := .}}{{$s := .Data.S}}
+{{template "tabs" .}}
+<form class="panel stack" data-form="schedule" data-name="{{$s.Name}}" aria-labelledby="restarts-h">
+<h2 class="label" id="restarts-h">Timed restarts</h2>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
+<legend class="sr">Daily restart times</legend>
+<div class="tools">
+<label class="field grow"><span>Restart every day at (24-hour times, separated by commas; empty for none)</span>
+<input type="text" name="restart_at" class="mono" value="{{times $s.Schedule.RestartAt}}" placeholder="04:00, 16:00"></label>
+{{if $v.Admin}}<button type="submit" class="btn quiet">Save times</button>{{end}}
+</div>
+</fieldset>
+<dl class="facts">
+<div><dt>Times are in</dt><dd class="mono">the box's time zone, {{.Box.TimeZone}}</dd></div>
+<div><dt>Next timed restart</dt><dd class="mono">{{if $s.Scheduled.Restart.IsZero}}none{{else}}<time datetime="{{iso $s.Scheduled.Restart}}">{{when $s.Scheduled.Restart}}</time>{{end}}</dd></div>
+</dl>
+<p class="note">A timed restart happens only if the server is running at that time; a slot that passes while it is stopped is skipped.</p>
+{{if not $v.Admin}}<p class="note">Changing the times needs the admin role.</p>{{end}}
+</form>
+
+<section class="panel stack" aria-labelledby="sched-backups-h">
+<h2 class="label" id="sched-backups-h">Scheduled backups</h2>
+<dl class="facts">
+<div><dt>Backups</dt><dd>{{every $s.Backup.Every}}, keeping {{$s.Backup.Keep}}</dd></div>
+<div><dt>Next backup</dt><dd class="mono">{{if $s.Scheduled.Backup.IsZero}}not planned yet{{else}}<time datetime="{{iso $s.Scheduled.Backup}}">{{when $s.Scheduled.Backup}}</time>{{end}}</dd></div>
+</dl>
+<p class="note">Change them under <a href="/servers/{{$s.Name}}/backups">Backups</a>. The first scheduled backup is planned at the scheduler's next check after the policy is set.</p>
+</section>
+
+<section class="panel stack" aria-labelledby="windows-h">
+<h2 class="label" id="windows-h">Update windows</h2>
+<p>ESM has no update windows yet: an update runs when an operator starts it, from the server's Overview.</p>
+</section>
+{{end}}

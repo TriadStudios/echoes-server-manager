@@ -1,0 +1,28 @@
+{{define "content"}}{{$d := .Data}}
+<div class="setup">
+{{if $d.SetupNeeded}}<form class="panel stack card-form" data-form="setup" data-next="{{$d.Next}}" aria-labelledby="setup-h">
+<h1 class="title" id="setup-h">Set up this manager</h1>
+<p class="dim">This is the first time ESM is opened. Create the admin login to go on.</p>
+<label class="field"><span>Setup code</span><input type="text" name="code" class="mono spaced" autocomplete="one-time-code" required spellcheck="false"></label>
+<label class="field"><span>Admin name</span><input type="text" name="username" autocomplete="username" required value="admin"></label>
+<label class="field"><span>Password (12 characters or more)</span><input type="password" name="password" autocomplete="new-password" minlength="12" required></label>
+<label class="field"><span>Password again</span><input type="password" name="password2" autocomplete="new-password" minlength="12" required></label>
+<button type="submit" class="btn primary">Create the admin login</button>
+</form>
+<section class="stack help" aria-labelledby="code-h">
+<h2 class="label" id="code-h">Where is the setup code?</h2>
+<p>ESM printed it once, when it first started: on the terminal it was started from, and in its log. Only someone who can read those on this box has it.</p>
+<pre class="logbox">$ esm serve
+ESM setup code: ... (works once, for 24 hours; use it to create the first admin)</pre>
+<p class="dim">Lost it, or older than 24 hours? Stop ESM, delete <span class="mono">secrets/setup.json</span> in its root folder and start it again: it prints a new one.</p>
+<p class="dim">After setup this page is the login.</p>
+</section>
+{{else}}<form class="panel stack card-form" data-form="login" data-next="{{$d.Next}}" aria-labelledby="login-h">
+<h1 class="title" id="login-h">Log in</h1>
+<label class="field"><span>Name</span><input type="text" name="username" autocomplete="username" required></label>
+<label class="field"><span>Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+<button type="submit" class="btn primary">Log in</button>
+<p class="note">A login lasts 12 hours. After 5 wrong passwords in 5 minutes, logins from this address wait.</p>
+</form>{{end}}
+</div>
+{{end}}

@@ -1,19 +1,14 @@
-// Package web serves ESM's web page from files embedded in the binary.
+// Package web holds what every reply ESM writes to a browser shares: the
+// security headers (a strict Content-Security-Policy among them), and a
+// file server for the web page's static files that cannot be walked out
+// of.
 //
-// The static folder is where the built web interface goes (index.html, one
-// script, one stylesheet and a public/ folder). Until it is built, it holds
-// a placeholder page that points to the command line. Every response
-// carries a strict Content-Security-Policy: no inline scripts or styles,
-// nothing loaded from other origins, no framing.
-//
-// Paths that name no file get index.html, so the page can route on the
-// client side. Paths that try to leave the folder or reach something that
-// is not a page file get 404 (see fileName); a folder is never listed.
+// The Content-Security-Policy allows no inline scripts or styles, nothing
+// loaded from other origins, and no framing.
 package web
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -22,10 +17,7 @@ import (
 	"time"
 )
 
-//go:embed static
-var static embed.FS
-
-// CSP is the Content-Security-Policy of every page response.
+// CSP is the Content-Security-Policy of every response.
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
 	"connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
@@ -44,47 +36,35 @@ var types = map[string]string{
 	".html":  "text/html; charset=utf-8",
 	".css":   "text/css; charset=utf-8",
 	".js":    "text/javascript; charset=utf-8",
-	".mjs":   "text/javascript; charset=utf-8",
 	".json":  "application/json",
-	".map":   "application/json",
 	".svg":   "image/svg+xml",
 	".png":   "image/png",
-	".jpg":   "image/jpeg",
-	".webp":  "image/webp",
 	".ico":   "image/x-icon",
 	".woff2": "font/woff2",
 	".txt":   "text/plain; charset=utf-8",
 }
 
-// Handler serves the embedded files for GET and HEAD requests.
-func Handler() http.Handler {
-	files, err := fs.Sub(static, "static")
-	if err != nil {
-		panic(err)
-	}
-	return serve(files)
-}
-
-// serve serves the files of files for GET and HEAD requests.
-func serve(files fs.FS) http.Handler {
+// Files serves the files of files for GET and HEAD requests, at the
+// request path. Everything else is 404 in ESM's JSON error shape: a path
+// that names no file, a folder (never listed), and every path that could
+// reach outside files or something not meant to be served (see fileName).
+func Files(files fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		SetSecurityHeaders(w.Header())
 		name, ok := fileName(r.URL.Path)
-		if !ok {
-			notFound(w)
+		if !ok || name == "" {
+			NotFound(w)
 			return
 		}
-		if fi, err := fs.Stat(files, name); name != "" && err == nil && fi.IsDir() {
-			notFound(w) // a folder is never listed
+		fi, err := fs.Stat(files, name)
+		if err != nil || !fi.Mode().IsRegular() {
+			NotFound(w) // missing, or a folder: never listed
 			return
 		}
 		b, err := fs.ReadFile(files, name)
-		if name == "" || err != nil {
-			name = "index.html"
-			if b, err = fs.ReadFile(files, name); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal", "the page is missing from this build")
-				return
-			}
+		if err != nil {
+			NotFound(w)
+			return
 		}
 		ct, ok := types[path.Ext(name)]
 		if !ok {
@@ -97,8 +77,8 @@ func serve(files fs.FS) http.Handler {
 }
 
 // fileName turns a request path (as decoded from the URL) into the name of
-// a page file, "" for the index. It refuses, whatever the files are, every
-// path that could reach outside the page folder or something that is not
+// a file, "" for the folder itself. It refuses, whatever the files are,
+// every path that could reach outside the folder or something that is not
 // meant to be served, on any system:
 //
 //   - a "." or ".." segment, however it was written ("%2e%2e" too);
@@ -122,8 +102,9 @@ func fileName(p string) (string, bool) {
 	return strings.TrimPrefix(path.Clean(p), "/"), true
 }
 
-func notFound(w http.ResponseWriter) {
-	writeError(w, http.StatusNotFound, "not_found", "no such page")
+// NotFound writes the 404 answer of a refused or missing file.
+func NotFound(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not_found", "no such file")
 }
 
 // writeError writes ESM's error shape, {"error": {"code", "message"}}.

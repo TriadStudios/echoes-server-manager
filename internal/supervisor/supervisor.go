@@ -83,6 +83,10 @@ type Proc struct {
 	ExitedAt  time.Time `json:"exited_at,omitzero"`
 }
 
+// UnitName is the systemd unit of an instance's server under the systemd
+// supervisor: "esm-<name>.service".
+func UnitName(name string) string { return "esm-" + name + ".service" }
+
 // Supervisor runs game server processes.
 type Supervisor interface {
 	// Start launches the server and returns once it is running.

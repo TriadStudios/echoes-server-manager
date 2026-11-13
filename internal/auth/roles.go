@@ -7,11 +7,12 @@ type Role string
 
 // Roles, from least to most powerful.
 const (
-	// RoleRead may make every GET call except listing tokens and the audit log.
+	// RoleRead may make every GET call except listing tokens, the audit log
+	// and downloading backups.
 	RoleRead Role = "read"
 	// RoleOperator may also start, stop, restart, update, back up and
-	// restore instances (not install builds: a build runs with ESM's own
-	// rights).
+	// restore instances and download their backups (not install builds: a
+	// build runs with ESM's own rights).
 	RoleOperator Role = "operator"
 	// RoleAdmin may do everything.
 	RoleAdmin Role = "admin"

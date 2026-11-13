@@ -1,0 +1,77 @@
+{{define "content"}}{{$v := .}}{{$d := .Data}}
+<div class="headrow">
+<h1 class="title">Builds</h1>
+<p class="dim">{{len $d.Builds}} installed, {{size $d.Total}}</p>
+</div>
+
+<section class="stack" aria-labelledby="installed-h">
+<div class="spread">
+<h2 class="label" id="installed-h">Installed</h2>
+{{if and $v.Admin $d.Builds}}<button type="button" class="btn" data-act="prune" data-confirm="Remove every build that no server runs or keeps for a rollback?">Remove unused builds</button>{{end}}
+</div>
+{{if $d.Builds}}<div class="panel flush scroll">
+<table class="list">
+<caption class="sr">Installed builds</caption>
+<thead><tr>
+<th scope="col">Version</th>
+<th scope="col">Channel</th>
+<th scope="col">Commit</th>
+<th scope="col">Installed</th>
+<th scope="col">Size</th>
+<th scope="col">Used by</th>
+{{if $v.Admin}}<th scope="col">Action</th>{{end}}
+</tr></thead>
+<tbody>
+{{range $d.Builds}}<tr>
+<th scope="row" class="mono">{{.Version}}</th>
+<td><span class="badge {{.Channel}}">{{.Channel}}</span></td>
+<td class="mono dim">{{if .Commit}}{{.Commit}}{{else}}none{{end}}</td>
+<td><time datetime="{{iso .Installed}}">{{when .Installed}}</time></td>
+<td class="mono">{{size .SizeBytes}}</td>
+<td>{{if .Current}}{{join .Current ", "}}{{end}}{{if and .Current .Kept}}; {{end}}{{if .Kept}}<span class="dim">kept for a rollback by {{join .Kept ", "}}</span>{{end}}{{if not .UsedBy}}<span class="dim">nothing</span>{{end}}</td>
+{{if $v.Admin}}<td>{{if .UsedBy}}<span class="dim">in use</span>{{else}}<button type="button" class="btn" data-act="remove-build" data-id="{{.Version}}" data-confirm="Remove build {{.Version}}?">Remove</button>{{end}}</td>{{end}}
+</tr>{{end}}
+</tbody>
+</table>
+</div>{{else}}<p class="panel empty">No builds installed yet.</p>{{end}}
+<p class="note">A build a server has run is kept for a rollback (the newest few per server). Every file of every build was checked against its manifest when it was installed. Updating a server to another build is done from the server's Overview.</p>
+</section>
+
+<section class="stack" aria-labelledby="install-h">
+<h2 class="label" id="install-h">Install a build</h2>
+<p class="note">A build is a program that runs with ESM's own rights: it can read everything ESM keeps. Install only builds you trust.{{if not $v.Admin}} Installing builds needs the admin role.{{end}}</p>
+<div class="grid">
+<form class="panel stack" data-form="install" aria-labelledby="folder-h">
+<h3 class="sub" id="folder-h">From a folder in the import folder</h3>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
+<legend class="sr">Folder</legend>
+<label class="field"><span>Folder path, or its name in the import folder</span><input type="text" name="source" class="mono" required placeholder="server-build"></label>
+</fieldset>
+<p class="note">ESM reads local builds only from its import folder: imports in ESM's folder, unless build_import_dir in esm.json names another. The folder needs a manifest.json that lists every file with its SHA-256.</p>
+{{if $v.Admin}}<button type="submit" class="btn primary">Check and install</button>{{end}}
+</form>
+<form class="panel stack" data-form="install" aria-labelledby="archive-h">
+<h3 class="sub" id="archive-h">From an archive or a web address</h3>
+<fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
+<legend class="sr">Archive</legend>
+<label class="field"><span>Archive in the import folder, or https address (.zip, .tar.gz)</span><input type="text" name="source" class="mono" required placeholder="https://..."></label>
+<label class="field"><span>SHA-256 of the archive (required for a web address)</span><input type="text" name="sha256" class="mono" pattern="[0-9a-fA-F]{64}" maxlength="64"></label>
+</fieldset>
+{{if $v.Admin}}<button type="submit" class="btn quiet">Download and install</button>{{end}}
+</form>
+<div class="panel stack off" aria-labelledby="steam-h">
+<h3 class="sub" id="steam-h">From Steam</h3>
+<p class="dim">Install and update with SteamCMD. Available once the dedicated server is released on Steam.</p>
+<button type="button" class="btn" disabled>Not available yet</button>
+</div>
+</div>
+</section>
+
+<section class="panel spread" aria-labelledby="steamfiles-h">
+<div>
+<h2 class="sub" id="steamfiles-h">Steam runtime files</h2>
+<p class="note">Files a server may need to log in to Steam. ESM does not check them yet, so it cannot say whether they are present.</p>
+</div>
+<span class="pill" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="word">Not checked</span></span>
+</section>
+{{end}}

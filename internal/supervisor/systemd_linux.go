@@ -75,7 +75,7 @@ func (s *Systemd) LimitsEnforced() bool { return true }
 // Close does nothing: units keep running.
 func (s *Systemd) Close() error { return nil }
 
-func unitName(name string) string { return "esm-" + name + ".service" }
+func unitName(name string) string { return UnitName(name) }
 
 func (s *Systemd) description(name string) string {
 	return "ESM instance " + name + " (root " + s.st.Path() + ")"

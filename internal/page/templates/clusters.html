@@ -1,0 +1,21 @@
+{{define "content"}}{{$d := .Data}}
+<div class="headrow">
+<h1 class="title">Clusters</h1>
+<p class="dim">{{len $d.Clusters}} clusters</p>
+</div>
+<p class="note">A cluster is a name that groups servers, set in each server's Settings. ESM stores and shows it; what a cluster means in the game (such as moving between its servers) is not known yet.</p>
+{{if $d.Clusters}}<div class="grid cards">
+{{range $d.Clusters}}<section class="panel" aria-labelledby="cluster-{{.Name}}">
+<h2 class="cardname mono" id="cluster-{{.Name}}">{{.Name}}</h2>
+<ul class="plain">
+{{range .Instances}}<li><a class="mono" href="/servers/{{.}}">{{.}}</a>{{with index $d.Names .}} <span class="dim">{{.}}</span>{{end}}</li>{{end}}
+</ul>
+</section>{{end}}
+</div>{{else}}<p class="panel empty">No server is in a cluster.</p>{{end}}
+{{if $d.Alone}}<section class="stack" aria-labelledby="alone-h">
+<h2 class="label" id="alone-h">In no cluster</h2>
+<ul class="panel plain">
+{{range $d.Alone}}<li><a class="mono" href="/servers/{{.Name}}/settings">{{.Name}}</a>{{if .DisplayName}} <span class="dim">{{.DisplayName}}</span>{{end}}</li>{{end}}
+</ul>
+</section>{{end}}
+{{end}}

@@ -1,5 +1,6 @@
-// Package api is ESM's HTTP API under /api/v1, plus the embedded web page
-// at "/".
+// Package api is ESM's HTTP API under /api/v1. It also serves the web page
+// at "/" when one is given (Options.Page); the page gets its data through
+// this API.
 //
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
@@ -51,6 +52,9 @@ const (
 	// counted from its first byte, and, in an event stream, to read each
 	// event.
 	DefaultWriteTimeout = time.Minute
+	// maxLogDownloads is how many log downloads may run at once; each
+	// holds up to instances.MaxLogDownloadBytes of the file in memory.
+	maxLogDownloads = 2
 	// DefaultFailDelay is how long a failed login or setup code waits
 	// before it is answered.
 	DefaultFailDelay = time.Second
@@ -85,6 +89,11 @@ type Options struct {
 	// PortHost is where doctor test-binds free ports (default all
 	// interfaces).
 	PortHost string
+	// Page, when set, makes the web page that is served at "/" (GET and
+	// HEAD). It is handed a handler of the API alone (paths under /api/),
+	// through which the page gets all its data: the same calls, rules and
+	// roles as any other client. Without a page "/" answers 404.
+	Page func(api http.Handler) http.Handler
 	// FailDelay is how long a failed login or setup code waits before it
 	// is answered (default DefaultFailDelay; negative for none).
 	FailDelay time.Duration
@@ -106,6 +115,8 @@ type Server struct {
 	allow      map[string][]string // path pattern -> methods
 	hosts      *hostSet            // nil: no Host check
 	doctorBusy atomic.Bool         // a health check is running
+	// logDownloads holds a token for each log download that runs.
+	logDownloads chan struct{}
 }
 
 // access says who may call a route.
@@ -168,6 +179,7 @@ func init() {
 	r("GET", p+"/box", required, read, "box.get", (*Server).box)
 	// The check test-binds every free port of both ranges: admin only.
 	r("GET", p+"/box/doctor", required, admin, "box.doctor", (*Server).doctor)
+	r("GET", p+"/box/firewall", required, read, "box.firewall", (*Server).firewall)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
 	// Installing a build is installing a program that runs with ESM's own
 	// rights: admin only. Switching an instance to an installed build is
@@ -189,7 +201,9 @@ func init() {
 	r("POST", p+"/instances/{name}/restore", required, oper, "instance.restore", (*Server).restore)
 	r("GET", p+"/instances/{name}/status", required, read, "instance.status", (*Server).status)
 	r("GET", p+"/instances/{name}/logs", required, read, "instance.logs", (*Server).logs)
+	r("GET", p+"/instances/{name}/logs/download", required, read, "instance.logs.download", (*Server).logsDownload)
 	r("GET", p+"/instances/{name}/backups", required, read, "instance.backups", (*Server).listBackups)
+	r("GET", p+"/instances/{name}/backups/{id}/download", required, oper, "instance.backup.download", (*Server).backupDownload)
 	r("GET", p+"/events", required, read, "events", (*Server).events)
 	r("GET", p+"/clusters", required, read, "cluster.list", (*Server).clusters)
 	r("GET", p+"/tokens", required, admin, "token.list", (*Server).listTokens)
@@ -219,7 +233,7 @@ func New(o Options) *Server {
 		o.FailDelay = DefaultFailDelay
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
-		hosts: newHostSet(o.Listen, o.PublicHosts)}
+		hosts: newHostSet(o.Listen, o.PublicHosts), logDownloads: make(chan struct{}, maxLogDownloads)}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
 		if _, ok := s.allow[rt.path]; !ok {
@@ -228,7 +242,12 @@ func New(o Options) *Server {
 		s.allow[rt.path] = append(s.allow[rt.path], rt.method)
 	}
 	s.mux.Handle("/api/", s.wrap(route{access: public, action: "api.unknown", h: (*Server).unknownAPI}))
-	page := web.Handler()
+	var page http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "this server has no web page")
+	})
+	if o.Page != nil {
+		page = o.Page(s.apiOnly())
+	}
 	s.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			page.ServeHTTP(w, r)
@@ -240,6 +259,17 @@ func New(o Options) *Server {
 	}))
 	s.root = s.guard(s.mux)
 	return s
+}
+
+// apiOnly serves the API alone: the page's calls never reach the page.
+func (s *Server) apiOnly() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			writeError(w, http.StatusNotFound, "not_found", "no API endpoint "+r.URL.Path)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 // guard is the first handler of every request, to the API and to the page.

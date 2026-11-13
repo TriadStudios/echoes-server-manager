@@ -1,0 +1,9 @@
+{{define "content"}}{{$s := .Data.S}}
+{{template "tabs" .}}
+<section class="panel" aria-labelledby="players-h">
+<h2 class="label" id="players-h">Players online</h2>
+<p class="big mono">{{players $s}}</p>
+{{if not $s.Live.Players}}<p class="note">Count not known: {{unknown $s.Live.Unknown "players"}}.</p>{{end}}
+<p>The player list, announcements, kick and ban arrive once the game server has a control channel ESM can use. Until then ESM only knows the count, which the server writes into its status file.</p>
+</section>
+{{end}}
