@@ -244,7 +244,7 @@ func (e *env) steamCmd(args []string, stdin io.Reader) error {
 		}
 		pw := ""
 		if !*clear {
-			if pw, err = readSecretLine(stdin); err != nil {
+			if pw, err = readSecretLine(stdin, "esm steam password <name>"); err != nil {
 				return err
 			}
 		}
@@ -262,14 +262,14 @@ func (e *env) steamCmd(args []string, stdin io.Reader) error {
 
 // readSecretLine reads one line from stdin (never from the command line,
 // where other users could see it).
-func readSecretLine(r io.Reader) (string, error) {
+func readSecretLine(r io.Reader, example string) (string, error) {
 	line, err := bufio.NewReader(io.LimitReader(r, 4096)).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if line == "" {
-		return "", usageErr("give the password on standard input, like: esm steam password <name> < file (or --clear to remove it)")
+		return "", usageErr("give the value on standard input, like: %s < file (or --clear to remove it)", example)
 	}
 	return line, nil
 }
