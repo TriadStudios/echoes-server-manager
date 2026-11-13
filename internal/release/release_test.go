@@ -156,6 +156,8 @@ type fakeRelease struct {
 	tag    string
 	files  map[string][]byte // asset name -> content
 	served map[string]bool
+	// before, when set, runs before a file is served.
+	before func(name string)
 }
 
 func (f *fakeRelease) start(t *testing.T) (*httptest.Server, *Client) {
@@ -176,6 +178,9 @@ func (f *fakeRelease) start(t *testing.T) (*httptest.Server, *Client) {
 		if !ok {
 			http.NotFound(w, r)
 			return
+		}
+		if f.before != nil {
+			f.before(name)
 		}
 		f.served[name] = true
 		w.Write(b)

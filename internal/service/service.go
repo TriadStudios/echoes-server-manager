@@ -100,6 +100,10 @@ type Service struct {
 	// manager starts it again (after a self-update).
 	exit     chan struct{}
 	exitOnce sync.Once
+	// updating is held while a self-update runs; updated is set once one
+	// put a new binary in place (the service ends a moment later).
+	updating sync.Mutex
+	updated  bool
 	exe      string
 	version  string
 	// releaseOff says why no release is ever looked up ("" when they are).
@@ -364,10 +368,23 @@ func (s *Service) selfUpdate(ctx context.Context, force bool) (release.Result, e
 	if s.releaseOff != "" {
 		return release.Result{}, errors.New(s.releaseOff)
 	}
+	// One at a time, and none after one worked: a second update before
+	// this ESM ends would keep the new binary as the previous one.
+	if !s.updating.TryLock() {
+		return release.Result{}, release.ErrBusy
+	}
+	defer s.updating.Unlock()
+	if s.updated {
+		return release.Result{}, fmt.Errorf("%w: ESM was updated already and ends in a moment", release.ErrBusy)
+	}
 	exe := s.exe
 	if exe == "" {
 		var err error
 		if exe, err = os.Executable(); err != nil {
+			return release.Result{}, err
+		}
+		// Like esm update-self, so both use the same lock file.
+		if exe, err = filepath.EvalSymlinks(exe); err != nil {
 			return release.Result{}, err
 		}
 	}
@@ -375,6 +392,7 @@ func (s *Service) selfUpdate(ctx context.Context, force bool) (release.Result, e
 	if err != nil {
 		return res, err
 	}
+	s.updated = true
 	s.log.Info("ESM binary updated; ending so the service manager starts the new one", "from", res.From, "to", res.To, "previous", res.Previous)
 	time.AfterFunc(time.Second, func() { s.exitOnce.Do(func() { close(s.exit) }) })
 	return res, nil

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -253,6 +254,17 @@ func TestSelfUpdateThroughTheAPI(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(exe + ".previous"); string(b) != "the old esm" {
 		t.Fatalf("previous %q", b)
+	}
+	// Until it ends, this ESM takes no second update (it would replace the
+	// kept old binary with the new one).
+	if st := h.call("POST", "/api/v1/box/self-update", h.admin, api.SelfUpdateRequest{Force: true}, &eb); st != http.StatusConflict || eb.Error.Code != "busy" {
+		t.Fatalf("a second update before ESM ended: %d %+v", st, eb)
+	}
+	if b, _ := os.ReadFile(exe + ".previous"); string(b) != "the old esm" {
+		t.Fatalf("previous after a second update %q", b)
+	}
+	if _, err := os.Stat(exe + release.LockSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the update lock is still there: %v", err)
 	}
 	select {
 	case <-h.svc.Exit():
