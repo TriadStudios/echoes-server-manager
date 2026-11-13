@@ -130,7 +130,7 @@ var gameSettings = []GameSetting{
 	{Key: "AdminLoginMaxAttempts", Group: GroupAccess, Label: "Admin login attempts", Type: TypeInt, Default: "5", Min: num(0),
 		Help: "Wrong admin passwords a player may try before admin login is locked for them. 0: never locked."},
 	{Key: "AdminLoginLockoutSeconds", Group: GroupAccess, Label: "Admin lockout", Type: TypeInt, Default: "60", Min: num(0), Max: num(3600), Unit: "seconds",
-		Help: "Length of the first admin login lockout. Each further lockout doubles it, up to one hour."},
+		Help: "Length of the first admin login lockout. Each further lockout doubles it, up to one hour. 0: no lockout."},
 	{Key: "BossSummonCooldownSeconds", Group: GroupAccess, Label: "Boss summon cooldown", Type: TypeInt, Default: "0", Min: num(0), Unit: "seconds",
 		Help: "Wait between two runs of a tribute dungeon, counted from the end of the last run. 0: no wait."},
 	{Key: "LastWipe", Group: GroupAccess, Label: "Last wipe", Type: TypeDate,
@@ -277,8 +277,8 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		return bad("must be %s", orList(values))
 	case TypeDate:
 		d, err := time.Parse(time.DateOnly, value)
-		if !dateRe.MatchString(value) || err != nil {
-			return bad("must be a date like 2026-01-31 (YYYY-MM-DD)")
+		if !dateRe.MatchString(value) || err != nil || d.Year() < 2000 {
+			return bad("must be a date like 2026-01-31 (YYYY-MM-DD), from 2000 on")
 		}
 		if y, m, dd := now.UTC().Date(); d.After(time.Date(y, m, dd, 0, 0, 0, 0, time.UTC)) {
 			return bad("may not be in the future (the server ignores such a date)")
@@ -313,7 +313,9 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		if name, found := SwitchInValue(value); found {
 			return bad("%s", SwitchInValueWhy(name))
 		}
-		if !strings.ContainsFunc(value, unicode.IsSpace) && strings.ContainsAny(value, ",)") {
+		// The engine quotes a value that holds a space (" "), and reads a
+		// quoted value whole; other white space does not count.
+		if !strings.Contains(value, " ") && strings.ContainsAny(value, ",)") {
 			return bad("may not hold ',' or ')' unless it also holds a space: the server ends a value without spaces there")
 		}
 		if s.Format == FormatURL {

@@ -98,3 +98,13 @@ func TestEngineConfigOverridesAreRefused(t *testing.T) {
 		t.Fatalf("names that only start with ini: %v", err)
 	}
 }
+
+// The refusal of a max_players outside what may be stored says both
+// limits: 70 for a new value, 200 for one stored by an earlier version.
+func TestMaxPlayersRefusalWords(t *testing.T) {
+	in := validInstance()
+	in.MaxPlayers = 201
+	if err := in.Validate(); err == nil || !strings.Contains(err.Error(), "1 and 70") || !strings.Contains(err.Error(), "200") {
+		t.Fatalf("201 players: %v", err)
+	}
+}

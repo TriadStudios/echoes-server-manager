@@ -341,7 +341,7 @@ func (in *Instance) Validate() error {
 		return invalid("bind_ip", "%q is not an IP address", in.BindIP)
 	}
 	if in.MaxPlayers < 1 || in.MaxPlayers > MaxMaxPlayers {
-		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
+		return invalid("max_players", "must be between 1 and %d, the most the game server takes (a value up to %d stored by an earlier version is kept until it is changed)", gameserver.MaxPlayersLimit, MaxMaxPlayers)
 	}
 	if len(in.Rules) > maxRules {
 		return invalid("rules", "at most %d rules", maxRules)

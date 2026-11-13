@@ -1273,11 +1273,12 @@ components:
         max_players:
           type: integer
           minimum: 1
-          maximum: 70
+          maximum: 200
           description: |
-            At most 70, the most the game server takes (422 when a create or
-            a change sets more). An instance stored with more by an earlier
-            version (up to 200) keeps its value until max_players is
+            A new value is 1 to 70, the most the game server takes (422 when
+            a create or a change sets more). An instance stored with more by
+            an earlier version (up to 200, the maximum here) keeps its value,
+            also when a change sends it back unchanged, until max_players is
             changed; the server uses 70, and the instance carries the warning
             `max_players_above_game_limit`. Default 10.
         rules:

@@ -180,10 +180,10 @@ func TestGameSettingCheck(t *testing.T) {
 		"Difficulty":               {"3", "-1", "hard", "Normal", "1.0", ""},
 		"ChatFilter":               {"Masked", "", "Off Mask"},
 		"DeathDropMode":            {"All", "Some", ""},
-		"LastWipe":                 {"", "2026-11-14", "2026-02-30", "13.11.2026", "2026-1-1", "2026-11-13T00:00:00Z", "yesterday"},
+		"LastWipe":                 {"", "1999-12-31", "0000-01-01", "2026-11-14", "2026-02-30", "13.11.2026", "2026-1-1", "2026-11-13T00:00:00Z", "yesterday"},
 		"ChatBlockedWords":         {"", ",", " , ", "two words", "close)", `quote"`, strings.Repeat("abcd,", 401)[:2001]},
 		"AdminPlayerIds":           {"", "one two"},
-		"MOTD":                     {"", "Hi,all", "Welcome:)", strings.Repeat("x", 257), "a\nb", `say "hi"`, "go -Port=1"},
+		"MOTD":                     {"", "Hi,all", "Hi, all", "Welcome:)", strings.Repeat("x", 257), "a\nb", `say "hi"`, "go -Port=1"},
 		"AnnouncementsUrl":         {"", "example.com/api", "ftp://example.com/x", "https://", "https://example.com/a b", "https://example.com/a,b", "https://example.com/(x)"},
 	}
 	for key, values := range bad {
@@ -319,5 +319,11 @@ func TestSwitchInValue(t *testing.T) {
 	}
 	if why, refused := RefusedSwitch("-CustomConfig"); !refused || !strings.Contains(why, "never passed") {
 		t.Errorf("-CustomConfig: %q %v", why, refused)
+	}
+}
+
+func TestCatalogWords(t *testing.T) {
+	if s, _ := LookupGameSetting("AdminLoginLockoutSeconds"); !strings.Contains(s.Help, "0: no lockout") {
+		t.Errorf("AdminLoginLockoutSeconds help: %q", s.Help)
 	}
 }
