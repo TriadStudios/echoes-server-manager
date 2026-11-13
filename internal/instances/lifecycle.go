@@ -535,7 +535,10 @@ func (in *rt) clearCrashesLocked() {
 }
 
 // Start starts a stopped instance. With wait it returns once the server is
-// ready (or failed); otherwise once it is launched.
+// ready (or failed); otherwise once it is launched. The first start after
+// an automatic update that switched the build of the stopped instance
+// always waits: it checks the new build and rolls it back when it does not
+// get ready (see startChecked).
 func (m *Manager) Start(ctx context.Context, name string, wait bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -551,7 +554,12 @@ func (m *Manager) Start(ctx context.Context, name string, wait bool) (Status, er
 	}
 	in.gen++ // cancels a pending restart after a crash
 	in.clearCrashesLocked()
+	u, check := m.unverifiedLocked(in)
 	in.mu.Unlock()
+	if check {
+		defer in.op.Unlock()
+		return m.startChecked(ctx, in, u)
+	}
 	r, err := m.launch(ctx, in, "started", true)
 	in.op.Unlock()
 	if err != nil {
@@ -642,7 +650,8 @@ func (m *Manager) stopTimeoutReason() string {
 		"and gets no second signal (stop again to wait again)", m.cfg.StopTimeout.D())
 }
 
-// Restart stops and starts an instance. why is recorded as the reason.
+// Restart stops and starts an instance. why is recorded as the reason. A
+// start that checks an automatically updated build works as in Start.
 func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -658,7 +667,12 @@ func (m *Manager) Restart(ctx context.Context, name, why string, wait bool) (Sta
 	}
 	in.mu.Lock()
 	in.clearCrashesLocked()
+	u, check := m.unverifiedLocked(in)
 	in.mu.Unlock()
+	if check {
+		defer in.op.Unlock()
+		return m.startChecked(ctx, in, u)
+	}
 	r, err := m.launch(ctx, in, why, true)
 	in.op.Unlock()
 	if err != nil {

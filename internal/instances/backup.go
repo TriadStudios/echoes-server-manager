@@ -368,8 +368,9 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 // An automatic update of a running server asks the player count again
 // before its backup and once more right before the stop; a player on puts
 // it off (a conflict) without leaving its backup behind, and its backup
-// prunes older ones only once the update goes ahead. A manual update
-// may pause automatic updates.
+// prunes older ones only once the update goes ahead. An automatic update
+// of an instance whose server is not running only switches the build
+// (switchStopped). A manual update may pause automatic updates.
 func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -439,6 +440,9 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 	if auto {
 		// The update goes ahead: now the backups are pruned to keep.
 		m.pruneBackupsLogged(name, cfg.Backup.Keep, b.ID)
+		if !wasRunning {
+			return m.switchStopped(ctx, in, cfg, to)
+		}
 	}
 	if wasRunning {
 		if err := m.stopLocked(ctx, in, "stopped for an update to "+to); err != nil {
@@ -459,6 +463,13 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 				return m.mustStatus(name), err
 			}
 		}
+		// The build the instance has now was seen ready: an unproven
+		// automatic update from before is settled.
+		in.mu.Lock()
+		if m.clearUnverifiedLocked(in) {
+			m.emitLocked(in)
+		}
+		in.mu.Unlock()
 		m.log.Info("instance updated", "instance", name, "from", old, "to", to)
 		if !auto {
 			m.noteManualUpdate(in, old, to)

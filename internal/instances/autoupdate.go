@@ -21,19 +21,21 @@ import (
 //
 //   - off and install: nothing more. The source's checks have installed the
 //     build; the instance shows it as available.
-//   - restart: the scheduler updates the instance (the usual update: a
-//     backup, one stop signal, a start of the new build, and a roll back
+//   - restart: the scheduler updates a running instance (the usual update:
+//     a backup, one stop signal, a start of the new build, and a roll back
 //     when it does not become ready) as soon as its server answers the
-//     query port with 0 players, or right away when it is stopped. While
-//     players are on, or the count is not known, it waits and asks again
-//     at the next scheduler tick. Waiting longer than update_max_wait
-//     raises a warning event once (it keeps waiting). The update asks the
-//     player count again before its backup and once more right before the
-//     server is stopped: a player who joined meanwhile puts the update
-//     off, and a backup it made is removed again; older backups are pruned
-//     only once the update goes ahead. An update that is refused because
-//     the instance is busy is tried again later. An automatic update that
-//     failed is not tried again for the same build.
+//     query port with 0 players. While players are on, or the count is not
+//     known, it waits and asks again at the next scheduler tick. Waiting
+//     longer than update_max_wait raises a warning event once (it keeps
+//     waiting). The update asks the player count again before its backup
+//     and once more right before the server is stopped: a player who
+//     joined meanwhile puts the update off, and a backup it made is
+//     removed again; older backups are pruned only once the update goes
+//     ahead. A stopped instance is never started: its saves are backed up
+//     and its build is switched, and the next start checks the new build
+//     (see unverified.go). An update that is refused because the instance
+//     is busy is tried again later. An automatic update that failed is not
+//     tried again for the same build.
 //
 // An admin who updates an instance by hand to an older build of its source
 // pauses its automatic updates until the source has a build newer than the
@@ -90,23 +92,27 @@ type autoState struct {
 	holdBuildID string
 }
 
-// autoFile is what of autoState is kept in run/autoupdate.json.
+// autoFile is what of autoState, and the unproven update (see unverified),
+// is kept in run/autoupdate.json.
 type autoFile struct {
-	Failed      string `json:"failed,omitempty"`
-	LastError   string `json:"last_error,omitempty"`
-	HoldSource  string `json:"hold_source,omitempty"`
-	HoldBuildID string `json:"hold_buildid,omitempty"`
+	Failed          string `json:"failed,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+	HoldSource      string `json:"hold_source,omitempty"`
+	HoldBuildID     string `json:"hold_buildid,omitempty"`
+	UnverifiedBuild string `json:"unverified_build,omitempty"`
+	UnverifiedFrom  string `json:"unverified_from,omitempty"`
 }
 
 func autoFileRel(name string) string { return instDir(name) + "/run/autoupdate.json" }
 
-// saveAutoLocked writes the lasting part of the instance's auto state.
-// in.mu must be held.
+// saveAutoLocked writes the lasting part of the instance's auto state and
+// its unproven update. in.mu must be held.
 func (m *Manager) saveAutoLocked(in *rt) {
 	if in.deleted {
 		return
 	}
-	f := autoFile{Failed: in.auto.failed, LastError: in.auto.lastError, HoldSource: in.auto.holdSource, HoldBuildID: in.auto.holdBuildID}
+	f := autoFile{Failed: in.auto.failed, LastError: in.auto.lastError, HoldSource: in.auto.holdSource, HoldBuildID: in.auto.holdBuildID,
+		UnverifiedBuild: in.unverified.build, UnverifiedFrom: in.unverified.from}
 	if f == (autoFile{}) {
 		m.st.Remove(autoFileRel(in.name))
 		return
@@ -116,13 +122,18 @@ func (m *Manager) saveAutoLocked(in *rt) {
 	}
 }
 
-// loadAuto reads the lasting part of an instance's auto state.
-func (m *Manager) loadAuto(name string) autoState {
+// loadAuto reads the lasting part of an instance's auto state and its
+// unproven update.
+func (m *Manager) loadAuto(name string) (autoState, unverified) {
 	var f autoFile
 	if err := m.st.ReadJSON(autoFileRel(name), &f); err != nil {
-		return autoState{}
+		return autoState{}, unverified{}
 	}
-	return autoState{failed: f.Failed, lastError: f.LastError, holdSource: f.HoldSource, holdBuildID: f.HoldBuildID}
+	u := unverified{build: f.UnverifiedBuild, from: f.UnverifiedFrom}
+	if u.build == "" || u.from == "" {
+		u = unverified{}
+	}
+	return autoState{failed: f.Failed, lastError: f.LastError, holdSource: f.HoldSource, holdBuildID: f.HoldBuildID}, u
 }
 
 // idLess compares two build ids (digits) as numbers.
@@ -342,7 +353,7 @@ func (m *Manager) autoUpdate(in *rt, cfg Instance, target string) {
 	m.log.Info("automatic update", "instance", cfg.Name, "from", cfg.Build, "to", target)
 	m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "started", From: cfg.Build, To: target,
 		Message: "updating from " + cfg.Build + " to " + target + " (auto_update restart)"})
-	_, err := m.update(context.Background(), cfg.Name, target, true)
+	st, err := m.update(context.Background(), cfg.Name, target, true)
 	putOff := err != nil && fault.Is(err, fault.Conflict)
 	in.mu.Lock()
 	in.auto.running = false
@@ -369,7 +380,11 @@ func (m *Manager) autoUpdate(in *rt, cfg Instance, target string) {
 		m.log.Warn("automatic update failed", "instance", cfg.Name, "to", target, "err", err)
 		m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "failed", From: cfg.Build, To: target, Message: err.Error()})
 	} else {
-		m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "updated", From: cfg.Build, To: target, Message: "updated to " + target})
+		msg := "updated to " + target
+		if st.UpdateUnverified {
+			msg = "switched to " + target + " while stopped; nothing was started, the next start checks it"
+		}
+		m.publishUpdate(cfg.Name, hidden, UpdateEvent{Action: "updated", From: cfg.Build, To: target, Message: msg})
 	}
 	m.auditAuto(e)
 }
