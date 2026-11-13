@@ -12,9 +12,12 @@ Early development. **Not ready for real hosts yet.**
 
 - Everything ESM assumes about the real game server (command-line switches,
   log lines, save file locations, how it stops) lives in one place,
-  [`internal/gameserver`](internal/gameserver/gameserver.go), and is marked
-  UNCONFIRMED until it has been proven on a real host. Until then ESM is
-  tested against a fake server that follows those assumptions.
+  [`internal/gameserver`](internal/gameserver/gameserver.go). A first real
+  server on a Linux host confirmed the command line, the ports, the Steam
+  libraries, the save folder, the log lines and the one-signal stop, and
+  the adapter follows those facts; what is not proven yet is marked
+  UNCONFIRMED (see [docs/DESIGN.md](docs/DESIGN.md#the-real-server)). ESM is
+  tested against a fake server that follows the adapter.
 - By default ESM hands a server its passwords in a private file and never
   puts them on a command line. The real game server does not read that
   file yet: a per-instance config file that the server reads its passwords
@@ -88,6 +91,58 @@ sudo loginctl enable-linger <esm-account>
 Without systemd, ESM starts servers as detached processes (limits are not
 enforced in that mode). Either way, stopping ESM leaves the game servers
 running; the next `esm serve` finds them again.
+
+## Real server setup
+
+What a box needs before ESM can run an Echoes of Durinn dedicated server
+(Linux):
+
+- **Steam client libraries.** A server build does not include them. Put
+  the 64-bit `steamclient.so` (from the `linux64` folder of the Steamworks
+  SDK redistributable; the one at its top level is 32-bit) and
+  `libsteamwebrtc.so` into `<root>/steam/linux64/`, or set
+  `steam_runtime_dir` in `esm.json`. ESM puts that folder first on every
+  server's `LD_LIBRARY_PATH`. `esm doctor` checks that both files are there
+  and are 64-bit.
+- **Steam app id.** Set `steam_app_id` in `esm.json` (the game's app id, in
+  digits; there is no default) **before** installing builds. The server
+  wants a `steam_appid.txt` next to its binary and writes one at start;
+  builds are shared and read-only, so ESM writes the file at install time
+  instead. `esm doctor` warns while the app id is unset and names builds
+  without the file. (Whether the server is happy with a read-only file is
+  not proven yet.)
+- **Build layout.** A build is a folder with a `manifest.json` that lists
+  every file with its SHA-256. `executables` names the server binary for
+  each system, as a path inside the build (wherever the game keeps it), and
+  `default_map` names the map instances load unless they set their own
+  `map`. The server runs with the build's top folder as its working folder.
+  See [docs/DESIGN.md](docs/DESIGN.md#builds).
+- **Ports.** Each instance gets a game port and a query port from the
+  configured ranges. Only the **query ports** (UDP) need to be open
+  inbound: the server opens no socket on its game port, and players join
+  through Steam's relay over outbound UDP. `GET /api/v1/box/firewall` (the
+  Box screen's "Show firewall commands") prints the commands; ESM never
+  runs them. ESM never gives the server a bind address (`-MULTIHOME` breaks
+  joins, and ESM refuses it), so its query socket listens on every address
+  of the box: the firewall decides where it is reachable.
+- **Stopping.** A stop sends the server exactly **one SIGINT**: it saves
+  its world and exits within seconds. ESM waits up to `stop_timeout`
+  (default 120 s) and never sends a second signal or kills the server; one
+  that is still running is left running and reported as `stop_timeout`.
+  The same holds for a `systemctl --user stop` of its unit.
+- **Saves.** Each instance's server keeps its saves in
+  `<root>/instances/<name>/data/Saved/SaveGames/`; backups and restores
+  copy that whole folder. Installing or removing a build never touches it.
+  The server log is `<root>/instances/<name>/logs/server.log`.
+- **Passwords.** The game server takes its passwords only on its command
+  line today. An instance whose server needs a join or admin password must
+  be set to `secret_delivery: command_line` until the game reads the
+  secrets file, and that mode is unsafe on a shared box (see
+  [Server passwords](#server-passwords)).
+- **Lingering.** With systemd user units, turn on lingering once (above),
+  or every server stops when the ESM account logs out.
+- **Memory.** One server used about 0.6 GB idle and up to about 2.2 GB with
+  one player. See [docs/DESIGN.md](docs/DESIGN.md#the-real-server).
 
 ## Web page
 
@@ -198,6 +253,8 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   admin installed). Install only builds you trust.
 - ESM only ever signals or stops processes it started itself (it checks the
   process start time and executable before touching a pid).
+- A stop is one SIGINT; ESM never sends a second signal and never kills a
+  game server on Linux, so a world save is never cut short by ESM.
 - ESM never changes the firewall. It tells you which ports each instance
   uses; opening them is up to you.
 
