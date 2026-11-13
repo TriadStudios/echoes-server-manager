@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -213,7 +212,7 @@ func TestSteamAndSelfUpdateRoles(t *testing.T) {
 // server, replaces the binary, keeps the old one, and asks the service to
 // end so its service manager starts the new one.
 func TestSelfUpdateThroughTheAPI(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
+	pub, priv, _ := release.NewKey()
 	name := release.AssetName(runtime.GOOS, runtime.GOARCH)
 	bin := []byte("the new esm")
 	sum := sha256.Sum256(bin)

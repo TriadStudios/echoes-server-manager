@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -166,6 +167,16 @@ func ParsePublicKey(text string) (ed25519.PublicKey, error) {
 		return nil, errors.New("not a base64 Ed25519 public key")
 	}
 	return ed25519.PublicKey(b), nil
+}
+
+// NewKey makes a new key pair from 32 random bytes.
+func NewKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, nil, err
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	return priv.Public().(ed25519.PublicKey), priv, nil
 }
 
 // BuiltinKey is PublicKey, parsed.

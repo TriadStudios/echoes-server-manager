@@ -93,7 +93,7 @@ func TestSignAndVerify(t *testing.T) {
 
 func testKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}

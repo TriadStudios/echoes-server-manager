@@ -21,7 +21,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"flag"
@@ -66,7 +65,7 @@ func run(args []string, key string, stdout, stderr io.Writer) int {
 }
 
 func makeKey(path string, stdout io.Writer) error {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := release.NewKey()
 	if err != nil {
 		return err
 	}
