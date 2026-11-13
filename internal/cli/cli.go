@@ -209,12 +209,17 @@ func (e *env) fail(err error) int {
 	case errors.As(err, &ue):
 		code = "usage"
 	}
+	msg := err.Error()
+	if strings.TrimSpace(msg) == "" {
+		// Never fail without saying so.
+		msg = "failed (" + code + ")"
+	}
 	if e.g.json {
-		b, _ := json.Marshal(map[string]map[string]string{"error": {"code": code, "message": err.Error()}})
+		b, _ := json.Marshal(map[string]map[string]string{"error": {"code": code, "message": msg}})
 		fmt.Fprintf(e.out, "%s\n", b)
 		return 1
 	}
-	fmt.Fprintf(e.errOut, "esm: %v\n", err)
+	fmt.Fprintf(e.errOut, "esm: %s\n", msg)
 	return 1
 }
 

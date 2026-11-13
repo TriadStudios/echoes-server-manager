@@ -99,7 +99,12 @@ func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect stri
 	defer m.st.RemoveAll(tmp)
 	b := Backup{ID: id, Instance: in.name, Created: now, Reason: reason, Build: cfg.Build, Files: []string{}, SaveConfirmed: confirmed}
 	for _, f := range files {
-		n, err := m.copyFile(dataDir(in.name)+"/"+f, tmp+"/"+f)
+		n, err := m.copySaveFile(dataDir(in.name)+"/"+f, tmp+"/"+f)
+		if errors.Is(err, fs.ErrNotExist) {
+			// Gone since it was listed: a running server replaced it (a
+			// temporary file renamed into place, an older copy rotated).
+			continue
+		}
 		if err != nil {
 			return Backup{}, fmt.Errorf("back up %s: %w", f, err)
 		}
@@ -132,6 +137,23 @@ func (m *Manager) newBackupID(name string, now time.Time, reason string) string 
 
 // copyFile copies src to dst (both root-relative) through a temporary file,
 // so dst is never seen half written.
+// copySaveFile copies a save file of a server that may be running: a
+// file the server holds open for a moment (Windows refuses to open it
+// then) is tried again for a short while. A file that is gone is reported
+// as fs.ErrNotExist at once.
+func (m *Manager) copySaveFile(src, dst string) (int64, error) {
+	var err error
+	for range 10 {
+		var n int64
+		n, err = m.copyFile(src, dst)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			return n, err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return 0, err
+}
+
 func (m *Manager) copyFile(src, dst string) (int64, error) {
 	in, err := m.st.Open(src)
 	if err != nil {
