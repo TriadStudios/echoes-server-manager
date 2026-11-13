@@ -141,7 +141,7 @@ func Start(o Options) (_ *Service, err error) {
 	s.bus = events.NewBus(4096)
 	s.audit.SetNotify(func(e audit.Entry) { s.bus.Publish(events.TypeAudit, "", e) })
 
-	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, StopTimeout: cfg.StopTimeout.D(), Logger: log}); err != nil {
+	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, Logger: log}); err != nil {
 		return nil, err
 	}
 	cleanups = append(cleanups, func() { s.sup.Close() })

@@ -123,9 +123,6 @@ type Supervisor interface {
 type Options struct {
 	// Kind is auto, process or systemd (empty means auto).
 	Kind string
-	// StopTimeout is the systemd TimeoutStopSec for new units (default
-	// 120s).
-	StopTimeout time.Duration
 	// PollInterval is how often adopted processes are checked (default 250ms).
 	PollInterval time.Duration
 	// Logger receives diagnostics (default: discard).
@@ -136,9 +133,7 @@ func (o *Options) fill() {
 	if o.Kind == "" {
 		o.Kind = KindAuto
 	}
-	if o.StopTimeout <= 0 {
-		o.StopTimeout = 120 * time.Second
-	}
+
 	if o.PollInterval <= 0 {
 		o.PollInterval = 250 * time.Millisecond
 	}
@@ -231,6 +226,14 @@ func checkSpec(st *store.Store, s Spec) error {
 }
 
 func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
+
+// stopLockKey is the store lock held while a stop checks whether the
+// server had its signal, records it and sends it.
+func stopLockKey(name string) string { return "supervisor-stop:" + name }
+
+// testHookBeforeStopSignal, when set (tests only), runs between a stop's
+// check that no signal was sent and its record of the signal.
+var testHookBeforeStopSignal func(name string)
 
 // startError reports a failed start of spec. A supervisor never puts the
 // server's command line into an error itself. The tools it calls may still

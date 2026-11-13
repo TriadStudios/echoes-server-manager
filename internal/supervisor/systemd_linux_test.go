@@ -33,7 +33,7 @@ func uniqueName(prefix string) string {
 
 func newSystemd(t *testing.T, r *rig) *Systemd {
 	t.Helper()
-	s, err := NewSystemd(r.st, Options{StopTimeout: 5 * time.Second})
+	s, err := NewSystemd(r.st, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestSystemdLifecycle(t *testing.T) {
 	// Even a stop from outside ESM sends one SIGINT to the server only,
 	// and no SIGKILL after the timeout.
 	out, _ = exec.Command("systemctl", "--user", "show", unitName(name), "-p", "KillSignal,KillMode,SendSIGKILL,TimeoutStopUSec").Output()
-	for _, want := range []string{"KillSignal=2\n", "KillMode=mixed\n", "SendSIGKILL=no\n", "TimeoutStopUSec=5s\n"} {
+	for _, want := range []string{"KillSignal=2\n", "KillMode=mixed\n", "SendSIGKILL=no\n", "TimeoutStopUSec=infinity\n"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("unit lacks %q:\n%s", strings.TrimSpace(want), out)
 		}

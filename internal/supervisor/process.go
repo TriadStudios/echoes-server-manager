@@ -475,34 +475,9 @@ func (p *Process) stopEntry(ctx context.Context, name string, e *entry, timeout 
 // waits up to timeout for it to exit. It never sends a second signal and
 // never kills.
 func (p *Process) interruptOnce(ctx context.Context, name string, e *entry, timeout time.Duration) error {
-	p.mu.Lock()
-	sent := e.rec.StopSentAt
-	p.mu.Unlock()
-	if sent.IsZero() {
-		// Recorded before it is sent: whatever happens next, this process
-		// never gets a second one from ESM.
-		p.mu.Lock()
-		e.rec.StopSentAt = time.Now().UTC()
-		rec := e.rec
-		p.mu.Unlock()
-		if err := p.st.WriteJSON(pidFile(name), rec, 0o600); err != nil {
-			return fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
-		}
-		// Re-check right before signalling.
-		switch checkProc(e.rec) {
-		case procGone:
-			p.waitExit(e, 2*time.Second)
-			return nil
-		case procForeign:
-			return fmt.Errorf("%w (instance %s, pid %d)", ErrNotOurs, name, e.rec.PID)
-		}
-		if err := interrupt(e.proc); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return fmt.Errorf("supervisor: stop %s (pid %d): %w", name, e.rec.PID, err)
-		}
-		p.log.Info("stop signal sent", "instance", name, "pid", e.rec.PID, "signal", "SIGINT")
-	} else {
-		p.log.Info("the server has had its stop signal already; waiting again, sending none", "instance", name,
-			"pid", e.rec.PID, "sent", sent)
+	gone, err := p.signalOnce(name, e)
+	if err != nil || gone {
+		return err
 	}
 	if p.waitExitUntil(ctx, e, timeout) {
 		return nil
@@ -510,6 +485,58 @@ func (p *Process) interruptOnce(ctx context.Context, name string, e *entry, time
 	p.log.Warn("server did not exit in time after its stop signal; leaving it running", "instance", name, "pid", e.rec.PID,
 		"timeout", timeout)
 	return fmt.Errorf("%w (instance %s, pid %d, waited %s)", ErrStopTimeout, name, e.rec.PID, timeout)
+}
+
+// signalOnce sends e its one SIGINT unless it was sent already. The check,
+// the record and the signal happen under one lock per instance, shared by
+// every supervisor on this root, so stops that run at the same time send
+// one signal between them. gone reports a process that is no longer there.
+func (p *Process) signalOnce(name string, e *entry) (gone bool, err error) {
+	unlock := p.st.Lock(stopLockKey(name))
+	defer unlock()
+	p.mu.Lock()
+	sent := e.rec.StopSentAt
+	p.mu.Unlock()
+	// Another supervisor on this root may have sent it: its record is in
+	// the pid file.
+	var onDisk pidRecord
+	if sent.IsZero() && p.st.ReadJSON(pidFile(name), &onDisk) == nil && onDisk.PID == e.rec.PID &&
+		onDisk.StartMarker == e.rec.StartMarker {
+		sent = onDisk.StopSentAt
+	}
+	if !sent.IsZero() {
+		p.mu.Lock()
+		e.rec.StopSentAt = sent
+		p.mu.Unlock()
+		p.log.Info("the server has had its stop signal already; waiting again, sending none", "instance", name,
+			"pid", e.rec.PID, "sent", sent)
+		return false, nil
+	}
+	if testHookBeforeStopSignal != nil {
+		testHookBeforeStopSignal(name)
+	}
+	// Recorded before it is sent: whatever happens next, this process
+	// never gets a second one from ESM.
+	p.mu.Lock()
+	e.rec.StopSentAt = time.Now().UTC()
+	rec := e.rec
+	p.mu.Unlock()
+	if err := p.st.WriteJSON(pidFile(name), rec, 0o600); err != nil {
+		return false, fmt.Errorf("supervisor: stop %s: record the stop signal: %w", name, err)
+	}
+	// Re-check right before signalling.
+	switch checkProc(e.rec) {
+	case procGone:
+		p.waitExit(e, 2*time.Second)
+		return true, nil
+	case procForeign:
+		return false, fmt.Errorf("%w (instance %s, pid %d)", ErrNotOurs, name, e.rec.PID)
+	}
+	if err := interrupt(e.proc); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return false, fmt.Errorf("supervisor: stop %s (pid %d): %w", name, e.rec.PID, err)
+	}
+	p.log.Info("stop signal sent", "instance", name, "pid", e.rec.PID, "signal", "SIGINT")
+	return false, nil
 }
 
 // polite sends the polite stop request where signals do not exist: the
