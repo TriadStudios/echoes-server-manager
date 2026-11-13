@@ -424,9 +424,12 @@ create, `rules` in the API, the fields of the settings page). A setting
 that is not set is not passed, and the server uses its own default. A
 setting of the catalog is checked when it is set or changed: a number must
 be in its range, a choice one of its values, `True` or `False` for a
-switch, a date `YYYY-MM-DD` and not in the future. A value stored before
-is kept until it is changed. Keys outside the catalog are passed as they
-are, for settings of newer server builds.
+switch, a date `YYYY-MM-DD` and not in the future. No value may be empty
+(leave a setting out for the game's default) or hold the name of another
+switch followed by `=` (`x,PvP=True`): the server would read either as
+something else. A value stored before is kept until it is changed (an
+empty one is not passed as `-Key=`). Keys outside the catalog are passed
+as they are, for settings of newer server builds.
 
 | Group | Settings |
 |-------|----------|
@@ -442,11 +445,15 @@ example under a new world name); an existing world keeps its saved rules.
 
 The two tokens are secrets: set them like the passwords (below), never as
 rules. A list (`AdminPlayerIds`, `ChatBlockedWords`) is items separated by
-commas. `max_players` is 1 to 70, the most the game server takes; an
-instance stored with more by an earlier version keeps its value (and a
-warning) until it is changed. Extra arguments that override the engine's
-configuration files (`-ini:...`, `-iniFile=`) are refused. The full table
-is in [docs/DESIGN.md](docs/DESIGN.md#game-settings).
+commas; ESM passes it with `, ` between the items (also a list stored
+before), so the server reads it whole. The two addresses are base
+addresses, without a query. The join password reaches the server as
+`-Password=` in the compatibility mode. `max_players` is 1 to 70, the most
+the game server takes; an instance stored with more by an earlier version
+keeps its value (and a warning) until it is changed. Extra arguments that
+override the engine's configuration files (`-ini:...`, `-iniFile=`,
+`-CustomConfig=`) are refused. The full table is in
+[docs/DESIGN.md](docs/DESIGN.md#game-settings).
 
 ## Server passwords
 
@@ -466,7 +473,7 @@ account only), tells the server where the file is, and removes the file
 when the server has stopped. No password is on a command line, so none is
 in the process list or in what the server logs, and there is nothing ESM
 would have to hide. This needs a game server that reads the file. A server
-build that cannot do that runs without passwords; ESM flags that on the
+build that cannot do that runs without passwords and tokens; ESM flags that on the
 running instance (`secrets_unconfirmed`).
 
 **The compatibility mode puts them on the command line.** It is for server

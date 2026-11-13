@@ -162,10 +162,12 @@ are refused, so typos are reported.
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
 names, passwords and tokens, the secrets file, `-UserDir`, `-abslog` and so
 on), may not be `-MULTIHOME` (see [The real server](#the-real-server)) or an
-override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`
-and `-iniFile=`, which could change the ports, the networking or the
-server's folders behind ESM's back), and may not name a secret (see
-[Passwords](#passwords)). Values may not contain control characters.
+override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`,
+`-iniFile=` and `-CustomConfig=`, which could change the ports, the
+networking or the server's folders behind ESM's back), and may not name a
+secret (see [Passwords](#passwords)). Values may not contain control
+characters, may not be empty, and may not hold another switch (see
+[Game settings](#game-settings)).
 
 The game server takes at most 70 players (it lowers a larger `-MaxPlayers`
 to 70). A create, or a change of `max_players`, is held to 1 to 70. An
@@ -220,20 +222,48 @@ by its type (`bool`: `True` or `False`, also `true`, `yes`, `no`, `1` and
 of its values in any case; `list`; `date`, `YYYY-MM-DD`; `string`) and by
 its range, refused with 422 `invalid` naming the key and what it allows.
 The server would clamp a number out of range or ignore a value it cannot
-read; ESM refuses both, so a setting does what it shows. A value stored
-before (by an earlier version, or by hand) is kept as it is and passed as
-before until it is changed. A key that names a catalog setting in another
-case (`motd`) is refused when set: the server finds its switches without
-regard to case, and the catalog's spelling is the one to use. Keys outside
-the catalog are passed as they are, as before: a newer server build may
-take a setting this catalog does not know yet.
+read; ESM refuses both instead. A value stored before (by an earlier
+version, or by hand) is kept as it is until it is changed, and passed as
+before, with two exceptions described below: an empty value, and a list,
+which is now passed with `, ` between its items. A key that names a
+catalog setting in another case (`motd`) is refused when set: the server
+finds its switches without regard to case, and the catalog's spelling is
+the one to use. Keys outside the catalog are passed as they are, as
+before: a newer server build may take a setting this catalog does not
+know yet.
 
-Two details of the server's command line shape the checks. It ends a
-value that has no white space at the first `,` or `)`, and reads a value
-with white space whole. So a list is passed with `, ` between its items
-(`-ChatBlockedWords=rude, ruder`), and its items may not hold white space,
-`)` or a double quote; a text value without white space may not hold `,`
-or `)`. A value has at most 256 characters, a list at most 2000.
+The server's way of reading its command line shapes the checks:
+
+- **No empty values.** For a value that is empty and not quoted, the
+  server skips the white space after the `=` and reads the next argument
+  as the value: `-MOTD=` followed by another switch would make that switch
+  the welcome message. So a rule needs a value (422 `invalid` when a rule
+  is set or changed to an empty one; the way to the server's default is
+  to leave the rule out), and an extra argument may not end in `=`.
+  ESM never passes `-Key=` with nothing after it: an empty value stored
+  before is left out for a setting of the catalog, so the server uses its
+  default, and passed as the bare switch `-Key` for any other rule; an
+  extra argument stored with a trailing `=` is passed without it.
+- **Where a value ends.** The server ends a value that holds no space at
+  the first `,` or `)`, and reads a value with a space whole (the engine
+  quotes an argument that holds a space; other white space does not
+  count). So a list is passed with `, ` between its items
+  (`-ChatBlockedWords=rude, ruder`), and its items may not hold white
+  space, `)` or a double quote; a text value without a space may not hold
+  `,` or `)`. A value has at most 256 characters, a list at most 2000.
+- **No switch inside a value.** The server finds a switch by its name and
+  `=` (`PvP=`) anywhere in its command line, without regard to case,
+  wherever the character before the name is not a letter or digit: also
+  inside the value of another switch (`-MOTD=x,PvP=True` sets PvP). So a
+  rule value, a game setting, the text after an extra argument's own
+  switch name, the display name and a token are refused (422
+  `unsafe_argument` or `invalid`) when they hold such a name followed by
+  `=`: a setting of the catalog, a switch ESM sets itself, `Password`,
+  `AdminPassword`, `iniFile` or `CustomConfig`. So is a rule key or a
+  switch name with such a name after a `_`, `.` or `-` (`x_PvP`). The two
+  addresses (`AnnouncementsUrl`, `ProblemReportUrl`) must be base
+  addresses, without a query or a fragment. As with the other checks, a
+  value stored before is kept until it is changed.
 
 **World rules apply to a new world only.** The settings of the group
 "World rules" are copied into the world when the game creates it; from
@@ -255,9 +285,9 @@ and are kept with the passwords (see [Passwords](#passwords)).
 | `AllowNonSteamClients` | bool | `False` | `True`, `False` | caution: players without a Steam identity; not together with `AdminPlayerIds` |
 | `AdminPlayerIds` | list | not set | SteamID64 numbers (or `net:` ids), up to 2000 characters | |
 | `AdminLoginMaxAttempts` | int | `5` | at least 0 (0: no lockout) | |
-| `AdminLoginLockoutSeconds` | int | `60` | 0 to 3600 seconds | |
+| `AdminLoginLockoutSeconds` | int | `60` | 0 to 3600 seconds (0: no lockout) | |
 | `BossSummonCooldownSeconds` | int | `0` | at least 0 seconds | |
-| `LastWipe` | date | not set (the world's own) | YYYY-MM-DD, not in the future | read at every start |
+| `LastWipe` | date | not set (the world's own) | YYYY-MM-DD, from 2000, not in the future | read at every start |
 | **World rules** | | | | |
 | `HarvestRate` | float | `1` | 0.1 to 1000 | new world only |
 | `XPRate` | float | `1` | 0.1 to 1000 | new world only |
@@ -285,10 +315,10 @@ and are kept with the passwords (see [Passwords](#passwords)).
 | `ChatFilter` | enum | `Mask` | `Off`, `Mask`, `Drop` | |
 | `ChatBlockedWords` | list | not set | words, up to 2000 characters | |
 | **Announcements and reports** | | | | |
-| `AnnouncementsUrl` | string | not set (no announcements) | http or https address | |
+| `AnnouncementsUrl` | string | not set (no announcements) | http or https base address (no query) | |
 | `AnnouncementsPollSeconds` | float | `30` | at least 10 seconds | |
 | `AnnouncementsToken` | secret | not set | with the secrets (`announcements_token`) | falls back to the report token |
-| `ProblemReportUrl` | string | not set (reports stay on the server) | http or https address | |
+| `ProblemReportUrl` | string | not set (reports stay on the server) | http or https base address (no query) | |
 | `ProblemReportToken` | secret | not set | with the secrets (`problem_report_token`) | |
 
 The game also has settings with no switch at all (they live only in a
@@ -352,10 +382,11 @@ dependency that removes the compatibility mode below. The switch name
 and the file format above are ESM's proposal and are marked UNCONFIRMED in
 the adapter. A server build that does not read the file does not get the
 passwords and runs *without* them. ESM cannot prevent that, but it shows
-it: the server's status file says which passwords the server took
-(`server_password_set`, `admin_password_set`, never the values), and an
-instance whose running server does not confirm the passwords that are set
-carries the warning `secrets_unconfirmed`. Until the game reads the file,
+it: the server's status file says which passwords and tokens the server
+took (`server_password_set`, `admin_password_set`,
+`announcements_token_set`, `problem_report_token_set`, never the values),
+and an instance whose running server does not confirm the passwords and
+tokens that are set carries the warning `secrets_unconfirmed`. Until the game reads the file,
 an instance that needs a password on a real server has to use the
 compatibility mode below.
 
@@ -1110,10 +1141,15 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   not set. The world rules carry the notice that only a new world takes
   them. A value set in another spelling than the field writes (`true` for
   `True`) is kept as it is, and a stored value the catalog does not accept
-  is shown as text with the reason, so saving never drops or rewrites it.
-  The two tokens are write-only fields like the passwords. Rules outside
-  the catalog are listed apart ("Other settings"), as name and value. A
-  save sends the whole rules map, as the API wants.
+  is shown as text with the reason, so saving never rewrites it. (A game
+  setting stored empty shows as not set, and a save leaves it out: it is
+  left out at a start anyway.) The two tokens are write-only fields like
+  the passwords. Rules outside the catalog are listed apart ("Other
+  settings"), as name and value. A save sends the whole rules map, as the
+  API wants; which rules it holds is decided in one function of the script
+  (`saveRules`: a game setting left empty is left out, every other rule
+  goes as it is unless it is removed), which the page tests run with node
+  where node is installed.
 - **Health check on demand.** The Box screen runs the health check
   (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
   every free port of the ranges; other roles are told it needs the admin
@@ -1309,15 +1345,18 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   a server each setting as its own argument, but an Unreal server joins its
   command line back together and searches it for switches. ESM refuses
   quotes, `MULTIHOME` and white space followed by `-` in every setting that
-  goes onto the command line (see [Instances](#instances)); a value that
-  holds another switch's name without a space before it (`x-Port=1`) is
-  left to the server's own parsing.
+  goes onto the command line (see [Instances](#instances)), and a value
+  set from now on that holds the name of a switch the server reads,
+  followed by `=` (`x-Port=1`, see [Game settings](#game-settings)). A
+  value stored before is not checked again, and a switch name ESM does not
+  know is left to the server's own parsing.
 - **World rules reach a new world only.** The game copies them into a
   world when it creates it and keeps them with the world; ESM does not
   edit a world's saved rules. A changed world rule shows in the instance's
   rules, but an existing world goes on with the rules it was created with.
-- **No overrides of the engine's configuration files.** `-ini:` and
-  `-iniFile=` are refused as extra arguments and as rules, so the build's
+- **No overrides of the engine's configuration files.** `-ini:`,
+  `-iniFile=` and `-CustomConfig=` are refused as extra arguments and as
+  rules, so the build's
   own tuning (its configuration files) cannot be changed per instance
   through ESM.
 - **The catalog follows the server builds it was written for.** A setting
