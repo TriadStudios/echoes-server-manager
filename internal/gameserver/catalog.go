@@ -208,11 +208,12 @@ func LookupGameSetting(key string) (GameSetting, bool) {
 	return GameSetting{}, false
 }
 
-// FoldGameSetting returns the setting named key without regard to case:
-// the server finds its switches that way, so "motd" is the setting MOTD.
+// FoldGameSetting returns the setting named key without regard to the case
+// of ASCII letters: the server finds its switches that way, so "motd" is
+// the setting MOTD. No other letter stands for an ASCII one.
 func FoldGameSetting(key string) (GameSetting, bool) {
 	for _, s := range gameSettings {
-		if strings.EqualFold(s.Key, key) {
+		if SameSwitch(s.Key, key) {
 			return s, true
 		}
 	}
@@ -225,7 +226,10 @@ var (
 	dateRe  = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 )
 
-// boolWords are the bool values the server reads, in lower case.
+// boolWords are the bool values the server reads, in lower case. The
+// server compares them, and the values of an enum, without regard to the
+// case of ASCII letters only (SameSwitch): a letter that Unicode folds onto
+// an ASCII one, like the long s, makes another word to it.
 var boolWords = []string{"true", "false", "yes", "no", "1", "0"}
 
 // Check reports whether value is a value of s that the server reads as
@@ -250,7 +254,7 @@ func (s GameSetting) Check(value string, now time.Time) error {
 	}
 	switch s.Type {
 	case TypeBool:
-		if !slices.Contains(boolWords, strings.ToLower(value)) {
+		if !slices.ContainsFunc(boolWords, func(w string) bool { return SameSwitch(w, value) }) {
 			return bad("must be True or False")
 		}
 	case TypeInt:
@@ -268,7 +272,7 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		for _, c := range s.Choices {
 			values = append(values, c.Value)
 		}
-		if !slices.ContainsFunc(values, func(c string) bool { return strings.EqualFold(c, value) }) {
+		if !slices.ContainsFunc(values, func(c string) bool { return SameSwitch(c, value) }) {
 			return bad("must be %s", orList(values))
 		}
 	case TypeDate:
