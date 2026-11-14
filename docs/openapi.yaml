@@ -361,7 +361,12 @@ paths:
         Ports left out (or 0) are picked from the configured ranges. The
         instance is stopped until started. A rule key or an extra argument
         that looks like a secret is refused with 422 `looks_like_secret`;
-        passwords are set with `PUT .../secrets`.
+        passwords are set with `PUT .../secrets`. Every value that goes
+        onto the server command line follows the rules in Settings (422
+        `unsafe_argument`), the name may not hold one of the names the
+        server's engine searches its command line for (422
+        `unsafe_argument`), and the command line may not be longer than
+        12000 characters (422 `command_line_too_long`).
       requestBody:
         required: true
         content:
@@ -405,7 +410,11 @@ paths:
         with 422 `unsafe_argument`. Changing `secret_delivery` to
         `command_line` is refused with 422 `unsafe_argument` while a
         password or token is set that cannot go on the command line; the
-        answer names it, never its value. Changing `secret_delivery` from
+        answer names it and the rule it breaks, never its value or what
+        it holds. A change that would make the server command line longer
+        than 12000 characters is refused with 422 `command_line_too_long`
+        (one that leaves a line stored longer as it is, or makes it
+        shorter, is taken). Changing `secret_delivery` from
         `command_line` to `file` is refused with 409 `instance_running`
         while the server runs; with the server stopped it sets the output
         files of the instance aside (they hold the command line) and
@@ -460,12 +469,16 @@ paths:
         least 8 characters (422 password_too_short); a token 8 to 256 of
         printable ASCII without white space, '"', ',' or ')' (422 invalid).
         With `secret_delivery: command_line` a password or token follows
-        the rules for values on the command line (see Settings): no double
-        quote, control character, white space other than a space, space at
-        either end or before "-"; without a space no "=", "," or ")". Such
-        a secret is refused there with 422 unsafe_argument, which names the
-        secret, never its value; with the secrets file a password may be
-        anything. Neither may occur, in any case, in the instance's name, display
+        every rule for values on the command line (see Settings): no "="
+        and no double quote; printable characters and the plain space
+        only; no space at either end or before "-"; a "-" before a letter
+        only after a letter or digit; without a space no "," or ")"; and
+        none of the names the server's engine searches for as plain text.
+        Such a secret is refused there with 422 unsafe_argument, which
+        names the secret and the rule, never its value or what it holds;
+        with the secrets file a password may be anything. There the
+        secrets count for the length of the command line too (422
+        command_line_too_long). Neither may occur, in any case, in the instance's name, display
         name, world, map, cluster, rule keys or values, or extra arguments
         (422 password_in_settings).
       parameters:
@@ -487,7 +500,7 @@ paths:
     post:
       tags: [instances]
       summary: Start (operator)
-      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count. The first start after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed.
+      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count. The first start after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed. An instance whose stored command line is longer than the 16383 characters the server's engine starts with is not started (409 command_line_too_long).
       parameters:
         - $ref: "#/components/parameters/Name"
         - $ref: "#/components/parameters/Wait"
@@ -965,12 +978,20 @@ components:
                 port_in_use, no_free_ports, build_exists, build_in_use,
                 hash_mismatch, unsafe_archive, bad_manifest, too_large,
                 unsafe_argument (422: a setting that goes onto the server
-                command line breaks the rules for values there: it holds a
-                double quote, MULTIHOME, white space other than a space, a
-                space at an end or before "-", or, without a space, "=", ","
-                or ")"; or a key or switch name has more than ASCII letters
-                and digits, or names a switch twice; or, with secret_delivery
-                command_line, such a password or token), no_build, no_map (409: neither the instance nor its build
+                command line breaks the rules for values there, see
+                Settings: it holds "=", a double quote, MULTIHOME, a
+                character that is not printable text or the plain space, a
+                space at an end or before "-", a "-" and a letter at the
+                start of a word, a name the server's engine searches its
+                command line for, or, without a space, "," or ")"; or a key
+                or switch name has more than ASCII letters and digits, names
+                a switch twice or holds such a name without being it; or a map is "/"
+                and a name alone; or a new instance's name holds such a
+                name; or, with secret_delivery command_line, such a password
+                or token), command_line_too_long (422: a create, a change or
+                a secret would make the server command line longer than
+                12000 characters; 409 on a start: the stored command line is
+                longer than the 16383 the server's engine starts with), no_build, no_map (409: neither the instance nor its build
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
@@ -1261,7 +1282,7 @@ components:
         instance's server output and no state reasons.
     Warning:
       type: string
-      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced, max_players_above_game_limit, unsafe_stored_settings]
+      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced, max_players_above_game_limit, unsafe_stored_settings, command_line_too_long]
       description: |
         `secrets_on_command_line`: the instance passes its passwords (and
         tokens) on the server command line. `secrets_unconfirmed`: the
@@ -1277,29 +1298,67 @@ components:
         Settings), so the server may read them otherwise than ESM shows; an
         empty one is left out when the server starts, any other is passed
         as stored. The instance's `unsafe_stored_settings` names them.
+        `command_line_too_long`: the server command line of the instance,
+        as an earlier version stored its settings, is longer than the 12000
+        characters a change may lead to; beyond 16383, which is all the
+        server's engine starts with, ESM does not start the server.
     Settings:
       type: object
       additionalProperties: false
       description: |
         Every value set or changed that goes onto the server command line
-        (display_name, world, a rule value, the value of an extra argument
-        after its first "=") follows the same rules, because the server
-        joins its arguments into one line and finds a switch by "Name="
-        anywhere in it outside double quotes: it is not empty; it has no
-        double quote, no control character, no white space other than the
-        plain space, no space at its start or end and no space followed by
-        "-"; with a space it is quoted whole and may hold "=", "," and ")";
-        without a space it may not hold "=", "," or ")". A value stored
-        earlier is kept until it is changed (see the warning
-        unsafe_stored_settings). A refusal is 422 `unsafe_argument` (or
-        `invalid` for a setting of the catalog) and never repeats the value.
+        (display_name, world, map, a rule value, the value of an extra
+        argument after its first "=") follows the same rules, because the
+        server joins its arguments into one line, finds a switch by "Name="
+        anywhere in it (outside double quotes by its usual lookup, inside
+        them too by some of its code), reads "-Name" or "/Name" after
+        white space as a switch, and searches the line for a few names as
+        plain text:
+
+        - it is not empty;
+        - it has no "=" and no double quote;
+        - it is printable text and the plain space: no control character,
+          no other white space (whatever a Windows or a Linux host of the
+          server counts as white space: U+0009 to U+000D, U+0085, U+00A0,
+          U+1680, U+180E, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F,
+          U+3000), no format character (zero width and direction marks,
+          soft hyphen, byte order mark), no private-use or unassigned code
+          point, and no en dash (U+2013), with which the server does not
+          start;
+        - it has no space at its start or end and no space followed by "-"
+          and more;
+        - a "-" right before a letter A-Z or a-z has a letter or digit
+          (A-Z, a-z, 0-9) right before it ("well-met", not "-met" or
+          "x;-met");
+        - without a space it has no "," or ")" (with a space it is quoted
+          whole and may);
+        - it holds none of the names the server's engine searches its
+          command line for as plain text, in any case of their ASCII
+          letters and anywhere in the value: -ansimalloc, -stompmalloc,
+          -stomp2malloc, -binnedmalloc, -mimalloc, -tbbmalloc,
+          -libpasmalloc, -doublefreefinder, -tracefullcallstacks,
+          -basefromworkingdir, -envafterhere, -zendisablecache,
+          -zenenablecache, -zeninvalidatecache, -zenusesimplejournal,
+          -zennommappedstorage, -tracehost, ddpi:, +connect,
+          rail_debug_mode, metalshadervalidation, metalapivalidation,
+          steamsocketsrelays, csv.targetframerateoverride, /nullrhi,
+          /cleancrashreports and analyticsdisablecaching. This list is the
+          engine's as ESM knows it; a name a later engine, another plugin
+          or the game itself searches for is not on it.
+
+        The whole command line, with everything on it, may have 12000
+        characters after a change (422 `command_line_too_long`). A value
+        stored earlier is kept until it is changed (see the warnings
+        unsafe_stored_settings and command_line_too_long). A refusal is 422
+        `unsafe_argument` (or `invalid` for a setting of the catalog) and
+        never repeats the value.
       properties:
         display_name: { type: string, maxLength: 64, description: The server name. Empty means the instance name. }
         cluster: { type: string }
         channel: { type: string, enum: [live, test] }
         map:
           type: string
-          description: Empty means the build's default_map. A map set or changed that starts with "/" needs a folder and a name (/Game/Maps/Name); "/Name" alone is a switch to the server.
+          description: Empty means the build's default_map. A map set or changed that starts with "/" needs a folder and a name (/Game/Maps/Name); "/Name" alone is a switch to the server. It follows the rules for values on the command line too (see Settings).
         world: { type: string }
         ports: { $ref: "#/components/schemas/Ports" }
         bind_ip:
@@ -1340,13 +1399,16 @@ components:
             needs a value (the server would read the next argument as an
             empty one; leave the rule out for its default), follows the
             rules for values on the command line (see Settings; `x;PvP=True`
-            is refused, `Hi, PvP=True all` is a value with a space and
-            taken whole), and has a key of ASCII letters and digits only
-            that no other rule or extra argument names in any case. An
-            empty value stored earlier is left out when the server starts
-            (neither -Key= nor the bare switch -Key). A list is passed with
-            ", " between its items; its items may not hold white space,
-            "=", ")" or a double quote.
+            and `Hi PvP=True all` are refused, `Hi, all (welcome)` is a
+            value with a space and taken whole), and has a key of ASCII
+            letters and digits only that no other rule or extra argument
+            names in any case, and that does not hold one of the names the
+            engine searches for unless it is that switch ("ansimallocx" is
+            refused, "ansimalloc" is that switch). An empty value stored earlier is left
+            out when the server starts (neither -Key= nor the bare switch
+            -Key). A list is passed with ", " between its items; only plain
+            spaces may stand around them, and an item may not hold white
+            space, "=", ")" or a double quote.
           additionalProperties: { type: string, maxLength: 2000 }
         listed: { type: boolean }
         autostart: { type: boolean }
@@ -1356,7 +1418,7 @@ components:
         limits: { $ref: "#/components/schemas/Limits" }
         extra_args:
           type: array
-          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key. A switch ESM sets itself, -MULTIHOME, and the engine's configuration overrides (-ini:<File>:[Section]:Key=Value, -iniFile= and -CustomConfig=) are refused (422), as rule keys too. An argument set or changed is -Name or -Name=Value, with a name of ASCII letters and digits only that no rule or other extra argument names in any case, and a value that follows the rules for values on the command line (see Settings); it may not end in "=". One stored earlier that ends in "=" is left out when the server starts.
+          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key. A switch ESM sets itself, -MULTIHOME, the engine's configuration overrides (-ini:<File>:[Section]:Key=Value, -iniFile= and -CustomConfig=) and -CmdLineFile= (the engine would read more of its command line from a file) are refused (422), as rule keys too. An argument set or changed is -Name or -Name=Value, with a name of ASCII letters and digits only that no rule or other extra argument names in any case and that does not hold one of the names the engine searches for unless it is that switch (see Settings; -ansimallocx is refused, -ansimalloc is passed as what it is), and a value that follows the rules for values on the command line (see Settings); it may not end in "=". One stored earlier that ends in "=" is left out when the server starts.
           items: { type: string }
         secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
         auto_update: { $ref: "#/components/schemas/AutoUpdate" }
@@ -1454,7 +1516,8 @@ components:
           type: array
           description: |
             With the warning unsafe_stored_settings, the settings it is
-            about, never their values: display_name, world, map,
+            about, never their values: name (which cannot be changed),
+            display_name, world, map,
             rules.<key>, extra_args.<position from 1>, and with
             secret_delivery command_line the secrets by their field
             (server_password, admin_password, announcements_token,
@@ -1517,12 +1580,13 @@ components:
           description: |
             `bool`: True or False (true, yes, no, 1 and 0 in any case too).
             `int`: a whole number. `float`: a decimal number like 0.25.
-            `enum`: one of `choices` (any case). `list`: items separated by
-            commas; ESM passes them joined by ", " so the server reads the
-            list whole. `date`: YYYY-MM-DD, from 2000, not in the future.
-            `string`: text. Every value follows the rules for values on the
-            command line (see Settings): not empty, and without a space no
-            "=", "," or ")".
+            `enum`: one of `choices` (in any case of ASCII letters, as for
+            `bool`). `list`: items separated by commas; ESM passes them
+            joined by ", " so the server reads the list whole. `date`:
+            YYYY-MM-DD, from 2000, not in the future. `string`: text. Every
+            value follows the rules for values on the command line (see
+            Settings): not empty, no "=", and without a space no "," or
+            ")", among others.
         default:
           type: string
           description: What the server uses when the rule is not set, written as ESM would pass it; empty when that is empty or the server works it out itself (help says how).
@@ -1573,7 +1637,7 @@ components:
         announcements_token:
           type: string
           maxLength: 256
-          description: The game setting AnnouncementsToken. 8 to 256 characters of printable ASCII without white space, '"', ',' or ')'; with secret_delivery command_line no '=' either.
+          description: The game setting AnnouncementsToken. 8 to 256 characters of printable ASCII without white space, '"', ',' or ')'; with secret_delivery command_line it follows the other rules for values on the command line too (see Settings; no '=', for one).
         problem_report_token:
           type: string
           maxLength: 256

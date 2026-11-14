@@ -138,7 +138,7 @@ are refused, so typos are reported.
 
 | Field              | Meaning |
 |--------------------|---------|
-| `name`             | `^[a-z][a-z0-9-]{0,31}$`, fixed. |
+| `name`             | `^[a-z][a-z0-9-]{0,31}$`, fixed. It is in the folders ESM puts on the server command line, so a new name may not hold a name the engine searches that line for (see [Game settings](#game-settings)). |
 | `display_name`     | Name shown to players (the server name). |
 | `cluster`          | Optional label. |
 | `channel`          | `live` or `test`; must match the build. |
@@ -164,7 +164,9 @@ names, passwords and tokens, the secrets file, `-UserDir`, `-abslog` and so
 on), may not be `-MULTIHOME` (see [The real server](#the-real-server)) or an
 override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`,
 `-iniFile=` and `-CustomConfig=`, which could change the ports, the
-networking or the server's folders behind ESM's back), and may not name a
+networking or the server's folders behind ESM's back), may not be
+`-CmdLineFile=` (the engine would read more of its command line from that
+file: switches ESM neither shows nor checks), and may not name a
 secret (see [Passwords](#passwords)). A rule key or the name of an extra
 argument set from now on has ASCII letters and digits only, and every
 value follows the rules for values on the command line (see
@@ -185,10 +187,17 @@ for switches, so separate arguments are no boundary. Every setting that
 goes onto the command line (the display name, world, map, rule keys and
 values, extra arguments) is refused with 422 `unsafe_argument` when it
 holds a double quote, the name `MULTIHOME` in any case, or white space
-followed by `-` and more (a lone ` - ` is fine): any of those could add a
-switch of its own. What a value set from now on may hold besides is in
+followed by `-` and more (a lone ` - ` is fine; white space is what any
+host of the server counts as such, see [Game settings](#game-settings)):
+any of those could add a switch of its own. These three have held since
+the first release, so they are checked for all settings of an instance
+at every change of it, the stored ones too. What a value set from now on
+may hold besides is in
 [Game settings](#game-settings). The answer names the setting, never its
-value.
+value. (A password or token is not held to the word `MULTIHOME`: the
+switch is found by its name and `=` only, which no value on the command
+line holds, and a refusal that named the word would give a part of the
+secret away.)
 
 The command line, in this order: the map, `-unattended`, `-Port=`,
 `-QueryPort=`, `-ServerName=` (the display name, or the instance name),
@@ -246,44 +255,137 @@ not an ASCII letter or digit, never between double quotes, and also
 inside the value of another switch (`-MOTD=x,PvP=True` sets PvP). A
 quoted value is read whole; any other value ends at the first `,`, `)` or
 white space, and an empty one takes the next argument as its value. A
-switch written alone (`-PvP`) turns a setting that is on or off on.
+switch written alone (`-PvP` or `/PvP`, after white space) turns a
+setting that is on or off on.
 
-So the checks look at how a value is built, not at which names it holds
-(no list of names could know every switch of the engine). On the line,
-outside quotes, the only `Name=` are the switches ESM writes, each once
-and each followed by the whole value ESM shows. Every value an operator
-sets that goes onto the command line follows the same rules: a rule value
-(of the catalog or not), the value of an extra argument after its first
-`=`, the display name, the world name, and, with secret delivery
+That is the engine's usual lookup, and not its only way:
+
+- Some of its code finds `Name=` at the start of any word of the line
+  without minding the quotes (the folder to load plugins from, `PLUGIN=`,
+  is read that way), searches each argument for `-name=` before the line
+  is joined (settings of its memory system on Linux, the trace switch),
+  or cuts a switch out of the line as plain text. So a value with a space
+  is quoted, but a name and `=` inside it is not out of reach.
+- It searches the line, or each argument, for a few names as plain text
+  with no `=` at all: inside quotes, in any case of their ASCII letters,
+  and most of them in the middle of a word.
+- What white space is, where it looks for a switch written alone and
+  where it splits the line into arguments, the engine asks its host. A
+  Linux host counts the ASCII ones (tab to carriage return, and the
+  space). A Windows host counts more: U+0085, U+00A0, U+1680, U+180E,
+  U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F and U+3000. The
+  launcher quotes nothing but an argument with a plain space, so a value
+  with one of the others in front of `-PvP` is one unquoted value to ESM
+  and the switch PvP to a server on Windows.
+- It does not start at all with a command line of more than 16383
+  characters (16-bit units: a character beyond U+FFFF counts twice), nor
+  with an en dash (U+2013) anywhere on it, which it takes for a `-` spoilt
+  on its way through a mail program.
+
+So the checks look at how a value is built, not at which switch it names
+(no list of names could know every switch of the engine): on the line,
+the only `=` are the ones ESM writes after the name of a switch, each
+switch once and each followed by the whole value ESM shows, and no value
+holds what could start a switch. Every value an operator sets that goes
+onto the command line follows the same rules: a rule value (of the
+catalog or not), the value of an extra argument after its first `=`, the
+display name, the world name, the map, and, with secret delivery
 `command_line`, the passwords and tokens. A value set or changed
 
 - **is not empty**: the way to the server's default is to leave the rule
   out (422 `invalid`), and an extra argument may not end in `=`;
+- **has no `=`**, with a space or without: unquoted, the server would
+  read a name before it as a switch of its own (`x;LOG=` sets the
+  engine's `LOG`), and quoted, some of its code still would
+  (`Hi PLUGIN=/tmp/x all` names a folder to load plugins from);
 - **has no double quote**, which would turn the rest of the line inside
-  out, no control character, no white space other than the plain space
-  (the server does not quote it and ends a value there), no space at its
-  start or end, and no space followed by `-` and more;
-- **may hold any other character when it holds a space**: the server
-  reads it quoted and whole (`Hi, PvP=True all` is a welcome message and
-  nothing else);
-- **holds no `=`, `,` or `)` when it holds no space**: unquoted, the
-  server would end it at `,` or `)`, and read a name before `=` as a
-  switch of its own (`x;LOG=` sets the engine's `LOG`).
+  out;
+- **is printable text**: letters, marks, digits, punctuation and symbols
+  of any script, and the plain space. Refused are control characters;
+  every white space of any host but the plain space (the list above,
+  which holds all that Unicode calls white space, and U+180E); format
+  characters (zero width space and joiners, direction marks and
+  overrides, the soft hyphen, the byte order mark); private-use code
+  points and code points Unicode has not assigned; and the en dash.
+  These classes are refused whole, not by one host's table: what a host
+  makes of such a character can change with its next release, and none
+  of them shows in a name anyway. (An emoji that is newer than the
+  Unicode tables ESM was built with, or one joined from several with a
+  zero width joiner, is refused with them.)
+- **has no space at its start or end**, and no space followed by `-` and
+  more (a lone ` - ` is fine);
+- **has a letter or digit before a `-` that a letter follows**: where the
+  engine looks for the start of a name, anything but an ASCII letter or
+  digit ends the word before. `well-met` and `Alpha-EU` are words;
+  `-fast`, `x;-fast` and `[EU]-Alpha` could start a switch, and so could
+  a `-` after a letter outside A-Z. A `-` before a digit (`-5`) or before
+  a letter of another script is not held to this;
+- **holds no `,` or `)` when it holds no space**: unquoted, the server
+  would end it there. With a space it is quoted and read whole
+  (`Welcome, traveller (and friends)`);
+- **holds none of the names the engine searches for as plain text**, in
+  any case of their ASCII letters and anywhere in the value.
+
+Those names are: `-ansimalloc`, `-stompmalloc`, `-stomp2malloc`,
+`-binnedmalloc` (and with it `-binnedmalloc2` and `-binnedmalloc3`),
+`-mimalloc`, `-tbbmalloc`, `-libpasmalloc`, `-doublefreefinder`,
+`-tracefullcallstacks`, `-basefromworkingdir`, `-envafterhere`,
+`-zendisablecache`, `-zenenablecache`, `-zeninvalidatecache`,
+`-zenusesimplejournal`, `-zennommappedstorage`, `-tracehost`, `ddpi:`,
+`+connect`, `rail_debug_mode`, `metalshadervalidation`,
+`metalapivalidation`, `steamsocketsrelays`,
+`csv.targetframerateoverride`, `/nullrhi`, `/cleancrashreports` (the last
+two are found as `/Name` after a space in a single argument) and
+`analyticsdisablecaching`. They are the one thing here that is a list:
+nothing in how a value is built keeps a plain-text search out, so ESM
+knows these names one by one, from the source of the engine the server
+builds are made with: the names its own runtime code and its Steam
+plugins search for on a Linux or a Windows host, and a few of other
+hosts. A name that a later engine, another plugin or the game itself
+searches for is not among them until it is added (in the adapter, and in
+the reader the tests use, `internal/testkit/cmdline`). The names the
+engine searches for in the
+same way with an `=` (`-sigdfl=`, `-vmapoolscale=`,
+`-crashhandlerstacksize=`, `-filemapcachesize=`, `-trace=`, `PLUGIN=`,
+`-LogCmds=` and others) need no list: no value holds `=`.
 
 A rule key, and the name of an extra argument (`-Name` or `-Name=Value`;
 `-Name:Value` and `-Name Value` are refused), set from now on has ASCII
 letters and digits only: `x_PvP`, `Foo.LAN` and `Foo:Port` hold the
 switches `PvP`, `LAN` and `Port`. No two rule keys or extra arguments may
-name the same switch in any case: the server reads only the first. A map
-that starts with `/` needs a folder and a name (`/Game/Maps/Name`): the
-server reads `/PvP` alone as the switch PvP. A list is passed with `, `
-between its items (`-ChatBlockedWords=rude, ruder`), so a list of two or
-more items is quoted whole; its items may not hold white space, `=`, `)`
-or a double quote. The two addresses (`AnnouncementsUrl`,
-`ProblemReportUrl`) must be base addresses, without a query or a fragment
-(and, holding no space, without `=`). A value has at most 256 characters,
-a list at most 2000. A refusal is 422 `unsafe_argument` (or `invalid` for
-a setting of the catalog) and names the setting, never its value.
+name the same switch in any case: the server reads only the first. And
+none may hold one of the names above unless it is that switch:
+`-ansimallocx` would be read as `-ansimalloc`, while `-ansimalloc` or
+`-vmapoolscale=2` as an extra argument is passed as what it is, and
+shown. A map that starts with `/` needs a folder and a name
+(`/Game/Maps/Name`): the server reads `/PvP` alone as the switch PvP. A
+list is passed with `, ` between its items
+(`-ChatBlockedWords=rude, ruder`), so a list of two or more items is
+quoted whole; only plain spaces may stand around its items, and an item
+may not hold white space, `=`, `)` or a double quote. The two addresses
+(`AnnouncementsUrl`, `ProblemReportUrl`) must be base addresses, without
+a query or a fragment (and without `=`). The words of a choice and of a
+switch that is on or off are compared as the game compares them, without
+regard to the case of ASCII letters only: `mask` is `Mask`, a word with a
+letter that only Unicode folds onto an ASCII one is not. A value has at
+most 256 characters, a list at most 2000. A refusal is 422
+`unsafe_argument` (or `invalid` for a setting of the catalog) and names
+the setting, never its value.
+
+The name of an instance is not a value, but it is in the folders ESM puts
+on the command line (`-UserDir=`, `-abslog=`, the secrets file). A new
+instance's name may not hold one of the names above (`x-ansimalloc`).
+
+**The length of the line.** ESM counts the command line of an instance
+the way the engine does: a space before every argument, the two quotes
+around what holds a space, two for a character beyond U+FFFF, with
+everything on it (ESM's own switches, the folders, the map, the rules,
+the extra arguments and, with command-line delivery, the secrets). A
+create, a change or a new secret that would make it longer than 12000 is
+refused with 422 `command_line_too_long`, which has the two numbers and
+nothing of a value. 12000 is well under the engine's 16383 because what
+starts the server may add to the line (a start script the name of the
+game, say).
 
 A value stored before these rules (by an earlier version, or by hand) is
 not checked again until it is changed, and ESM keeps passing it, with
@@ -295,10 +397,17 @@ ends in `=` are left off the command line, and the service log names them
 stored value that breaks the rules, and with command-line delivery a
 stored password or token that does, is passed as it is; the instance
 carries the warning `unsafe_stored_settings`, and its
-`unsafe_stored_settings` field names the settings: `display_name`,
-`world`, `map`, `rules.<key>`, `extra_args.<position>` (from 1), or the
-secret's field (`admin_password`, say), never a value. Changing or
-removing them clears the warning.
+`unsafe_stored_settings` field names the settings: `name`,
+`display_name`, `world`, `map`, `rules.<key>`, `extra_args.<position>`
+(from 1), or the secret's field (`admin_password`, say), never a value.
+Changing or removing them clears the warning (a name cannot be changed:
+such an instance has to be made anew under another one). A stored
+command line that is longer than 12000 characters stays as it is, with
+the warning `command_line_too_long`; a change is taken as long as it does
+not make the line longer. Up to 16383 the server is started as before and
+the service log says that its line is long. Beyond that the engine would
+stop at once, so ESM does not start the server (409
+`command_line_too_long`).
 
 **World rules apply to a new world only.** The settings of the group
 "World rules" are copied into the world when the game creates it; from
@@ -374,8 +483,8 @@ server with its next start.
 
 A token has 8 to 256 characters of printable ASCII without white space,
 `"`, `,` or `)` (422 `invalid`): in the compatibility mode it goes onto the
-command line, where the server would end it at `,` or `)`; there it may
-not hold `=` either (see below). Like a password
+command line, where the server would end it at `,` or `)`; there it
+follows the other rules for values too (see below). Like a password
 it may not occur in a setting (422 `password_in_settings`), it is masked
 wherever the output filter masks passwords, and a switch whose name holds
 `token` has its value masked like a password switch.
@@ -440,18 +549,24 @@ told about it; it is ESM's record of what the running server was started
 with, and goes when the server has stopped.)
 
 In this mode a password or token is a value on the command line like any
-other, and follows the rules in [Game settings](#game-settings): no
-double quote, control character, other white space than the plain space,
-space at either end or space before `-`; and without a space, no `=`,
-`,` or `)`. So `adm;Password=joinme` cannot be a password here (the server
-could read `joinme` as the join password), while `join me, friend=yes`
-can. Setting such a secret on an instance in this mode, and changing an
-instance to this mode while it holds one, is refused with 422
-`unsafe_argument`; the answer names the secret (`admin_password`, say) and
-the rule it breaks, never the value. With the secrets file a password may
-be anything, as before. A secret stored before these rules on an instance
-in this mode is passed as it is, and named in the warning
-`unsafe_stored_settings`.
+other, and follows every rule in [Game settings](#game-settings): no `=`
+and no double quote; printable characters and the plain space only (no
+control character, no other white space, no character that does not
+show, no en dash); no space at either end or before `-`; a `-` before a
+letter only after a letter or digit; without a space no `,` or `)`; and
+none of the names the engine searches for as plain text. So
+`adm;Password=joinme` cannot be a password here (the server could read
+`joinme` as the join password), and neither can `join me, friend=yes`,
+while `join me, friend` can. Setting such a secret on an instance in this
+mode, and changing an instance to this mode while it holds one, is
+refused with 422 `unsafe_argument`; the answer names the secret
+(`admin_password`, say) and the rule it breaks, never the value and
+nothing the value holds: not the name it holds either, when that is the
+rule. With the secrets file a password may be anything, as before. A
+secret stored before these rules on an instance in this mode is passed as
+it is, and named in the warning `unsafe_stored_settings`. The secrets
+count for the length of the command line in this mode (422
+`command_line_too_long`).
 
 **It is unsafe on a shared box.** Every account on the machine can read
 the command line of a running process, and the server writes its command
@@ -1017,9 +1132,11 @@ skipped.
   passwords or tokens. Each text field of an entry is cut to 256 bytes, and
   reading the audit log skips a line it cannot read.
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
-  `secrets_unconfirmed` (both in [Passwords](#passwords)) and
+  `secrets_unconfirmed` (both in [Passwords](#passwords)),
   `limits_not_enforced` (it has resource limits and the process supervisor
-  does not apply them).
+  does not apply them), `max_players_above_game_limit` (see
+  [Instances](#instances)), and `unsafe_stored_settings` and
+  `command_line_too_long` (both in [Game settings](#game-settings)).
 - An instance also carries `live`, read when it is asked for and never
   stored: the server's memory (its systemd unit's cgroup under systemd,
   the resident memory of the process otherwise; not measured on Windows
@@ -1396,20 +1513,51 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   command line back together and searches it for switches. ESM refuses
   quotes, `MULTIHOME` and white space followed by `-` in every setting that
   goes onto the command line (see [Instances](#instances)), and a value
-  set from now on follows rules that keep any switch out of it, whatever
-  its name (see [Game settings](#game-settings)): a value without a space
-  holds no `=`, `,` or `)`, a value with one is quoted whole. The model of
-  how the server reads its command line comes from the engine's behaviour
-  and is what the tests and the fake server follow; it is not yet checked
-  against a real server. A value stored before is not checked again: an
-  empty one is left out, any other is passed as it is, with the warning
-  `unsafe_stored_settings`. The folders ESM itself puts on the command
-  line (`-UserDir=`, `-abslog=`, the secrets file) come from ESM's root,
-  which is not checked by these rules.
+  set from now on follows the rules in [Game settings](#game-settings).
+  By how a value is built, those rules keep out every switch the engine
+  finds by a name and `=`, whatever its name and quoted or not, and every
+  switch its usual lookup finds written alone after white space in the
+  line, on a Linux and on a Windows host. They do not keep out, by how a
+  value is built, a name that the engine looks for as plain text without
+  an `=`, nor a `/Name` after a space inside a value with a space: the
+  usual lookup does not look inside quotes, but on Windows one piece of
+  the engine reads the single arguments without their quotes (for what it
+  hands on to the crash reporter). For those ESM has a list of the names
+  it knows, taken from the engine the server builds are made with: what
+  its own runtime code and its Steam plugins search for on a Linux or a
+  Windows host. A name that a later engine,
+  another plugin or the game itself searches for is not on it, and
+  neither is a name that such code looks up without an `=` at the start
+  of a word. Two names of that kind that the engine's source has for
+  other plugins and platforms are plain words (`game`, `iterative`), which
+  no list could refuse. The model of how the server reads its command
+  line comes from the engine's source and is what the tests and the fake
+  server follow; it is not yet checked against a real server. A value
+  stored before is not checked again: an empty one is left out, any other
+  is passed as it is, with the warning `unsafe_stored_settings`.
+- **What ESM itself puts on the command line is not checked.** The
+  folders (`-UserDir=`, `-abslog=`, the secrets file) come from ESM's
+  root and the instance's name, the program from the path of the build,
+  and the map of an instance that names none from its build's manifest.
+  Only a new instance's name is checked, and only for the names on the
+  list. A root or a build whose path holds an `=`, a double quote, a
+  space followed by `-`, an en dash or one of those names is read by the
+  server like any such value. Choose plain paths; `esm doctor` does not
+  look at this.
+- **A map that is the game's own name.** The engine takes an argument
+  that is exactly the name of the game's project, or of its project file,
+  for the game itself and drops it from the line. ESM does not know that
+  name: an instance whose `map` is set to it starts with the build's
+  default map.
 - **Some passwords cannot go on the command line.** In the compatibility
-  mode a password or token without a space may not hold `=`, `,` or `)`,
-  and none may hold a double quote (see [Passwords](#passwords)). Such a
-  password works with the secrets file only.
+  mode a password or token follows the rules for every value there (see
+  [Passwords](#passwords)): one with an `=`, a double quote or a `-` and a
+  letter after a symbol, say, works with the secrets file only.
+- **Some harmless text is refused.** The rules cannot tell a switch from
+  what only looks like the start of one. No value holds `=`; `[EU]-Alpha`
+  and a `-` before an ASCII letter after an accented one are refused
+  (` - ` with spaces is fine); an emoji joined with a zero width joiner is
+  refused with the other characters that do not show.
 - **World rules reach a new world only.** The game copies them into a
   world when it creates it and keeps them with the world; ESM does not
   edit a world's saved rules. A changed world rule shows in the instance's
