@@ -22,7 +22,10 @@ func TestLineLength(t *testing.T) {
 			t.Errorf("LineLength(%q) = %d, the line %q has %d", argv, got, line, want)
 		}
 	}
-	if EngineLineLimit != cmdline.Limit || MaxLineLength >= EngineLineLimit || MaxLineLength < EngineLineLimit/2 {
-		t.Errorf("the limits: %d, the engine's %d", MaxLineLength, EngineLineLimit)
+	// ESM starts a server with a line a little shorter than the engine
+	// starts with, and lets a change lead to one well shorter than that.
+	if EngineLineLimit != cmdline.Limit || StartLineLimit != EngineLineLimit-StartRoom || StartRoom < 64 || StartRoom > 1024 ||
+		MaxLineLength >= StartLineLimit || MaxLineLength < EngineLineLimit/2 {
+		t.Errorf("the limits: %d after a change, %d at a start, the engine's %d", MaxLineLength, StartLineLimit, EngineLineLimit)
 	}
 }

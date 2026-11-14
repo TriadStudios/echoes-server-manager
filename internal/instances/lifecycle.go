@@ -111,15 +111,17 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	// The server's engine stops at once at a command line longer than it
 	// keeps, and at an en dash anywhere on it. Only settings stored by an
 	// earlier version, or a path of ESM's own, get there: a change is held
-	// well below the length (see checkLine) and takes no en dash.
+	// well below the length (see checkLine) and takes no en dash. The
+	// length is held to StartLineLimit, which leaves room for what a start
+	// script adds.
 	switch n := gameserver.LineLength(argv); {
-	case n > gameserver.EngineLineLimit:
+	case n > gameserver.StartLineLimit:
 		return nil, fault.New(fault.Conflict, "command_line_too_long",
-			"the server command line of instance %s has %d characters, and the server's engine does not start with more than %d: shorten or remove rules or extra arguments first",
-			cfg.Name, n, gameserver.EngineLineLimit)
+			"the server command line of instance %s has %d characters; the server's engine does not start with more than %d, and ESM keeps %d of them free for what a build's start script may add, so it starts a server with at most %d: shorten or remove rules or extra arguments first",
+			cfg.Name, n, gameserver.EngineLineLimit, gameserver.StartRoom, gameserver.StartLineLimit)
 	case n > gameserver.MaxLineLength:
 		m.log.Warn("the server command line is longer than a change may make it", "instance", cfg.Name, "characters", n,
-			"most_after_a_change", gameserver.MaxLineLength, "most_the_engine_starts_with", gameserver.EngineLineLimit)
+			"most_after_a_change", gameserver.MaxLineLength, "most_esm_starts_with", gameserver.StartLineLimit)
 	}
 	if where := enDashIn(cfg, l); len(where) > 0 {
 		return nil, fault.New(fault.Conflict, "command_line_unsafe",

@@ -74,8 +74,8 @@ const (
 	WarnUnsafeStoredSettings = "unsafe_stored_settings"
 	// WarnCommandLineTooLong: the server command line of the instance, as
 	// an earlier version stored its settings, is longer than a change may
-	// make it (gameserver.MaxLineLength). Beyond what the server's engine
-	// starts with (gameserver.EngineLineLimit) ESM does not start it.
+	// make it (gameserver.MaxLineLength). Beyond what ESM starts a server
+	// with (gameserver.StartLineLimit) ESM does not start it.
 	WarnCommandLineTooLong = "command_line_too_long"
 )
 
@@ -94,8 +94,8 @@ func WarningText(code string) string {
 	case WarnUnsafeStoredSettings:
 		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored, but with an en dash (U+2013) on its command line the server's engine does not start, and ESM does not start it then; change or remove them, or, for the name of an instance, make the instance anew under another name"
 	case WarnCommandLineTooLong:
-		return fmt.Sprintf("the server command line of this instance is longer than %d characters, the most a change may lead to; the server's engine does not start with more than %d, and ESM does not start a server whose line is longer than that: shorten or remove rules or extra arguments",
-			gameserver.MaxLineLength, gameserver.EngineLineLimit)
+		return fmt.Sprintf("the server command line of this instance is longer than %d characters, the most a change may lead to; the server's engine does not start with more than %d, and ESM, which keeps %d of them free for what a build's start script may add, does not start a server whose line is longer than %d: shorten or remove rules or extra arguments",
+			gameserver.MaxLineLength, gameserver.EngineLineLimit, gameserver.StartRoom, gameserver.StartLineLimit)
 	}
 	return code
 }

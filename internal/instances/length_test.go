@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,12 +14,14 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
-// lineCap is the longest server command line a change may lead to, and
-// engineLimit the longest the server's engine starts with, both counted as
-// the engine counts (testkit/cmdline).
+// lineCap is the longest server command line a change may lead to,
+// engineLimit the longest the server's engine starts with, and startLimit
+// the longest ESM starts a server with, 256 under engineLimit, all counted
+// as the engine counts (testkit/cmdline).
 const (
 	lineCap     = 12000
 	engineLimit = 16383
+	startLimit  = 16127
 )
 
 // startedLine starts name on a supervisor that starts nothing and returns
@@ -50,7 +53,7 @@ func pad(t *testing.T, rules map[string]string, base, want int) {
 				n = 240
 			}
 		}
-		if n < 1 || i > 60 {
+		if n < 1 || i >= maxRules {
 			t.Fatalf("cannot pad a line of %d characters to %d", base, want)
 		}
 		rules[fmt.Sprintf("Zp%02d", i)] = strings.Repeat("x", n)
@@ -206,10 +209,10 @@ func TestCommandLineLengthIsHeld(t *testing.T) {
 // An instance stored by an earlier version with a longer command line
 // keeps loading. It carries the warning command_line_too_long; a change
 // that leaves the line as it is or makes it shorter is taken, one that
-// makes it longer is not. Up to what the engine starts with, the server is
-// started as before and the service log says that its line is long. Beyond
-// that the engine would stop at once: ESM does not start the server, and
-// says why.
+// makes it longer is not. Up to what ESM starts a server with, the server
+// is started as before and the service log says that its line is long.
+// Beyond that the engine would stop at once: ESM does not start the
+// server, and says why.
 func TestStoredCommandLineThatIsTooLong(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -304,5 +307,71 @@ func TestStoredCommandLineThatIsTooLong(t *testing.T) {
 	}
 	if st, _ := m.Status("beta"); st.State.active() {
 		t.Fatalf("beta is %s", st.State)
+	}
+}
+
+// What starts the server may put more on its command line than ESM passes:
+// a build's start script puts the name of the game's project in front, say.
+// ESM does not know what a build's script adds, so it keeps 256 of the
+// 16383 characters the engine starts with free for that: a line of 16127,
+// as ESM passes it, is started, and one character more is not (409
+// command_line_too_long, with the numbers and nothing of a value). Only an
+// instance stored by an earlier version gets there.
+func TestStartLeavesRoomForTheStartScript(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	r.create("alpha", nil)
+	var in Instance
+	if err := r.st.ReadJSON(instFile("alpha"), &in); err != nil {
+		t.Fatal(err)
+	}
+	in.Rules = map[string]string{}
+	store := func() {
+		t.Helper()
+		if err := r.st.WriteJSON(instFile("alpha"), in, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store()
+	sup := &recordSup{}
+	m := r.newManager(sup)
+	base := cmdline.Units(startedLine(t, m, sup, "alpha"))
+	m.Close()
+
+	for _, c := range []struct {
+		n      int
+		starts bool
+	}{{startLimit, true}, {startLimit + 1, false}, {engineLimit, false}} {
+		pad(t, in.Rules, base, c.n)
+		store()
+		sup := &recordSup{}
+		m := r.newManager(sup)
+		_, err := m.Start(context.Background(), "alpha", false)
+		sup.mu.Lock()
+		asked := len(sup.specs)
+		sup.mu.Unlock()
+		switch {
+		case c.starts && asked != 1:
+			t.Errorf("a line of %d characters is not started: %v", c.n, err)
+		case c.starts:
+			if got := cmdline.Units(cmdline.Join(sup.specs[0].Args)); got != c.n {
+				t.Errorf("the line has %d characters, not %d", got, c.n)
+			}
+		case asked != 0:
+			t.Errorf("a line of %d characters was started", c.n)
+		case fault.CodeOf(err) != "command_line_too_long" || !fault.Is(err, fault.Conflict):
+			t.Errorf("a line of %d characters: %v, want 409 command_line_too_long", c.n, err)
+		default:
+			msg := err.Error()
+			for _, n := range []int{c.n, engineLimit, startLimit, engineLimit - startLimit} {
+				if !strings.Contains(msg, strconv.Itoa(n)) {
+					t.Errorf("the refusal does not name %d: %v", n, err)
+				}
+			}
+			if strings.Contains(msg, "xxx") {
+				t.Errorf("the refusal repeats a value: %v", err)
+			}
+		}
+		m.Close()
 	}
 }

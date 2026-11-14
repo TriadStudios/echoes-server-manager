@@ -493,10 +493,23 @@ func SearchedSwitch(name string) (searchedName string, found bool) {
 // stops at once.
 const EngineLineLimit = 16383
 
+// StartRoom is what ESM keeps free of EngineLineLimit for what starts the
+// server to put on the line besides what ESM passes: a build's start
+// script puts the name of the game's project in front of it, say. ESM runs
+// the program a build's manifest names and does not know what that adds,
+// so this is a judgment, room for a project name and a few switches, not a
+// measurement.
+const StartRoom = 256
+
+// StartLineLimit is the longest command line ESM starts a server with,
+// counted as LineLength counts what ESM passes: EngineLineLimit less
+// StartRoom. Only settings stored by an earlier version can make a line
+// longer (see MaxLineLength).
+const StartLineLimit = EngineLineLimit - StartRoom
+
 // MaxLineLength is the longest command line ESM lets a change lead to,
-// counted the same way. It is well under EngineLineLimit: what starts the
-// server may put more on the line than ESM passes (a start script the name
-// of the game, say).
+// counted the same way. It is well under StartLineLimit, so that what
+// starts the server may put more on the line than StartRoom allows for.
 const MaxLineLength = 12000
 
 // LineLength returns the length of the line the server's launcher joins
