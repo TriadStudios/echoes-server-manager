@@ -2,7 +2,9 @@ package cmdline
 
 import (
 	"slices"
+	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestJoin(t *testing.T) {
@@ -88,6 +90,108 @@ func TestParamAndBool(t *testing.T) {
 		if on, set := Bool(line, name); on != want[0] || set != want[1] {
 			t.Errorf("Bool %s: %v %v, want %v", name, on, set, want)
 		}
+	}
+}
+
+// White space is what some host of the engine counts as such: the ASCII
+// ones everywhere, and on Windows the rest of this list, U+180E among them,
+// which is no white space to Unicode any more. A bare switch after any of
+// them is found; one after another character is not.
+func TestSpaceIsWhatAnyHostCounts(t *testing.T) {
+	want := []rune{0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x180e, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+		0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000}
+	var got []rune
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if Space(r) {
+			got = append(got, r)
+		}
+		// Unicode's own white space is in it.
+		if unicode.IsSpace(r) && !Space(r) {
+			t.Errorf("U+%04X is white space to Unicode and not here", r)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("white space:\n got %U\nwant %U", got, want)
+	}
+	for _, r := range want {
+		if r == ' ' {
+			continue
+		}
+		for _, lead := range []string{"-", "/"} {
+			line := Join([]string{"-MOTD=Hi" + string(r) + lead + "AllowNonSteamClients", "-B=1"})
+			if strings.Contains(line, `"`) {
+				t.Fatalf("U+%04X made the launcher quote: %q", r, line)
+			}
+			if on, set := Bool(line, "AllowNonSteamClients"); !on || !set {
+				t.Errorf("the bare switch after U+%04X and %q is not found", r, lead)
+			}
+		}
+		// After the name too: the switch ends at white space.
+		if line := Join([]string{"-PvP" + string(r) + "x"}); !Param(line, "PvP") {
+			t.Errorf("a bare switch followed by U+%04X is not found", r)
+		}
+	}
+	for _, r := range []rune{'x', ';', 0x200b, 0x2060, 0xfeff, 0x00ad, 0x2010} {
+		if line := Join([]string{"-MOTD=Hi" + string(r) + "-PvP"}); Param(line, "PvP") {
+			t.Errorf("a bare switch is found after U+%04X", r)
+		}
+	}
+}
+
+// The engine stops at a line that is too long for it, counted in 16-bit
+// units, and at an en dash.
+func TestRefuses(t *testing.T) {
+	head := " -MOTD="
+	fits := head + strings.Repeat("x", Limit-len(head))
+	if Units(fits) != Limit || Refuses(fits) != "" {
+		t.Errorf("a line of %d: %q", Units(fits), Refuses(fits))
+	}
+	if why := Refuses(fits + "x"); !strings.Contains(why, "longer") {
+		t.Errorf("a line of %d: %q", Limit+1, why)
+	}
+	// A character beyond U+FFFF takes two units, any other one.
+	if n := Units("a\u20ac\U0001F600"); n != 4 {
+		t.Errorf("units: %d", n)
+	}
+	wide := head + strings.Repeat("\U0001F600", (Limit-len(head))/2+1)
+	if why := Refuses(wide); !strings.Contains(why, "longer") {
+		t.Errorf("a line of %d units: %q", Units(wide), why)
+	}
+	if why := Refuses(" -ServerName=\"Alpha \u2013 EU\""); !strings.Contains(why, "en dash") {
+		t.Errorf("en dash: %q", why)
+	}
+	if why := Refuses(" -ServerName=\"Alpha - EU \u2014 x\""); why != "" {
+		t.Errorf("a hyphen and an em dash: %q", why)
+	}
+}
+
+// The names the engine searches for as plain text are found wherever they
+// stand in an argument: inside a value with a space, which the launcher
+// quotes, in the middle of a word, and in any case of ASCII letters.
+func TestFound(t *testing.T) {
+	for _, name := range Searched {
+		if name != strings.ToLower(name) || strings.ContainsAny(name, " \"") {
+			t.Errorf("%q: the names are in lower case, without a space or a quote", name)
+		}
+		for _, argv := range [][]string{
+			{"Map", "-MOTD=well " + name + "5 met"},
+			{"Map", "-MOTD=x" + strings.ToUpper(name) + "y"},
+			{"Map", "-A=1", "-UserDir=/srv/x" + name + "/data"},
+		} {
+			if got := Found(argv); !slices.Contains(got, name) {
+				t.Errorf("%q is not found in %q (found %q)", name, argv, got)
+			}
+		}
+	}
+	if got := Found([]string{"Map", "-unattended", "-Port=7777", "-MOTD=well-met friends, type /help", "-Mode=simple"}); len(got) != 0 {
+		t.Errorf("found %q in a plain command line", got)
+	}
+	// Only ASCII letters are compared without case.
+	if got := Found([]string{"-MOTD=x-an\u017fimalloc y", "-B=\u212aplugin\u212a=1"}); len(got) != 0 {
+		t.Errorf("found %q", got)
+	}
+	if got := Found([]string{"-ansimalloc", "-MOTD=a -StompMalloc b"}); !slices.Equal(got, []string{"-ansimalloc", "-stompmalloc"}) {
+		t.Errorf("found %q", got)
 	}
 }
 
