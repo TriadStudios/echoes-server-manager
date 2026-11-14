@@ -85,6 +85,9 @@ type View struct {
 	Live      Live        `json:"live"`
 	Scheduled Scheduled   `json:"scheduled"`
 	Warnings  []string    `json:"warnings"`
+	// UnsafeStoredSettings names the settings of the warning
+	// unsafe_stored_settings (see Instance.storedUnsafe); never a value.
+	UnsafeStoredSettings []string `json:"unsafe_stored_settings,omitempty"`
 	// UpdateAvailable says that the Steam source the instance's build came
 	// from has a newer installed build of its channel; Update has the
 	// details.
@@ -487,24 +490,36 @@ func (m *Manager) view(in *rt) View {
 	in.mu.Unlock()
 	v.Update = m.updateInfo(v.Instance, auto)
 	v.UpdateAvailable = v.Update.Target != ""
-	v.Secrets = m.secretFlags(in.name)
+	sec, _ := m.readSecrets(in.name)
+	v.Secrets = sec.flags()
+	v.UnsafeStoredSettings = v.Instance.storedUnsafe(sec)
 	v.Live = m.live(v, serverID)
-	v.Warnings = m.warnings(v)
+	v.Warnings = m.warnings(v, m.lineLength(v.Instance, sec) > gameserver.MaxLineLength)
 	return v
 }
 
 // warnings lists, as codes, what an operator should know about an instance
-// on this box. It is never nil.
-func (m *Manager) warnings(v View) []string {
+// on this box. longLine says that its server command line is longer than a
+// change may make it. It is never nil.
+func (m *Manager) warnings(v View, longLine bool) []string {
 	w := []string{}
 	switch {
 	case v.OutputHidden():
 		w = append(w, WarnSecretsOnCommandLine)
-	case v.Status.State == Running && (v.Secrets.ServerPasswordSet || v.Secrets.AdminPasswordSet) && !m.serverConfirms(v):
+	case v.Status.State == Running && v.Secrets.any() && !m.serverConfirms(v):
 		w = append(w, WarnSecretsUnconfirmed)
 	}
 	if !m.sup.LimitsEnforced() && (v.Limits.MemoryMax != "" || v.Limits.CPUQuotaPercent > 0) {
 		w = append(w, WarnLimitsNotEnforced)
+	}
+	if v.MaxPlayers > gameserver.MaxPlayersLimit {
+		w = append(w, WarnMaxPlayersAboveGame)
+	}
+	if len(v.UnsafeStoredSettings) > 0 {
+		w = append(w, WarnUnsafeStoredSettings)
+	}
+	if longLine {
+		w = append(w, WarnCommandLineTooLong)
 	}
 	return w
 }
@@ -526,7 +541,8 @@ func (m *Manager) serverConfirms(v View) bool {
 	if s.PID != 0 && v.Status.PID != 0 && s.PID != v.Status.PID {
 		return false
 	}
-	return (!v.Secrets.ServerPasswordSet || s.ServerPasswordSet) && (!v.Secrets.AdminPasswordSet || s.AdminPasswordSet)
+	return (!v.Secrets.ServerPasswordSet || s.ServerPasswordSet) && (!v.Secrets.AdminPasswordSet || s.AdminPasswordSet) &&
+		(!v.Secrets.AnnouncementsTokenSet || s.AnnouncementsTokenSet) && (!v.Secrets.ProblemReportTokenSet || s.ProblemReportTokenSet)
 }
 
 // List returns every instance, sorted by name.
@@ -562,6 +578,11 @@ func (m *Manager) Status(name string) (Status, error) {
 func (m *Manager) Create(req CreateRequest) (View, error) {
 	if !ValidName(req.Name) {
 		return View{}, invalid("name", "must match %s", nameRe)
+	}
+	// The name is in the folders ESM puts on the server command line.
+	if found, ok := gameserver.SearchedName(req.Name); ok {
+		return View{}, fault.New(fault.Invalid, "unsafe_argument",
+			"name: an instance name may not hold %q: the server's engine searches its whole command line for that as plain text, and the instance's folders are on that line", found)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -613,11 +634,17 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 	if err := in.Validate(); err != nil {
 		return View{}, err
 	}
+	if err := in.checkChanges(nil, now); err != nil {
+		return View{}, err
+	}
 	ports, err := m.allocPortsLocked(in.BindIP, in.Ports, "", nil)
 	if err != nil {
 		return View{}, err
 	}
 	in.Ports = ports
+	if err := m.checkLine(nil, Secrets{}, in, Secrets{}); err != nil {
+		return View{}, err
+	}
 	for _, d := range []string{dataDir(in.Name), instDir(in.Name) + "/run"} {
 		if err := m.st.MkdirAll(d, 0o700); err != nil {
 			return View{}, err
@@ -679,6 +706,9 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	if err := cfg.Validate(); err != nil {
 		return View{}, false, err
 	}
+	if err := cfg.checkChanges(&old, m.now()); err != nil {
+		return View{}, false, err
+	}
 	secrets, err := m.readSecrets(name)
 	if err != nil {
 		return View{}, false, err
@@ -688,6 +718,12 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	}
 	toFile := old.OutputHidden() && !cfg.OutputHidden()
 	toCommandLine := !old.OutputHidden() && cfg.OutputHidden()
+	// On the command line a secret is a value like any other there.
+	if field, why, bad := secrets.commandLineProblem(); toCommandLine && bad {
+		return View{}, false, fault.New(fault.Invalid, "unsafe_argument",
+			"secret_delivery: cannot be %q while the %s cannot go on the server command line: it %s; set another %s first, or keep %q",
+			gameserver.DeliveryCommandLine, field, why, field, gameserver.DeliveryFile)
+	}
 	if toFile && (active || m.alive(name)) {
 		return View{}, false, fault.New(fault.Conflict, "instance_running",
 			"instance %s is running; stop it before changing secret_delivery to %q: its server output so far holds the passwords and is set aside at the change",
@@ -713,6 +749,9 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 			return View{}, false, err
 		}
 		cfg.Ports = ports
+	}
+	if err := m.checkLine(&old, secrets, cfg, secrets); err != nil {
+		return View{}, false, err
 	}
 	if toFile {
 		// First the files and the reason, then the setting: if ESM stops
@@ -896,25 +935,19 @@ func (m *Manager) readSecrets(name string) (Secrets, error) {
 
 func (m *Manager) secretFlags(name string) SecretFlags {
 	s, _ := m.readSecrets(name)
-	return SecretFlags{ServerPasswordSet: s.ServerPassword != "", AdminPasswordSet: s.AdminPassword != ""}
+	return s.flags()
 }
 
-// SetSecrets changes the server and admin passwords. They are used from the
-// next start; restartRequired says the instance is running.
+// SetSecrets changes the server and admin passwords and the announcements
+// and problem report tokens. They are used from the next start;
+// restartRequired says the instance is running.
 func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return SecretFlags{}, false, err
 	}
-	if req.ServerPassword != nil {
-		if err := checkSecret("server_password", *req.ServerPassword); err != nil {
-			return SecretFlags{}, false, err
-		}
-	}
-	if req.AdminPassword != nil {
-		if err := checkSecret("admin_password", *req.AdminPassword); err != nil {
-			return SecretFlags{}, false, err
-		}
+	if err := req.check(); err != nil {
+		return SecretFlags{}, false, err
 	}
 	in.op.Lock()
 	defer in.op.Unlock()
@@ -922,11 +955,23 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	if err != nil {
 		return SecretFlags{}, false, err
 	}
+	before := s
 	s.change(req)
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	in.mu.Unlock()
+	// With command-line delivery a new secret is a value on the command
+	// line like any other. One stored before is passed as it is, and named
+	// in the warning unsafe_stored_settings.
+	if field, why, bad := req.given().commandLineProblem(); cfg.OutputHidden() && bad {
+		return SecretFlags{}, false, fault.New(fault.Invalid, "unsafe_argument",
+			"%s: cannot go on the server command line, where this instance passes its secrets (secret_delivery %q): it %s",
+			field, gameserver.DeliveryCommandLine, why)
+	}
 	if err := checkPasswordsInSettings(cfg, s); err != nil {
+		return SecretFlags{}, false, err
+	}
+	if err := m.checkLine(&cfg, before, cfg, s); err != nil {
 		return SecretFlags{}, false, err
 	}
 	if err := m.st.WriteJSON(secretsFile(name), s, 0o600); err != nil {

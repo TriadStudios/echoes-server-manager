@@ -82,7 +82,7 @@ func TestLaunchArgsCommandLine(t *testing.T) {
 	l := goldenLaunch()
 	l.Delivery = DeliveryCommandLine
 	want := append(slices.Clone(goldenHead),
-		"-ServerPassword=join-secret",
+		"-Password=join-secret",
 		"-AdminPassword=admin-secret",
 		"-NoSound",
 		"-Extra=1 2",
@@ -91,7 +91,7 @@ func TestLaunchArgsCommandLine(t *testing.T) {
 		t.Errorf("argv mismatch\n got: %q\nwant: %q", argv, want)
 	}
 	l.Secrets = Secrets{AdminPassword: "only-admin"}
-	if argv := l.Args(); !slices.Contains(argv, "-AdminPassword=only-admin") || strings.Contains(strings.Join(argv, " "), "-ServerPassword") ||
+	if argv := l.Args(); !slices.Contains(argv, "-AdminPassword=only-admin") || strings.Contains(strings.Join(argv, " "), "-Password") ||
 		strings.Contains(strings.Join(argv, " "), SecretsFileSwitch) {
 		t.Errorf("argv with only an admin password: %q", argv)
 	}
@@ -115,7 +115,7 @@ func TestLaunchArgsMinimal(t *testing.T) {
 
 func TestReservedAndRefusedSwitches(t *testing.T) {
 	for _, k := range []string{"Port", "-QUERYPORT", "ServerName", "worldname", "MaxPlayers", "unattended", "-ListInBrowser",
-		"UserDir", "-abslog", "ServerPassword", "adminpassword", "-SecretsFile", "secretsfile"} {
+		"UserDir", "-abslog", "Password", "adminpassword", "-SecretsFile", "secretsfile"} {
 		if !IsReservedSwitch(k) {
 			t.Errorf("%q not reserved", k)
 		}
@@ -130,8 +130,34 @@ func TestReservedAndRefusedSwitches(t *testing.T) {
 			t.Errorf("%q not refused (%q)", k, why)
 		}
 	}
-	if _, ok := RefusedSwitch("Port"); ok {
-		t.Error("Port refused")
+	for _, k := range []string{"ini", "-INI", "-iniFile", "IniFile"} {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "are refused") {
+			t.Errorf("%q not refused (%q)", k, why)
+		}
+	}
+	for _, k := range []string{"Port", "Initial", "Mini", "NoIni"} {
+		if _, ok := RefusedSwitch(k); ok {
+			t.Errorf("%q refused", k)
+		}
+	}
+	for _, k := range []string{"AnnouncementsToken", "-problemreporttoken"} {
+		if !IsReservedSwitch(k) {
+			t.Errorf("%q not reserved", k)
+		}
+	}
+}
+
+// -CmdLineFile= is refused like the overrides of the configuration files.
+func TestCommandLineFileIsARefusedSwitch(t *testing.T) {
+	for _, k := range []string{"CmdLineFile", "-CmdLineFile", "cmdlinefile", "-CMDLINEFILE"} {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "is refused") {
+			t.Errorf("%q not refused (%q)", k, why)
+		}
+	}
+	for _, k := range []string{"CmdLine", "File", "CmdLineFiles", "LineFile"} {
+		if _, ok := RefusedSwitch(k); ok {
+			t.Errorf("%q refused", k)
+		}
 	}
 }
 
@@ -374,5 +400,49 @@ func TestLoopbackLocalAddr(t *testing.T) {
 		if got := LoopbackLocalAddr(host); got != nil {
 			t.Errorf("LoopbackLocalAddr(%q) = %v, want nil", host, got)
 		}
+	}
+}
+
+// gameFind finds "key=" in a command line the way the server's switch
+// reader does: without regard to case, and only where the character before
+// the key is not a letter or digit. It returns the value up to the next
+// space (every value here is plain).
+func gameFind(cmdline, key string) (string, bool) {
+	low, k := strings.ToLower(cmdline), strings.ToLower(key)+"="
+	for i := 0; ; {
+		j := strings.Index(low[i:], k)
+		if j < 0 {
+			return "", false
+		}
+		at := i + j
+		if c := low[at-1]; !('a' <= c && c <= 'z' || '0' <= c && c <= '9') {
+			v, _, _ := strings.Cut(cmdline[at+len(k):], " ")
+			return v, true
+		}
+		i = at + 1
+	}
+}
+
+// With command-line delivery each password and token is found by the
+// switch name the server reads, and no other: the join password is
+// "Password=", which "ServerPassword=" does not match (a letter before it).
+func TestSecretSwitchesAreTheServers(t *testing.T) {
+	l := goldenLaunch()
+	l.Delivery = DeliveryCommandLine
+	l.Secrets = Secrets{ServerPassword: "join-secret", AdminPassword: "admin-secret", AnnouncementsToken: "ann-token-1", ProblemReportToken: "rep-token-1"}
+	l.ExtraArgs = nil
+	cmdline := " " + strings.Join(l.Args(), " ")
+	for key, want := range map[string]string{"Password": "join-secret", "AdminPassword": "admin-secret",
+		"AnnouncementsToken": "ann-token-1", "ProblemReportToken": "rep-token-1"} {
+		if got, ok := gameFind(cmdline, key); !ok || got != want {
+			t.Errorf("the server reads %s= as %q (found %v), want %q", key, got, ok, want)
+		}
+	}
+	l.Secrets = Secrets{AdminPassword: "admin-secret"}
+	if got, ok := gameFind(" "+strings.Join(l.Args(), " "), "Password"); ok {
+		t.Errorf("with only an admin password the server reads a join password %q", got)
+	}
+	if !IsReservedSwitch("Password") || !IsReservedSwitch("-password") {
+		t.Error("the join password switch is not reserved")
 	}
 }

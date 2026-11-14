@@ -416,6 +416,9 @@ type SecretsResult struct {
 	Secrets         instances.SecretFlags `json:"secrets"`
 	RestartRequired bool                  `json:"restart_required"`
 	Warnings        []string              `json:"warnings"`
+	// UnsafeStoredSettings names the settings of the warning
+	// unsafe_stored_settings.
+	UnsafeStoredSettings []string `json:"unsafe_stored_settings,omitempty"`
 }
 
 // UpdateRequest is the body of POST /instances/{name}/update.
@@ -530,7 +533,7 @@ func (s *Server) putSecrets(w http.ResponseWriter, r *http.Request, c *call) err
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings})
+	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings, UnsafeStoredSettings: v.UnsafeStoredSettings})
 }
 
 // action reads the target instance and an optional JSON body.
@@ -748,6 +751,18 @@ func (s *Server) listBackups(w http.ResponseWriter, r *http.Request, c *call) er
 
 func (s *Server) clusters(w http.ResponseWriter, r *http.Request, c *call) error {
 	return writeJSON(w, http.StatusOK, ClusterList{Clusters: s.o.Instances.Clusters()})
+}
+
+// GameSettingList answers GET /game-settings: the catalog of the game's
+// settings that an instance sets in its rules (and the two tokens, which
+// it sets with its secrets).
+type GameSettingList struct {
+	Groups   []gameserver.SettingGroup `json:"groups"`
+	Settings []gameserver.GameSetting  `json:"settings"`
+}
+
+func (s *Server) gameSettings(w http.ResponseWriter, r *http.Request, c *call) error {
+	return writeJSON(w, http.StatusOK, GameSettingList{Groups: gameserver.GameSettingGroups(), Settings: gameserver.GameSettings()})
 }
 
 // --- tokens and audit ---

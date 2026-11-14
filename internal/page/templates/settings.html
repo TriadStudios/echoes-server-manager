@@ -11,7 +11,7 @@
 <label class="field"><span>World name</span>
 <input type="text" name="world" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\-]*" class="mono" value="{{$s.World}}" data-orig="{{$s.World}}" data-label="World name"></label>
 <label class="field"><span>Max players</span>
-<input type="number" name="max_players" min="1" max="200" value="{{$s.MaxPlayers}}" data-orig="{{$s.MaxPlayers}}" data-label="Max players"></label>
+<input type="number" name="max_players" min="1" max="70" value="{{$s.MaxPlayers}}" data-orig="{{$s.MaxPlayers}}" data-label="Max players"></label>
 <label class="field"><span>Cluster (empty for none)</span>
 <input type="text" name="cluster" maxlength="32" pattern="[a-z0-9][a-z0-9\-]*" class="mono" value="{{$s.Cluster}}" data-orig="{{$s.Cluster}}" data-label="Cluster"></label>
 </div>
@@ -35,7 +35,7 @@
 
 <fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Passwords</legend>
-<p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.</p>
+<p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.{{if eq $s.SecretDelivery "command_line"}} On the command line a password or token follows the rules for every value there: no <span class="mono">=</span>, no double quote, no space at either end or before a <span class="mono">-</span>, only printable characters and the plain space, no en dash (U+2013, write <span class="mono">-</span>), a <span class="mono">-</span> before a letter only after a letter or digit, without a space no <span class="mono">,</span> or <span class="mono">)</span>, and none of the names the server's engine searches its command line for as plain text, in any case of their letters and in the middle of a word too: <span class="mono" data-searched>{{searched}}</span>. A refusal says which rule, never what the secret holds.{{end}}</p>
 <div class="grid fields">
 <label class="field"><span>Join password ({{if $s.Secrets.ServerPasswordSet}}set{{else}}none{{end}})</span>
 <input type="password" name="server_password" maxlength="128" autocomplete="new-password" value="" data-orig="" data-label="Join password" data-secret></label>
@@ -48,9 +48,33 @@
 </div>
 </fieldset>
 
+{{range $g := $r.Groups}}
+<fieldset class="panel" id="group-{{$g.ID}}" data-group="{{$g.ID}}"{{if not $v.Admin}} disabled{{end}}>
+<legend class="label">{{$g.Title}}</legend>
+{{if eq $g.ID "world"}}<p class="alert">{{$g.Note}}</p>{{else}}<p class="note">{{$g.Note}}</p>{{end}}
+<div class="grid fields">
+{{range $f := $g.Fields}}<div class="stack setting" data-setting="{{$f.Key}}">
+{{if eq $f.Input "secret"}}<label class="field"><span>{{$f.Label}} ({{if $f.Set}}set{{else}}none{{end}})</span>
+<input type="password" name="{{$f.SecretField}}" maxlength="256" autocomplete="new-password" value="" data-orig="" data-label="{{$f.Label}}" data-secret></label>
+{{if $f.Set}}<label class="check"><input type="checkbox" name="clear_{{$f.SecretField}}" data-orig="false" data-label="Remove the {{$f.Label}}"><span>Remove the token</span></label>{{end}}
+{{else}}<label class="field"><span>{{$f.Label}} <span class="mono">{{$f.Key}}</span>{{if $f.Caution}} <span class="badge bad">Caution</span>{{end}}</span>
+{{if eq $f.Input "select"}}<select name="rule:{{$f.Key}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{range $f.Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+{{else if eq $f.Input "number"}}<input type="number" class="mono" name="rule:{{$f.Key}}"{{if $f.Min}} min="{{$f.Min}}"{{end}}{{if $f.Max}} max="{{$f.Max}}"{{end}} step="{{$f.Step}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{$f.DefaultText}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{else if eq $f.Input "date"}}<input type="date" class="mono" name="rule:{{$f.Key}}" max="{{$f.Max}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{else}}<input type="{{if eq $f.Input "url"}}url{{else}}text{{end}}" class="mono" name="rule:{{$f.Key}}" maxlength="{{if $f.MaxLength}}{{$f.MaxLength}}{{else}}256{{end}}" value="{{$f.Value}}" data-orig="{{$f.Value}}" placeholder="{{if $f.DefaultText}}{{$f.DefaultText}}{{else}}not set{{end}}" data-label="{{$f.Label}} ({{$f.Key}})" data-game>
+{{end}}</label>
+{{end}}<p class="note">{{$f.Help}}{{if $f.Limits}} {{$f.Limits}}.{{end}}{{if $f.DefaultText}} Default: {{$f.DefaultText}}.{{end}}</p>
+{{if $f.Bad}}<p class="alert small">The value set is not one the game reads as given ({{$f.Bad}}). It is kept until it is changed.</p>{{end}}
+</div>
+{{end}}</div>
+</fieldset>
+{{end}}
+
 <fieldset class="panel" id="rules"{{if not $v.Admin}} disabled{{end}}>
-<legend class="label">World rules</legend>
-<p class="note">ESM passes each rule to the server as <span class="mono">-Key=Value</span>. Their defaults and allowed values are unknown until the game's server builds describe their rules, so this is a plain list of what is set. Presets arrive with that description.</p>
+<legend class="label">Other settings</legend>
+<p class="note">Rules ESM does not know by name, each passed to the server as <span class="mono">-Key=Value</span>: for a setting of a newer server build. A name has letters and digits only. No value holds <span class="mono">=</span> or a double quote; one without a space holds no <span class="mono">,</span> or <span class="mono">)</span> either. The same goes for the server name, and the other rules for values on the server command line are in the README under Game settings. A rule stored empty by an earlier version is left out when the server starts: remove it.</p>
 <div class="tools">
 <label class="field grow"><span>Search rules</span><input type="search" id="rule-search" placeholder="name or value"></label>
 <label class="check"><input type="checkbox" id="rule-changed"><span>Show changed only</span></label>
@@ -61,21 +85,21 @@
 <input type="text" class="mono" name="rule:{{$x.Key}}" maxlength="256" value="{{$x.Value}}" data-orig="{{$x.Value}}" data-label="Rule {{$x.Key}}"></label>
 <label class="check"><input type="checkbox" name="drop:{{$x.Key}}" data-orig="false" data-label="Remove rule {{$x.Key}}"><span>Remove</span></label>
 <span class="badge changed" hidden>Changed</span>
-</div>{{else}}<p class="empty" data-empty>No rules are set.</p>{{end}}
+</div>{{else}}<p class="empty" data-empty>No other rules are set.</p>{{end}}
 </div>
 <div class="tools">
-<label class="field"><span>New rule name</span><input type="text" id="new-rule-key" class="mono" maxlength="64" pattern="[A-Za-z][A-Za-z0-9_]*"></label>
+<label class="field"><span>New rule name</span><input type="text" id="new-rule-key" class="mono" maxlength="64" pattern="[A-Za-z][A-Za-z0-9]*"></label>
 <label class="field grow"><span>New rule value</span><input type="text" id="new-rule-value" class="mono" maxlength="256"></label>
 <button type="button" class="btn" id="add-rule">Add rule</button>
 </div>
-<p class="note">Rule names that look like passwords or keys are refused: passwords go only in the fields above.</p>
+<p class="note">Rule names that look like passwords, keys or tokens are refused: those go only in the password and token fields above.</p>
 </fieldset>
 </form>
 
 <aside class="panel pending" aria-labelledby="pending-h">
 <h2 class="label gold" id="pending-h"><span id="pending-count">No</span> unsaved changes</h2>
 <ul class="changes" id="pending-list"></ul>
-<p class="note">Settings and rules take effect when the server starts. {{if $s.Live.Players}}{{$s.Live.Players}} players are online now.{{else}}Players online now: not known.{{end}}</p>
+<p class="note">Settings and rules take effect when the server starts; world rules only when a world is created. {{if $s.Live.Players}}{{$s.Live.Players}} players are online now.{{else}}Players online now: not known.{{end}}</p>
 {{if $v.Admin}}<button type="button" class="btn primary" data-save="restart" disabled>Save and restart</button>
 <button type="button" class="btn" data-save="later" disabled>Save for next restart</button>
 <button type="button" class="btn text" data-save="discard" disabled>Discard</button>{{end}}

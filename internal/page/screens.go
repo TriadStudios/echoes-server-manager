@@ -8,10 +8,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/doctor"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 )
 
@@ -226,19 +228,170 @@ func targets(target, name string) bool {
 }
 
 type settingsData struct {
+	// Groups are the game settings of the catalog, by group.
+	Groups []fieldGroup
+	// Rules are the rules outside the catalog.
 	Rules []rule
 }
 
 type rule struct{ Key, Value string }
+
+// fieldGroup is one group of game settings on the settings screen.
+type fieldGroup struct {
+	gameserver.SettingGroup
+	Fields []settingField
+}
+
+// settingField is one game setting of the catalog on the settings screen:
+// how its field is made and what it holds. A field left empty is a rule
+// not set, and the server uses its default.
+type settingField struct {
+	gameserver.GameSetting
+	// Value is the rule's value, "" when it is not set.
+	Value string
+	// Input is the kind of field: "select", "number", "date", "url",
+	// "text" or "secret".
+	Input string
+	// Options of a select: the default first ("" for not set).
+	Options []option
+	// Min, Max and Step of a number field ("" for none), and the latest
+	// date of a date field.
+	Min, Max, Step string
+	// Limits says the range of a number in words ("" for none).
+	Limits string
+	// DefaultText is the default as it is shown ("" for none).
+	DefaultText string
+	// Bad says why the value set is not one the setting accepts now (a
+	// value from before the catalog): it is shown in a text field so that
+	// saving keeps it until it is changed.
+	Bad string
+	// Set says whether a secret is set.
+	Set bool
+}
+
+type option struct {
+	Value, Label string
+	Selected     bool
+}
+
+// settingFields makes the fields of the catalog for an instance's rules
+// and secrets, as they are shown at now.
+func settingFields(cat api.GameSettingList, rules map[string]string, secrets instances.SecretFlags, now time.Time) []fieldGroup {
+	var out []fieldGroup
+	for _, g := range cat.Groups {
+		fg := fieldGroup{SettingGroup: g}
+		for _, s := range cat.Settings {
+			if s.Group == g.ID {
+				fg.Fields = append(fg.Fields, newSettingField(s, rules, secrets, now))
+			}
+		}
+		out = append(out, fg)
+	}
+	return out
+}
+
+func newSettingField(s gameserver.GameSetting, rules map[string]string, secrets instances.SecretFlags, now time.Time) settingField {
+	f := settingField{GameSetting: s}
+	f.Value = rules[s.Key]
+	num := func(p *float64) string {
+		if p == nil {
+			return ""
+		}
+		return strconv.FormatFloat(*p, 'f', -1, 64)
+	}
+	if s.Secret {
+		f.Input = "secret"
+		f.Set = map[string]bool{"announcements_token": secrets.AnnouncementsTokenSet, "problem_report_token": secrets.ProblemReportTokenSet}[s.SecretField]
+		return f
+	}
+	if f.Value != "" {
+		if err := s.Check(f.Value, now); err != nil {
+			f.Bad = err.Error()
+		}
+	}
+	f.DefaultText = s.Default
+	switch s.Type {
+	case gameserver.TypeBool, gameserver.TypeEnum:
+		f.Input = "select"
+		choices := s.Choices
+		if s.Type == gameserver.TypeBool {
+			choices = []gameserver.Choice{{Value: "True", Label: "On"}, {Value: "False", Label: "Off"}}
+		}
+		def := "not set"
+		for _, c := range choices {
+			if c.Value == s.Default {
+				def = c.Label
+				if c.Label != c.Value {
+					def += " (" + c.Value + ")"
+				}
+			}
+		}
+		f.DefaultText = def
+		f.Options = []option{{Value: "", Label: "Game default: " + def, Selected: f.Value == ""}}
+		found := f.Value == ""
+		for _, c := range choices {
+			label := c.Label
+			if c.Label != c.Value {
+				label += " (" + c.Value + ")"
+			}
+			f.Options = append(f.Options, option{Value: c.Value, Label: label, Selected: c.Value == f.Value})
+			found = found || c.Value == f.Value
+		}
+		if !found {
+			// A value written another way (true for True) or not one of
+			// the choices: kept as it is set.
+			f.Options = append(f.Options, option{Value: f.Value, Label: f.Value + " (as set)", Selected: true})
+		}
+	case gameserver.TypeInt, gameserver.TypeFloat:
+		f.Input, f.Min, f.Max, f.Step = "number", num(s.Min), num(s.Max), "any"
+		if s.Type == gameserver.TypeInt {
+			f.Step = "1"
+		}
+		switch {
+		case f.Min != "" && f.Max != "":
+			f.Limits = "From " + f.Min + " to " + f.Max
+		case f.Min != "":
+			f.Limits = "At least " + f.Min
+		}
+		if s.Unit != "" {
+			if f.Limits != "" {
+				f.Limits += " " + s.Unit
+			}
+			f.DefaultText += " " + s.Unit
+		}
+	case gameserver.TypeDate:
+		f.Input, f.Max = "date", now.UTC().Format(time.DateOnly)
+	default:
+		f.Input = "text"
+		if s.Format == gameserver.FormatURL {
+			f.Input = "url"
+		}
+	}
+	if f.Bad != "" && f.Input != "select" {
+		f.Input = "text"
+	}
+	return f
+}
 
 func (p *Page) settings(v *view) {
 	d, ok := p.server(v, "settings")
 	if !ok {
 		return
 	}
-	s := settingsData{}
+	var cat api.GameSettingList
+	if err := v.c.get("/api/v1/game-settings", &cat); err != nil {
+		p.fail(v.w, v.r, statusOf(err), err.Error())
+		return
+	}
+	s := settingsData{Groups: settingFields(cat, d.S.Rules, d.S.Secrets, time.Now())}
+	known := map[string]bool{}
+	for _, x := range cat.Settings {
+		known[x.Key] = true
+	}
 	for _, k := range slices.Sorted(maps.Keys(d.S.Rules)) {
-		s.Rules = append(s.Rules, rule{Key: k, Value: d.S.Rules[k]})
+		if !known[k] {
+			s.Rules = append(s.Rules, rule{Key: k, Value: d.S.Rules[k]})
+		}
 	}
 	d.More = s
 	v.Events = "instance=" + url.QueryEscape(d.S.Name) + "&types=state"

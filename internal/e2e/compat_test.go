@@ -65,8 +65,8 @@ func TestCommandLineModeIsHiddenFromReadSystemd(t *testing.T) {
 func commandLineMode(t *testing.T, h *harness, name string) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
 	read, oper := h.token("read"), h.token("operator")
-	pieces := passwordPieces(oldServerPW, oldAdminPW)
-	secrets := gameserver.Secrets{ServerPassword: oldServerPW, AdminPassword: oldAdminPW}
+	pieces := passwordPieces(cmdServerPW, cmdAdminPW)
+	secrets := gameserver.Secrets{ServerPassword: cmdServerPW, AdminPassword: cmdAdminPW}
 	base := "/api/v1/instances/" + name
 
 	// The mode is chosen in so many words, and every answer warns.
@@ -87,7 +87,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 	if !h.serverHas(ch.View, secrets) {
 		t.Fatal("the server did not get the passwords from its command line")
 	}
-	if line := procCommandLine(st.PID); runtime.GOOS == "linux" && !strings.Contains(line, "-ServerPassword="+oldServerPW+" -AdminPassword="+oldAdminPW) {
+	if line := procCommandLine(st.PID); runtime.GOOS == "linux" && !strings.Contains(line, "-Password="+cmdServerPW+" -AdminPassword="+cmdAdminPW) {
 		t.Fatalf("the command line of the running server, as every account can read it: %s", line)
 	}
 
@@ -129,7 +129,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 				t.Fatalf("%s log for an %s: %d", source, who, code)
 			}
 			text := strings.Join(logs.Lines, "\n")
-			if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-ServerPassword="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") {
+			if !strings.Contains(text, "Command line: ") || !strings.Contains(text, "-Password="+gameserver.Mask+" -AdminPassword="+gameserver.Mask+"\n") {
 				t.Fatalf("the %s log for an %s has no command line with masked passwords:\n%s", source, who, text)
 			}
 			noPieces(t, source+" log for an "+who, []byte(text), pieces)
@@ -188,7 +188,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s is still in place: %v", p, err)
 		}
-		if b, err := os.ReadFile(p + ".unsafe"); err != nil || !strings.Contains(string(b), "-ServerPassword="+oldServerPW) {
+		if b, err := os.ReadFile(p + ".unsafe"); err != nil || !strings.Contains(string(b), "-Password="+cmdServerPW) {
 			t.Errorf("%s was not set aside whole: %v", p, err)
 		}
 	}
@@ -258,7 +258,7 @@ func TestChangeToCommandLineWhileRunning(t *testing.T) {
 	if !h.serverHas(v.View, gameserver.Secrets{ServerPassword: leakServerPW, AdminPassword: leakAdminPW}) {
 		t.Fatal("the restarted server does not have the passwords")
 	}
-	if raw := h.rawOutput("alpha"); !strings.Contains(raw, "-ServerPassword="+leakServerPW) {
+	if raw := h.rawOutput("alpha"); !strings.Contains(raw, "-Password="+leakServerPW) {
 		t.Fatalf("the restarted server did not get its passwords on the command line:\n%s", raw)
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -295,9 +295,11 @@ func TestCommandLineStartFailureOldSystemd(t *testing.T) {
 	dir := fakeOldSystemd(t)
 	h := newSystemdESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	escaped := strings.ReplaceAll(dollarServerPW, "$", "$$")
-	pieces := passwordPieces(dollarServerPW, dollarAdminPW, escaped, strings.ReplaceAll(dollarAdminPW, "$", "$$"))
-	commandLineStartFailure(t, h, dir, unitSafeName("sdco"), dollarServerPW, dollarAdminPW, pieces, escaped)
+	// On the command line a password may not hold a double quote.
+	serverPW := strings.ReplaceAll(dollarServerPW, `"`, "")
+	escaped := strings.ReplaceAll(serverPW, "$", "$$")
+	pieces := passwordPieces(serverPW, dollarAdminPW, escaped, strings.ReplaceAll(dollarAdminPW, "$", "$$"))
+	commandLineStartFailure(t, h, dir, unitSafeName("sdco"), serverPW, dollarAdminPW, pieces, escaped)
 }
 
 // commandLineStartFailure starts an instance with command-line delivery
@@ -318,7 +320,7 @@ func commandLineStartFailure(t *testing.T, h *harness, dir, name, serverPW, admi
 		t.Fatalf("start with a failing systemd-run: %d %s", code, raw)
 	}
 	args, err := os.ReadFile(filepath.Join(dir, "args"))
-	if err != nil || !strings.Contains(string(args), "\n-ServerPassword="+onArgv+"\n") || strings.Contains(string(args), gameserver.SecretsFileSwitch) {
+	if err != nil || !strings.Contains(string(args), "\n-Password="+onArgv+"\n") || strings.Contains(string(args), gameserver.SecretsFileSwitch) {
 		t.Fatalf("systemd-run did not get the passwords on the command line (%v):\n%s", err, args)
 	}
 	var status json.RawMessage

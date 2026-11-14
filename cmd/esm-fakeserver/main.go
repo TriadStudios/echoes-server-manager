@@ -7,7 +7,13 @@
 // Like the real server it takes the map first, then -unattended, -Port=,
 // -QueryPort=, -ServerName=, -WorldName=, -MaxPlayers=, -ListInBrowser=,
 // -UserDir=<data folder> and -abslog=<log file>, plus any -Key=Value. It
-// refuses -MULTIHOME (exit code 2): ESM must never pass it.
+// refuses -MULTIHOME (exit code 2): ESM must never pass it. Like the real
+// server it joins its arguments into one line and looks every switch up
+// there (testkit/cmdline), so it reads what the real server would read: a
+// switch inside the value of another one, the first of two, and the next
+// argument for an empty value. And like the real server it does not start
+// (exit code 2) with a command line that is too long for the engine or
+// that holds an en dash.
 //
 // Extra switches, only for tests:
 //
@@ -46,10 +52,11 @@
 // ready), "cmdline" (print the command line again), "players" (report the
 // player count the file holds, on the query port and in the status file).
 //
-// Passwords come from the secrets file named by the adapter's switch, or,
-// when that switch is absent, from the adapter's password switches. Both at
-// once is an error: with a secrets file no password belongs on the command
-// line. The status file says which passwords are set, never what they are.
+// Passwords and tokens come from the secrets file named by the adapter's
+// switch, or, when that switch is absent, from the adapter's password and
+// token switches. Both at once is an error: with a secrets file no password
+// or token belongs on the command line. The status file says which
+// passwords are set, never what they are.
 //
 // Like a real server it prints its whole command line, with any passwords
 // on it, to its log and its output when it starts, and a new Steam server
@@ -85,6 +92,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
 // Test-only request file names in <data>/control/.
@@ -184,38 +192,74 @@ func loadFakeJSON() (map[string]string, error) {
 	return kv, nil
 }
 
+// switches are the fake's settings: the line its arguments are joined into,
+// where it looks every switch up the way the game server does (see
+// testkit/cmdline), and fake.json, for what the line does not have.
+type switches struct {
+	line string
+	file map[string]string
+}
+
+// value returns the value of the switch name.
+func (s switches) value(name string) (string, bool) {
+	if v, ok := cmdline.Value(s.line, name); ok {
+		return v, true
+	}
+	v, ok := s.file[name]
+	return v, ok
+}
+
+// flag reads the switch name as on or off: the line's "name=" or bare
+// switch, else fake.json.
+func (s switches) flag(name string) (on, set bool, err error) {
+	if on, set := cmdline.Bool(s.line, name); set {
+		return on, true, nil
+	}
+	v, ok := s.file[name]
+	if !ok {
+		return false, false, nil
+	}
+	on, err = strconv.ParseBool(v)
+	return on, true, err
+}
+
 // parseArgs reads the adapter's command line: an optional positional map
-// first, then -Key=Value or -Flag entries.
-func parseArgs(args []string, kv map[string]string) (mapName string, err error) {
+// first, then switches, which are read from the line they are joined into,
+// as the server reads them.
+func parseArgs(args []string, file map[string]string) (mapName string, sw switches, err error) {
 	for i, a := range args {
 		if !strings.HasPrefix(a, "-") {
 			if i == 0 {
 				mapName = a
 				continue
 			}
-			return "", fmt.Errorf("unexpected argument %q", a)
+			return "", switches{}, fmt.Errorf("unexpected argument %q", a)
 		}
-		k, v, ok := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if !ok {
-			v = "true"
-		}
-		if strings.EqualFold(k, strings.TrimLeft(gameserver.MultihomeSwitch, "-")) {
-			return "", fmt.Errorf("%s is refused: ESM must never pass it", gameserver.MultihomeSwitch)
-		}
-		kv[k] = v
 	}
-	return mapName, nil
+	sw = switches{line: cmdline.Join(args), file: file}
+	if why := cmdline.Refuses(sw.line); why != "" {
+		return "", switches{}, fmt.Errorf("%s: the game server does not start with that", why)
+	}
+	multihome := key(gameserver.MultihomeSwitch)
+	if _, found := cmdline.Value(sw.line, multihome); found || cmdline.Param(sw.line, multihome) {
+		return "", switches{}, fmt.Errorf("%s is refused: ESM must never pass it", gameserver.MultihomeSwitch)
+	}
+	return mapName, sw, nil
 }
 
 func key(name string) string { return strings.TrimLeft(name, "-") }
 
-func buildOptions(mapName string, kv map[string]string) (options, error) {
+func buildOptions(mapName string, sw switches) (options, error) {
+	str := func(name string) string {
+		v, _ := sw.value(name)
+		return v
+	}
 	o := options{
 		mapName:      mapName,
-		serverName:   kv[key(gameserver.ServerNameSwitch)],
-		worldName:    kv[key(gameserver.WorldNameSwitch)],
-		userDir:      kv[key(gameserver.UserDirSwitch)],
-		logFile:      kv[key(gameserver.LogFileSwitch)],
+		serverName:   str(key(gameserver.ServerNameSwitch)),
+		worldName:    str(key(gameserver.WorldNameSwitch)),
+		userDir:      str(key(gameserver.UserDirSwitch)),
+		logFile:      str(key(gameserver.LogFileSwitch)),
 		saveInterval: time.Second,
 		readyDelay:   300 * time.Millisecond,
 		stopDelay:    200 * time.Millisecond,
@@ -223,7 +267,7 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	}
 	var err error
 	num := func(key string, dst *int) {
-		if v, ok := kv[key]; ok && err == nil {
+		if v, ok := sw.value(key); ok && err == nil {
 			*dst, err = strconv.Atoi(v)
 			if err != nil {
 				err = fmt.Errorf("-%s: %w", key, err)
@@ -231,7 +275,7 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 		}
 	}
 	dur := func(key string, dst *time.Duration) {
-		if v, ok := kv[key]; ok && err == nil {
+		if v, ok := sw.value(key); ok && err == nil {
 			*dst, err = time.ParseDuration(v)
 			if err != nil {
 				err = fmt.Errorf("-%s: %w", key, err)
@@ -239,10 +283,10 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 		}
 	}
 	flag := func(key string, dst *bool) {
-		if v, ok := kv[key]; ok && err == nil {
-			*dst, err = strconv.ParseBool(v)
-			if err != nil {
-				err = fmt.Errorf("-%s: %w", key, err)
+		if on, set, ferr := sw.flag(key); set && err == nil {
+			*dst = on
+			if ferr != nil {
+				err = fmt.Errorf("-%s: %w", key, ferr)
 			}
 		}
 	}
@@ -264,7 +308,7 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	if err != nil {
 		return o, err
 	}
-	if o.secrets, err = readSecrets(kv); err != nil {
+	if o.secrets, err = readSecrets(sw); err != nil {
 		return o, err
 	}
 	if o.mapName == "" {
@@ -289,24 +333,31 @@ func buildOptions(mapName string, kv map[string]string) (options, error) {
 	return o, err
 }
 
-// readSecrets takes the passwords from the secrets file when its switch is
-// given, and from the password switches otherwise. A password switch next
-// to the secrets file switch is refused. Errors never repeat a value.
-func readSecrets(kv map[string]string) (gameserver.Secrets, error) {
-	path, fromFile := kv[key(gameserver.SecretsFileSwitch)]
-	if ignore, _ := strconv.ParseBool(kv["FakeIgnoreSecretsFile"]); ignore {
+// readSecrets takes the passwords and tokens from the secrets file when its
+// switch is given, and from the password and token switches otherwise. A
+// password or token switch next to the secrets file switch is refused.
+// Errors never repeat a value.
+func readSecrets(sw switches) (gameserver.Secrets, error) {
+	path, fromFile := cmdline.Value(sw.line, key(gameserver.SecretsFileSwitch))
+	if ignore, _, _ := sw.flag("FakeIgnoreSecretsFile"); ignore {
 		fromFile = false
 	}
 	if !fromFile {
+		v := func(name string) string {
+			s, _ := cmdline.Value(sw.line, key(name))
+			return s
+		}
 		return gameserver.Secrets{
-			ServerPassword: kv[key(gameserver.ServerPasswordSwitch)],
-			AdminPassword:  kv[key(gameserver.AdminPasswordSwitch)],
+			ServerPassword:     v(gameserver.ServerPasswordSwitch),
+			AdminPassword:      v(gameserver.AdminPasswordSwitch),
+			AnnouncementsToken: v(gameserver.AnnouncementsTokenSwitch),
+			ProblemReportToken: v(gameserver.ProblemReportTokenSwitch),
 		}, nil
 	}
-	for k := range kv {
-		if strings.Contains(strings.ToLower(k), "password") {
-			return gameserver.Secrets{}, fmt.Errorf("-%s is not accepted together with %s: with a secrets file no password belongs on the command line",
-				k, gameserver.SecretsFileSwitch)
+	for _, s := range cmdline.Switches(sw.line) {
+		if low := strings.ToLower(s.Name); strings.Contains(low, "password") || strings.HasSuffix(low, "token") {
+			return gameserver.Secrets{}, fmt.Errorf("-%s is not accepted together with %s: with a secrets file no password or token belongs on the command line",
+				s.Name, gameserver.SecretsFileSwitch)
 		}
 	}
 	s, err := gameserver.ReadSecretsFile(path)
@@ -346,17 +397,17 @@ func (s *server) logIn(category, format string, args ...any) {
 }
 
 func run(args []string) int {
-	kv, err := loadFakeJSON()
+	file, err := loadFakeJSON()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "esm-fakeserver:", err)
 		return 2
 	}
-	mapName, err := parseArgs(args, kv)
+	mapName, sw, err := parseArgs(args, file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "esm-fakeserver:", err)
 		return 2
 	}
-	o, err := buildOptions(mapName, kv)
+	o, err := buildOptions(mapName, sw)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "esm-fakeserver:", err)
 		return 2
@@ -385,7 +436,8 @@ func run(args []string) int {
 		return 3
 	}
 	s.status = gameserver.Status{State: gameserver.StateStarting, PID: os.Getpid(), Version: findVersion(),
-		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != ""}
+		ServerPasswordSet: o.secrets.ServerPassword != "", AdminPasswordSet: o.secrets.AdminPassword != "",
+		AnnouncementsTokenSet: o.secrets.AnnouncementsToken != "", ProblemReportTokenSet: o.secrets.ProblemReportToken != ""}
 	// Loopback only, unlike a real server, which listens on every address.
 	// No socket on the game port, like a real server.
 	s.queryLn, err = net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(o.queryPort)))

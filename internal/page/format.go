@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
 
 // funcs are the helpers the templates use. They only format what the API
-// returned.
+// returned, and the rules of the game server adapter the page states.
 var funcs = template.FuncMap{
 	"size":     sizeOf,
 	"sizep":    sizeOfPtr,
@@ -22,7 +23,7 @@ var funcs = template.FuncMap{
 	"iso":      func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
 	"since":    since,
 	"state":    stateWord,
-	"warning":  func(code string) string { return sentence(instances.WarningText(code)) },
+	"warning":  func(code string, stored []string) string { return sentence(instances.WarningWords(code, stored)) },
 	"why":      backupWhy,
 	"players":  playersOf,
 	"memory":   memoryOf,
@@ -39,7 +40,10 @@ var funcs = template.FuncMap{
 	"idle": func(s instances.State) bool {
 		return s == instances.Stopped || s == instances.Crashed || s == instances.Failed
 	},
-	"check":    checkWord,
+	"check": checkWord,
+	// searched are the names the server's engine searches its command line
+	// for as plain text, which no value on it may hold.
+	"searched": func() string { return strings.Join(gameserver.SearchedNames(), ", ") },
 	"times":    func(list []string) string { return strings.Join(list, ", ") },
 	"notempty": func(s []string) bool { return len(s) > 0 },
 	"plural":   plural,

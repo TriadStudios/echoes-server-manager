@@ -33,7 +33,7 @@ func bothDeliveries(t *testing.T, run func(t *testing.T, delivery string)) {
 // fake.
 func (r *rig) createWithMarker(marker, delivery string, extra map[string]string) {
 	r.t.Helper()
-	rules := map[string]string{"Motd": marker}
+	rules := map[string]string{"MOTD": marker}
 	for k, v := range extra {
 		rules[k] = v
 	}

@@ -154,23 +154,24 @@ func ScrubLine(line string, values []string) string {
 var (
 	// switchKey finds a password switch: a "-" at the start of the text or
 	// after a character that cannot be part of a word, then a key that
-	// contains "password" (any case), then "=".
-	switchKey = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])(-[A-Za-z0-9_.-]*password[A-Za-z0-9_.-]*=)`)
+	// contains "password" or "token" (any case), then "=". The token
+	// switches are the server's announcements and problem report tokens.
+	switchKey = regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_.-])(-[A-Za-z0-9_.-]*(?:password|token)[A-Za-z0-9_.-]*=)`)
 	// pairKey finds other key=value pairs whose key contains "password" (a
 	// URL query, a config line). Their value ends at white space, a quote,
 	// "&", "," or ";".
 	pairKey = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*password[A-Za-z0-9_]*=)[^\s"'&,;]+`)
 )
 
-// MaskSwitches masks the value of every password switch in s, such as
-// -ServerPassword=..., up to the next switch (white space, an optional
-// quote, "-" and a letter) or the end of the line, so a value with spaces or
-// punctuation is masked whole: "-ServerPassword=a b c -Port=1" becomes
-// "-ServerPassword=******** -Port=1". The value of any other key=value pair
-// whose key contains "password" is masked up to white space or a quote,
-// "&", "," or ";".
+// MaskSwitches masks the value of every password or token switch in s,
+// such as -ServerPassword=... or -AnnouncementsToken=..., up to the next
+// switch (white space, an optional quote, "-" and a letter) or the end of
+// the line, so a value with spaces or punctuation is masked whole:
+// "-ServerPassword=a b c -Port=1" becomes "-ServerPassword=******** -Port=1".
+// The value of any other key=value pair whose key contains "password" is
+// masked up to white space or a quote, "&", "," or ";".
 func MaskSwitches(s string) string {
-	if !strings.Contains(strings.ToLower(s), "password") {
+	if low := strings.ToLower(s); !strings.Contains(low, "password") && !strings.Contains(low, "token") {
 		return s
 	}
 	var b strings.Builder

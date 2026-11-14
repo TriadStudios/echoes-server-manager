@@ -59,7 +59,7 @@
 <a href="/servers/{{$s.Name}}/backups"{{if eq .Data.Tab "backups"}} aria-current="page"{{end}}>Backups</a>
 <a href="/servers/{{$s.Name}}/schedule"{{if eq .Data.Tab "schedule"}} aria-current="page"{{end}}>Schedule</a>
 </nav>
-{{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning .}}</p>{{end}}
+{{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning . $s.UnsafeStoredSettings}}</p>{{end}}
 {{end}}
 
 {{define "update-note"}}{{if .Status.UpdateUnverified}}<p class="note"><span class="badge changed">New build</span> New build, checked at next start: <span class="mono">{{.Build}}</span> was put in place by an automatic update while the server was stopped, and nothing was started. The next start waits for it to get ready and goes back to <span class="mono">{{.Status.UpdateRollbackBuild}}</span> if it does not.</p>{{end}}

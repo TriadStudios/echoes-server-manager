@@ -5,7 +5,8 @@
 // Every verb prints exactly one result line, or one JSON object with
 // --json, and exits 0 on success and 1 on error. Errors go to stderr, or to
 // stdout as {"error": {...}} with --json. The exceptions are logs, which
-// prints the log lines, and help.
+// prints the log lines, game-settings, which prints a table of them, and
+// help.
 package cli
 
 import (
@@ -80,6 +81,11 @@ Instances:
          [--bind IP] [--max-players N] [--set Key=Value ...] [--arg -X=Y ...]
          [--secret-delivery file|command_line]
   start|stop|restart <name>
+  secret <name> server-password|admin-password|announcements-token|problem-report-token [--clear]
+                                set a password or token, read from standard input
+  game-settings [--group access|world|chat|reports]
+                                the game settings ESM knows by name, for --set
+                                (world rules take effect only in a new world)
   logs <name> [-n N] [-f] [--console]
   update <name> --to <version>
   backup <name>
@@ -165,6 +171,10 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 		err = e.serviceCmd(rest)
 	case "steam":
 		err = e.steamCmd(rest, e.in)
+	case "game-settings":
+		err = e.gameSettings(rest)
+	case "secret":
+		err = e.secret(rest, e.in)
 	default:
 		err = usageErr("unknown command %q (see esm help)", verb)
 	}

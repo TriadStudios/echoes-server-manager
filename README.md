@@ -230,8 +230,9 @@ What a box needs before ESM can run an Echoes of Durinn dedicated server
   `<root>/instances/<name>/data/Saved/SaveGames/`; backups and restores
   copy that whole folder. Installing or removing a build never touches it.
   The server log is `<root>/instances/<name>/logs/server.log`.
-- **Passwords.** The game server takes its passwords only on its command
-  line today. An instance whose server needs a join or admin password must
+- **Passwords.** The game server takes its passwords (and its
+  announcements and problem report tokens) only on its command line today.
+  An instance whose server needs a join or admin password, or a token, must
   be set to `secret_delivery: command_line` until the game reads the
   secrets file, and that mode is unsafe on a shared box (see
   [Server passwords](#server-passwords)).
@@ -376,8 +377,10 @@ settings, live log, backups, timed restarts), builds, clusters and the audit
 log, and it starts, stops, restarts, updates, backs up, restores, installs
 builds and changes settings. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
-rule defaults, whether players can reach the box from outside), the page
-says so. Reading works without JavaScript; changes need it. What each role
+whether players can reach the box from outside), the page says so. A
+server's settings screen has a field for every game setting ESM knows by
+name (see [Game settings](#game-settings)), grouped, each with its help,
+range and default; an empty field leaves the setting to the game. Reading works without JavaScript; changes need it. What each role
 may do is the same as in the API.
 
 ## Command line tour
@@ -386,7 +389,9 @@ may do is the same as in the API.
 esm doctor                                   # read-only checks of this box
 esm build install ~/durinn/imports/build-1.0.0.tar.gz  # or a folder there, or an https URL with --sha256
 esm build list
-esm create alpha --set Difficulty=hard       # ports are picked from the configured ranges
+esm game-settings                            # the game settings ESM knows by name
+esm create alpha --set HarvestRate=2 --set PvP=True  # ports are picked from the configured ranges
+esm secret alpha server-password < join-password.txt # a password or token, on standard input
 esm start alpha                              # waits until the server is ready
 esm status alpha
 esm logs alpha -n 100 -f
@@ -402,15 +407,142 @@ esm update-self                              # put it in place (signature checke
 ```
 
 Every command prints one result line, or one JSON object with `--json`, and
-exits 0 on success and 1 on error. `esm help` lists every command.
+exits 0 on success and 1 on error (`logs` and `game-settings` print more
+lines). `esm help` lists every command.
+
+## Game settings
+
+The game server takes its settings on its command line as `-Key=Value`.
+ESM sets the server name, world, player limit, listing, ports and passwords
+itself; every other setting the server builds take is in ESM's catalog of
+game settings, with its type, range, default and a line of help. See them
+with `esm game-settings`, `GET /api/v1/game-settings` or on a server's
+settings page.
+
+An instance keeps its game settings in `rules` (`--set Key=Value` at
+create, `rules` in the API, the fields of the settings page). A setting
+that is not set is not passed, and the server uses its own default. A
+setting of the catalog is checked when it is set or changed: a number must
+be in its range, a choice one of its values, `True` or `False` for a
+switch, a date `YYYY-MM-DD` and not in the future. Keys outside the
+catalog are passed as they are, for settings of newer server builds.
+
+The server joins its arguments into one line and finds a switch by its
+name and `=` anywhere in it: outside double quotes by its usual lookup,
+and inside them too by some of its code (the folder to load plugins from,
+`PLUGIN=`, is found that way). It also searches the line for a few names
+as plain text. So every value that goes onto the command line (a rule, an
+extra argument after its `=`, the server and world names, the map, and
+the passwords and tokens in the compatibility mode below) follows the
+same rules when it is set or changed:
+
+- It is not empty (leave a setting out for the game's default).
+- It has no `=` and no double quote, with or without a space
+  (`x;PvP=True` would set PvP, and so could `Hi PvP=True all`).
+- It is printable text and the plain space: letters, marks, digits,
+  punctuation and symbols of any script. Refused are control characters;
+  every other white space (a tab, a line break, a no-break space: any
+  character that a Windows or a Linux host of the server counts as white
+  space, because after white space the server reads `-Name` or `/Name` as
+  a switch), and with it every space and line or paragraph separator but
+  the plain space; format characters (zero width spaces and joiners,
+  direction marks, the soft hyphen, the byte order mark); private-use,
+  surrogate and unassigned code points; and the en dash, which the server
+  does not start with on its command line (write `-`). That goes by the
+  class of a character, not by how it looks: a letter or symbol that
+  shows as blank (U+3164, U+2800) is printable text and taken.
+- It has no space at its start or end, and no space followed by `-` and
+  more (`a - b` is fine, `a -b` is not).
+- A `-` right before a letter A-Z or a-z has a letter or digit (A-Z, a-z,
+  0-9) right before it: `well-met` and `Alpha-EU` are fine, `-fast` and
+  `[EU]-Alpha` could start a switch (write `[EU] - Alpha`). The same goes
+  for a `-` after a letter outside A-Z, such as an accented one.
+- A value without a space has no `,` or `)`: the server reads it unquoted
+  and would end it there. One with a space is quoted whole and may hold
+  them (`Welcome, traveller`).
+- It holds none of the names the server's engine searches its command
+  line for as plain text, in any case of their letters and in the middle
+  of a word too: `-ansimalloc` and some two dozen like it, listed in
+  [docs/DESIGN.md](docs/DESIGN.md#game-settings).
+- A rule key, and the name of an extra argument (`-Name` or
+  `-Name=Value`), has ASCII letters and digits only (`x_PvP` would be the
+  switch `PvP`), no two of them name the same switch in any case, and none
+  holds one of those names unless it is that switch (`-ansimallocx` would
+  be read as `-ansimalloc`; `-ansimalloc` itself is passed as what it is).
+
+The name of an instance is in the folders ESM puts on the command line,
+so a new instance's name may not hold one of those names either. And the
+whole command line of an instance, with everything on it, may have 12000
+characters after a change: the server's engine does not start with more
+than 16383, and what starts the server may add to the line. A change that
+would make it longer is refused (`command_line_too_long`).
+
+A value stored by an earlier version is kept until it is changed. An
+empty one (a rule, or an extra argument that ends in `=`) is left off the
+command line when the server starts, and the service log says so; any
+other that breaks the rules is passed as it is, and the instance carries
+the warning `unsafe_stored_settings`, which names the settings (never
+their values) to change. One exception: with an en dash anywhere on its
+command line the server's engine stops at once, so ESM does not start a
+server whose line would hold one (409 `command_line_unsafe`, which names
+the setting, a password or token by its field, and never a value). An
+instance whose stored command line is longer than 12000 characters
+carries the warning `command_line_too_long`; beyond 16127 ESM does not
+start its server, and says why (409 `command_line_too_long`): of the
+16383 the engine starts with, ESM keeps 256 free for what a build's start
+script may put on the line besides (the name of the game's project, say),
+since it does not know what a build's script adds.
+
+These rules follow how the engine reads its command line, as far as ESM
+knows it from the engine's source; they are not yet checked against a
+real server, and they do not cover everything. What ESM puts on the line
+from its own configuration is not checked: the folders below ESM's root,
+the path of a build, and a build's default map; keep those free of `=`,
+of double quotes, of a space followed by `-` and of the names above (an
+en dash in the folders is the one thing ESM looks for there: it does not
+start the server then, 409 `command_line_unsafe`). The
+list of names is the one of the engine the server builds are made with:
+a later engine, a plugin or the game itself may search for a name ESM
+does not know yet. The rest is in the
+[known limits](docs/DESIGN.md#known-limits) of the design.
+
+| Group | Settings |
+|-------|----------|
+| Identity and access | `MOTD`, `LAN`, `AllowNonSteamClients` (caution), `AdminPlayerIds`, `AdminLoginMaxAttempts`, `AdminLoginLockoutSeconds`, `BossSummonCooldownSeconds`, `LastWipe` |
+| World rules | `HarvestRate`, `XPRate`, `TamingRate`, `TamingBiteRate`, `HatchRate`, `MatureRate`, `MatingRate`, `CareRate`, `ImprintRate` (0.1 to 1000), `DayLengthMinutes` (5 to 240), `StructureDecay`, `StructureDecayMultiplier` (0.1 to 10), `PvP`, `PvPStructureDamage`, `OfflineRaidProtection`, `ORPActivationMinutes` (0 to 1440), `ORPStructureDamageTaken`, `ORPTameDamageTaken` (0 to 1), `ORPTurretDamageMultiplier` (0 to 10), `Difficulty` (0, 1, 2), `DeathDropMode` (`Everything`, `InventoryOnly`, `Nothing`) |
+| Chat | `ChatLog`, `ChatFilter` (`Off`, `Mask`, `Drop`), `ChatBlockedWords` |
+| Announcements and reports | `AnnouncementsUrl`, `AnnouncementsPollSeconds` (at least 10), `ProblemReportUrl`, and the two tokens `AnnouncementsToken` and `ProblemReportToken` |
+
+**World rules apply only when the world is first created.** The game keeps
+them with the world from then on, so a change reaches only a new world (for
+example under a new world name); an existing world keeps its saved rules.
+`LastWipe` is not a world rule: it is read at every start.
+
+The two tokens are secrets: set them like the passwords (below), never as
+rules. A list (`AdminPlayerIds`, `ChatBlockedWords`) is items separated by
+commas, each without white space, `=`, `)` or a double quote; ESM passes
+it with `, ` between the items (also a list stored before), so the server
+reads it whole. The two addresses are base addresses, without a query
+(and so without `=`). The join password reaches the server as
+`-Password=` in the compatibility mode. `max_players` is 1 to 70, the most
+the game server takes; an instance stored with more by an earlier version
+keeps its value (and a warning) until it is changed. Rules and extra
+arguments that override the engine's configuration files (`-ini:...`,
+`-iniFile=`, `-CustomConfig=`), or that make it read more of its command
+line from a file (`-CmdLineFile=`), are refused. The full table is in
+[docs/DESIGN.md](docs/DESIGN.md#game-settings).
 
 ## Server passwords
 
-An instance has a server password (to join) and an admin password. They are
-set only through the API, `PUT /api/v1/instances/<name>/secrets`, kept in a
+An instance has a server password (to join) and an admin password, and may
+have the game's announcements and problem report tokens. They are set only
+through the API, `PUT /api/v1/instances/<name>/secrets` (which the page's
+password and token fields and `esm secret <name> <which>` use), kept in a
 private file, and never shown. Rules (`--set`) and extra arguments (`--arg`)
 are shown to everyone who may look at an instance, so ESM refuses names
 there that look like a secret (`JoinPassword`, `RconKey`, `AuthToken`, ...).
+The tokens travel exactly like the passwords, in the file or on the command
+line.
 
 **By default the passwords travel in a file.** Before each start ESM writes
 them to `instances/<name>/run/server-secrets.json` (readable by the ESM
@@ -418,7 +550,7 @@ account only), tells the server where the file is, and removes the file
 when the server has stopped. No password is on a command line, so none is
 in the process list or in what the server logs, and there is nothing ESM
 would have to hide. This needs a game server that reads the file. A server
-build that cannot do that runs without passwords; ESM flags that on the
+build that cannot do that runs without passwords and tokens; ESM flags that on the
 running instance (`secrets_unconfirmed`).
 
 **The compatibility mode puts them on the command line.** It is for server
@@ -430,7 +562,16 @@ its own log. ESM says UNSAFE wherever such an instance shows (`create`,
 `list`, `status`, `doctor`, the API) and gives the read role none of its
 server output and no failure details. Operators and admins still see them.
 (The secrets file is written in this mode too, as ESM's record of what the
-running server was started with; the server is not told about it.) The
+running server was started with; the server is not told about it.) In
+this mode a password or token is a value on the command line like any
+other and follows every rule in [Game settings](#game-settings): no `=`
+and no double quote, printable characters and the plain space only, no
+space at either end or before a `-`, a `-` before a letter only after a
+letter or digit, without a space no `,` or `)`, and none of the names
+the engine searches for. A secret that breaks one is refused when it is
+set, and an instance that holds one is not switched to the mode; the
+refusal names the secret and the rule, never the value or anything it
+holds. (With the secrets file a password may be anything, as before.) The
 mode does not make the passwords safe. It is there only until the game
 server reads its passwords from the per-instance file, and is removed then.
 

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 
 	"syscall"
@@ -18,39 +17,54 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
+	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
 func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
 
 func TestParseArgs(t *testing.T) {
-	kv := map[string]string{"FakeReadyDelay": "5s", "FakeNoReady": "true"}
-	argv := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S", WorldName: "W", Listed: true,
+	file := map[string]string{"FakeReadyDelay": "5s", "FakeNoReady": "true", "FakeStopDelay": "1s"}
+	argv := gameserver.Launch{Map: "M", GamePort: 1, QueryPort: 2, MaxPlayers: 3, ServerName: "S EU", WorldName: "W", Listed: true,
 		UserDir: "data", LogFile: "logs/server.log", Rules: map[string]string{"PvP": "true"},
-		ExtraArgs: []string{"-FakeReadyDelay=10ms", "-FakeIgnoreStop"}}.Args()
-	m, err := parseArgs(argv, kv)
+		ExtraArgs: []string{"-FakeReadyDelay=10ms", "-FakeIgnoreStop", "-FakeStopDelay=300ms", "-FakeStopDelay=2s"}}.Args()
+	m, sw, err := parseArgs(argv, file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, err := buildOptions(m, kv)
+	o, err := buildOptions(m, sw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S" || !o.listed ||
+	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S EU" || !o.listed ||
 		o.worldName != "W" || !filepath.IsAbs(o.userDir) || !filepath.IsAbs(o.logFile) || filepath.Base(o.logFile) != "server.log" ||
 		o.readyDelay != 10*time.Millisecond || !o.noReady || !o.ignoreStop || o.exitCode != 1 || o.saveInterval != time.Second ||
-		o.stopDelay != 200*time.Millisecond {
+		o.stopDelay != 300*time.Millisecond {
 		t.Fatalf("options %+v", o)
 	}
-	if _, err := parseArgs([]string{"-A=1", "stray"}, map[string]string{}); err == nil {
+	if _, _, err := parseArgs([]string{"-A=1", "stray"}, nil); err == nil {
 		t.Fatal("stray positional accepted")
 	}
-	if _, err := buildOptions("", map[string]string{"Port": "x"}); err == nil {
+	if _, sw, _ := parseArgs([]string{"M", "-Port=x"}, nil); sw.line == "" {
+		t.Fatal("no command line")
+	} else if _, err := buildOptions("", sw); err == nil {
 		t.Fatal("bad port accepted")
 	}
-	for _, a := range []string{"-MULTIHOME=127.0.0.1", "-multihome=192.0.2.10", "-MultiHome"} {
-		if _, err := parseArgs([]string{"M", a}, map[string]string{}); err == nil || !strings.Contains(err.Error(), "refused") {
+	for _, a := range []string{"-MULTIHOME=127.0.0.1", "-multihome=192.0.2.10", "-MultiHome", "-Motd=x;MULTIHOME=192.0.2.10"} {
+		if _, _, err := parseArgs([]string{"M", a}, nil); err == nil || !strings.Contains(err.Error(), "refused") {
 			t.Errorf("%s accepted: %v", a, err)
 		}
+	}
+	// What the engine does not start with: a line longer than it keeps, and
+	// an en dash anywhere on it.
+	long := "-Motd=" + strings.Repeat("x", cmdline.Limit)
+	if _, _, err := parseArgs([]string{"M", long}, nil); err == nil || !strings.Contains(err.Error(), "longer") {
+		t.Errorf("a command line of more than %d characters: %v", cmdline.Limit, err)
+	}
+	if _, _, err := parseArgs([]string{"M", "-ServerName=Alpha \u2013 EU"}, nil); err == nil || !strings.Contains(err.Error(), "en dash") {
+		t.Errorf("an en dash: %v", err)
+	}
+	if _, _, err := parseArgs([]string{"M", "-ServerName=Alpha - EU", "-Motd=" + strings.Repeat("x", 4000)}, nil); err != nil {
+		t.Errorf("a long line with a hyphen: %v", err)
 	}
 }
 
@@ -91,8 +105,10 @@ func startFakeIn(t *testing.T, exe, data string, extra ...string) *fakeRun {
 func startFakeWith(t *testing.T, exe string, l gameserver.Launch, extra ...string) *fakeRun {
 	t.Helper()
 	argv := l.Args()
-	argv = append(argv, "-FakeSaveInterval=200ms", "-FakeReadyDelay=100ms")
 	argv = append(argv, extra...)
+	// Like the server, the fake reads the first of two switches of one
+	// name: these count only where extra has none of its own.
+	argv = append(argv, "-FakeSaveInterval=200ms", "-FakeReadyDelay=100ms")
 	cmd := exec.Command(exe, argv...)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -280,7 +296,7 @@ func TestFakePasswordsOnCommandLine(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 	checkPasswords(t, st.Ports.Query, secrets)
-	if !strings.Contains(r.logText(), "-ServerPassword=join me 7 -AdminPassword=adm1n-pw -FakeSaveInterval") {
+	if !strings.Contains(r.logText(), "-Password=join me 7 -AdminPassword=adm1n-pw -FakeSaveInterval") {
 		t.Fatalf("the command line in the log:\n%s", r.logText())
 	}
 	status, _ := os.ReadFile(gameserver.StatusFilePath(r.data))
@@ -498,7 +514,9 @@ func TestFakeReadyOnRequest(t *testing.T) {
 	}
 	port := pc.LocalAddr().(*net.UDPAddr).Port
 	pc.Close()
-	r := startFake(t, testkit.FakeServer(t), "-FakeReadyDelay=1h", "-FakeNoStatusFile", "-FakeNoQuery", "-QueryPort="+strconv.Itoa(port))
+	l := testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.QueryPort = port
+	r := startFakeWith(t, testkit.FakeServer(t), l, "-FakeReadyDelay=1h", "-FakeNoStatusFile", "-FakeNoQuery")
 	readyLines := func() int { return countLines(r.logText(), gameserver.IsReadyLine) }
 	testkit.Eventually(t, 10*time.Second, func() bool {
 		return strings.Contains(r.logText(), "Command line: ")
@@ -576,5 +594,48 @@ func TestFakeRefusesMultihome(t *testing.T) {
 	}
 	if _, err := os.Stat(data); !os.IsNotExist(err) {
 		t.Fatalf("a refused start wrote a data folder: %v", err)
+	}
+}
+
+// The fake reads the line its arguments are joined into, as the server
+// does, not argument by argument: a switch inside the value of another one
+// is found there, the first one counts, and an empty value takes the next
+// argument.
+func TestFakeReadsTheJoinedCommandLine(t *testing.T) {
+	exe := testkit.FakeServer(t)
+	l := testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.Delivery = gameserver.DeliveryCommandLine
+	l.Secrets = gameserver.Secrets{ServerPassword: "join-pw-1", AdminPassword: "real-adm1n"}
+	l.Rules = map[string]string{"MOTD": "hi;AdminPassword=sneaky99"}
+	r := startFakeWith(t, exe, l)
+	checkPasswords(t, waitReady(t, r.data).Ports.Query, gameserver.Secrets{ServerPassword: "join-pw-1", AdminPassword: "sneaky99"})
+
+	l = testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.Delivery = gameserver.DeliveryCommandLine
+	r = startFakeWith(t, exe, l, "-AdminPassword=", "-Password=join-pw-2")
+	checkPasswords(t, waitReady(t, r.data).Ports.Query, gameserver.Secrets{ServerPassword: "join-pw-2", AdminPassword: "-Password=join-pw-2"})
+}
+
+// The fake finds a password switch the way the game server does: the join
+// password is "Password=", which -ServerPassword= and -AdminPassword= do
+// not match.
+func TestFakeFindsSwitchesLikeTheServer(t *testing.T) {
+	read := func(args ...string) gameserver.Secrets {
+		t.Helper()
+		_, sw, err := parseArgs(append([]string{"M"}, args...), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := readSecrets(sw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if s := read("-ServerPassword=not-this", "-AdminPassword=admin-pw"); s.ServerPassword != "" || s.AdminPassword != "admin-pw" {
+		t.Fatalf("%+v", s)
+	}
+	if s := read("-ServerPassword=not-this", "-AdminPassword=admin-pw", "-password=join-pw"); s.ServerPassword != "join-pw" {
+		t.Fatalf("%+v", s)
 	}
 }

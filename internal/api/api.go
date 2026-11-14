@@ -221,6 +221,7 @@ func init() {
 	r("GET", p+"/instances/{name}/backups/{id}/download", required, oper, "instance.backup.download", (*Server).backupDownload)
 	r("GET", p+"/events", required, read, "events", (*Server).events)
 	r("GET", p+"/clusters", required, read, "cluster.list", (*Server).clusters)
+	r("GET", p+"/game-settings", required, read, "game_settings.list", (*Server).gameSettings)
 	r("GET", p+"/tokens", required, admin, "token.list", (*Server).listTokens)
 	r("POST", p+"/tokens", required, admin, "token.create", (*Server).createToken)
 	r("DELETE", p+"/tokens/{id}", required, admin, "token.delete", (*Server).deleteToken)

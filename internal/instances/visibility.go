@@ -1,6 +1,9 @@
 package instances
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 )
@@ -55,24 +58,57 @@ const (
 	// WarnLimitsNotEnforced: the instance has resource limits, and the
 	// supervisor in use does not apply them.
 	WarnLimitsNotEnforced = "limits_not_enforced"
-	// WarnSecretsUnconfirmed: the instance has passwords and hands them
+	// WarnSecretsUnconfirmed: the instance has passwords or tokens and hands them
 	// over in the secrets file, and its running server has not said, in its
 	// status file, that it took them. A server build that cannot read the
-	// secrets file runs without passwords; this is how that shows.
+	// secrets file runs without them; this is how that shows.
 	WarnSecretsUnconfirmed = "secrets_unconfirmed"
+	// WarnMaxPlayersAboveGame: the instance was stored with a max_players
+	// above what the game server takes (gameserver.MaxPlayersLimit); the
+	// server uses its limit.
+	WarnMaxPlayersAboveGame = "max_players_above_game_limit"
+	// WarnUnsafeStoredSettings: settings stored by an earlier version break
+	// the rules for values on the server command line; the view names them
+	// in UnsafeStoredSettings. One with an en dash keeps the server from
+	// starting (see enDashIn).
+	WarnUnsafeStoredSettings = "unsafe_stored_settings"
+	// WarnCommandLineTooLong: the server command line of the instance, as
+	// an earlier version stored its settings, is longer than a change may
+	// make it (gameserver.MaxLineLength). Beyond what ESM starts a server
+	// with (gameserver.StartLineLimit) ESM does not start it.
+	WarnCommandLineTooLong = "command_line_too_long"
 )
 
 // WarningText says in words what a warning of an instance view means.
 func WarningText(code string) string {
 	switch code {
 	case WarnSecretsOnCommandLine:
-		return "UNSAFE on a shared box: passwords are on the server command line (secret_delivery command_line), where every account on this box can read them from the process list, and the server writes them into its log"
+		return "UNSAFE on a shared box: passwords and tokens are on the server command line (secret_delivery command_line), where every account on this box can read them from the process list, and the server writes them into its log"
 	case WarnLimitsNotEnforced:
 		return "memory and CPU limits are not enforced by the process supervisor"
 	case WarnSecretsUnconfirmed:
-		return "the running server has not confirmed that it took its passwords from the secrets file; a server build that cannot read that file runs WITHOUT passwords"
+		return "the running server has not confirmed that it took its passwords and tokens from the secrets file; a server build that cannot read that file runs WITHOUT passwords and tokens"
+	case WarnMaxPlayersAboveGame:
+		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
+			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
+	case WarnUnsafeStoredSettings:
+		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored, but with an en dash (U+2013) on its command line the server's engine does not start, and ESM does not start it then; change or remove them, or, for the name of an instance, make the instance anew under another name"
+	case WarnCommandLineTooLong:
+		return fmt.Sprintf("the server command line of this instance is longer than %d characters, the most a change may lead to; the server's engine does not start with more than %d, and ESM, which keeps %d of them free for what a build's start script may add, does not start a server whose line is longer than %d: shorten or remove rules or extra arguments",
+			gameserver.MaxLineLength, gameserver.EngineLineLimit, gameserver.StartRoom, gameserver.StartLineLimit)
 	}
 	return code
+}
+
+// WarningWords says a warning of an instance view in words, with the
+// settings it is about: unsafeStored, the view's UnsafeStoredSettings, for
+// unsafe_stored_settings.
+func WarningWords(code string, unsafeStored []string) string {
+	text := WarningText(code)
+	if code == WarnUnsafeStoredSettings && len(unsafeStored) > 0 {
+		text += " (" + strings.Join(unsafeStored, ", ") + ")"
+	}
+	return text
 }
 
 // unsafeSuffix is added to the name of an output file when it is set

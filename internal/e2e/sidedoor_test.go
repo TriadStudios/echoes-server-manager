@@ -82,7 +82,7 @@ func TestSecretLikeSettingsAreRefused(t *testing.T) {
 	// Ordinary names pass, also ones that only resemble the words.
 	var ch api.InstanceChange
 	h.must(http.StatusOK, "PATCH", "/api/v1/instances/alpha", map[string]any{
-		"rules":      fastRules(map[string]string{"Difficulty": "hard", "Keyboard": "qwerty", "KeepInventory": "true", "Compass": "on"}),
+		"rules":      fastRules(map[string]string{"Difficulty": "2", "Keyboard": "qwerty", "KeepInventory": "true", "Compass": "on"}),
 		"extra_args": []string{"-NoSteam", "-KeyBindings=default"},
 	}, &ch)
 	if ch.Rules["Keyboard"] != "qwerty" || len(ch.ExtraArgs) != 2 {
