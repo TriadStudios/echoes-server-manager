@@ -244,50 +244,241 @@ func RefusedSwitch(key string) (why string, refused bool) {
 // switch ("-MOTD=x,PvP=True" sets PvP). A value in quotes is read whole;
 // any other value ends at the first ",", ")" or white space, and an empty
 // one takes the next argument. A switch written alone ("-PvP") turns a
-// setting that is on or off on.
+// setting that is on or off on; it is found after white space, and what
+// white space is, the engine asks its host (see EngineSpace).
 //
-// So the rules below make sure that on the line, outside quotes, the only
-// "Name=" are the switches ESM writes, each once and each followed by the
-// whole value ESM shows. They look at how a value is built, not at which
-// names it holds: no list of names could know every switch of the engine.
+// That is the engine's usual way, and not its only one. Some of its code
+// finds a name and "=" at the start of any word of the line without
+// minding the quotes, or searches the line, or each argument before the
+// line is joined, for a name as plain text, in the middle of a word too.
+// So a value with a space is quoted, but not out of reach.
+//
+// The rules below make sure that on the line the only "=" are the ones ESM
+// writes after the name of a switch, each switch once and each followed by
+// the whole value ESM shows, and that no value holds what the engine could
+// take for the start of a switch. They look at how a value is built, not
+// at which names it holds: no list of names could know every switch of the
+// engine. The one exception are the few names the engine searches for as
+// plain text and without an "=" (see searched): nothing in the build of a
+// value keeps those out, so ESM knows them one by one.
+
+// engineSpaces are the characters that some host of the server's engine
+// counts as white space, as ranges of code points (first and last). The
+// engine asks the host's C library. On Windows that is every one of them,
+// U+180E too, which Unicode no longer lists as white space; on Linux, in
+// the "C" locale the engine runs in, only the ASCII ones (U+0009 to U+000D
+// and U+0020). ESM does not know what host a build is for when a value is
+// set, and a build may move, so a value is checked against all of them.
+var engineSpaces = [][2]rune{
+	{0x0009, 0x000d}, {0x0020, 0x0020}, {0x0085, 0x0085}, {0x00a0, 0x00a0}, {0x1680, 0x1680}, {0x180e, 0x180e},
+	{0x2000, 0x200a}, {0x2028, 0x2029}, {0x202f, 0x202f}, {0x205f, 0x205f}, {0x3000, 0x3000},
+}
+
+// EngineSpace reports whether some host of the server's engine counts r as
+// white space. It is the one answer to what white space is wherever ESM
+// checks a setting that goes onto the server command line.
+func EngineSpace(r rune) bool {
+	for _, s := range engineSpaces {
+		if s[0] <= r && r <= s[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// printable reports whether r is a character of printable text: a letter,
+// a mark, a number, punctuation, a symbol, or the plain space. A control
+// character, a format character (zero width space and joiners, direction
+// marks, soft hyphen, byte order mark), a line or paragraph separator, any
+// other space, a private-use code point and a code point Unicode has not
+// assigned are not: they do not show, and what the engine's hosts make of
+// them is not the same everywhere, nor from one release to the next.
+func printable(r rune) bool {
+	return r == ' ' || unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S)
+}
+
+// enDash is the character the engine takes for a "-" spoilt on its way
+// through a mail program: with one anywhere on its command line it stops
+// at start.
+const enDash = 0x2013
+
+// asciiAlnum reports whether r is an ASCII letter or digit: what the engine
+// takes for part of a name when it looks for the start of one.
+func asciiAlnum(r rune) bool {
+	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9'
+}
+
+func asciiLetter(r rune) bool {
+	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z'
+}
+
+// checkText reports whether text, something an operator sets, holds a
+// character that no setting on the server command line may hold, and says
+// which kind: a double quote, a control character, white space other than
+// the plain space (by EngineSpace), a character that is not printable
+// text, or an en dash. The answer never repeats a part of text.
+func checkText(text string) (why string, bad bool) {
+	if !utf8.ValidString(text) {
+		return "is not valid UTF-8", true
+	}
+	for _, r := range text {
+		switch {
+		case r == '"':
+			return `has a double quote ("), which the server's command line parsing takes for the end of a quoted value`, true
+		case r != ' ' && EngineSpace(r):
+			return "has white space other than the plain space (a tab, a line break or a no-break space, say), which the server does not quote and ends a value at", true
+		case unicode.IsControl(r):
+			return "has a control character", true
+		case !printable(r):
+			return "has a character that is not printable text (a zero width or direction mark, say, or a code point that is not in use); such a character does not show, and not every host of the server reads it the same", true
+		case r == enDash:
+			return `has an en dash (U+2013), which the server's engine takes for a spoilt "-": it does not start with one on its command line; write "-"`, true
+		}
+	}
+	return "", false
+}
+
+// HoldsSearchedName is what CheckValue says of a value that holds one of
+// the names the engine searches its command line for as plain text. It
+// does not say which: SearchedName does, for a caller that may show it.
+const HoldsSearchedName = "holds a name that the server's engine searches its whole command line for as plain text, in a quoted value too"
 
 // CheckValue reports whether value, text an operator sets that ESM writes
 // on the server command line as the value of a switch, is read by the
 // server whole and as that value only, and says why not. It is the one
 // check for every such text: a rule value, the value of an extra argument
-// (after its "="), the server name, the world name, and the passwords and
-// tokens when they go on the command line. A value
+// (after its "="), the server name, the world name, the map, and the
+// passwords and tokens when they go on the command line. A value
 //
 //   - is not empty: the server would read the next argument as its value;
 //   - has no double quote, no control character, no white space other
-//     than the plain space, no space at its start or end, and no space
-//     followed by "-" and more (see UnsafeArgument);
-//   - when it holds a space, is quoted whole, and may hold any other
-//     printable character, "=", "," and ")" too;
-//   - when it holds no space, has no "=", "," or ")": the server would end
-//     it at "," or ")", and read a name before "=" as a switch of its own.
+//     than the plain space, no character that is not printable text and no
+//     en dash (checkText), and no space at its start or end;
+//   - has no "=" at all: the engine finds a name and "=" in a quoted value
+//     too, and reads it as a switch of its own;
+//   - when it holds no space, has no "," or ")": the server reads it
+//     unquoted and would end it there (one with a space is quoted and
+//     read whole);
+//   - has no space followed by "-" and more, and no "-" followed by an
+//     ASCII letter unless an ASCII letter or digit stands right before it
+//     ("well-met" is a word, "x;-met" and "-met" could start a switch);
+//   - holds none of the names the engine searches for as plain text
+//     (SearchedName).
 //
-// The answer never repeats the value.
+// The answer never repeats the value, nor any part of it: it is used for
+// secrets too.
 func CheckValue(value string) (why string, bad bool) {
-	switch {
-	case value == "":
+	if value == "" {
 		return "is empty, and the server would read the next argument as its value", true
-	case !utf8.ValidString(value):
-		return "is not valid UTF-8", true
-	case strings.ContainsFunc(value, unicode.IsControl):
-		return "has a control character", true
-	case strings.ContainsFunc(value, func(r rune) bool { return r != ' ' && unicode.IsSpace(r) }):
-		return "has white space other than the plain space (a tab or a line break, say), which the server does not quote and ends a value at", true
-	case strings.HasPrefix(value, " ") || strings.HasSuffix(value, " "):
-		return "starts or ends with a space", true
 	}
-	if why, unsafe := UnsafeArgument(value); unsafe {
+	if why, bad := checkText(value); bad {
 		return why, true
 	}
-	if !strings.Contains(value, " ") && strings.ContainsAny(value, "=,)") {
-		return `has no space, so the server reads it unquoted, and then it may not hold "=", "," or ")": the server ends such a value at "," or ")", and reads a name followed by "=" as a switch of its own`, true
+	if strings.HasPrefix(value, " ") || strings.HasSuffix(value, " ") {
+		return "starts or ends with a space", true
+	}
+	if strings.Contains(value, "=") {
+		return `has "=": the server's engine finds a name followed by "=" anywhere on its command line, in a quoted value too, and reads it as a switch of its own`, true
+	}
+	if !strings.Contains(value, " ") && strings.ContainsAny(value, ",)") {
+		return `has no space, so the server reads it unquoted and ends it at "," or ")"`, true
+	}
+	rs := []rune(value)
+	for i, r := range rs {
+		if r != '-' || i+1 >= len(rs) {
+			continue
+		}
+		if i > 0 && rs[i-1] == ' ' && rs[i+1] != ' ' {
+			return `has a space followed by "-" and more, which the server would read as a switch of its own`, true
+		}
+		if asciiLetter(rs[i+1]) && (i == 0 || !asciiAlnum(rs[i-1])) {
+			return `has "-" and a letter where no letter or digit (A-Z, a-z, 0-9) stands right before the "-", which the server's engine can take for the start of a switch; write a space after the "-", or leave it out`, true
+		}
+	}
+	if _, found := SearchedName(value); found {
+		return HoldsSearchedName, true
 	}
 	return "", false
+}
+
+// searched are the names the server's engine searches its command line
+// for as plain text and that hold no "=", in lower case. It finds them in
+// a quoted value as well as outside, most of them in the middle of a word,
+// and in any case of their ASCII letters, so nothing in how a value is
+// built keeps them out. (The names it searches for that way with an "="
+// need no list: no value holds "=".) They are whole switches: the choice
+// of the memory allocator and its checks, a trace setting, how the engine
+// finds its folder, where the part of the line that came from the
+// environment starts, the cache of a storage server, the overrides of a
+// platform's description, an invitation of the Steam client, a relay
+// setting of the Steam sockets, a frame rate for the profiler, a trace
+// host, two checks of a graphics library, a debug mode of a store's kit,
+// two switches handed on to the crash reporter ("/" and the name after a
+// space), and a name one of the engine's own tests looks for.
+//
+// The list is taken from the engine the server builds are made with: the
+// names its own runtime code and its Steam plugins search for on a Linux
+// or a Windows host, and a few of other hosts. A name that a later engine,
+// another plugin or the game itself searches for is not on it until it is
+// added here. Two names that code of other plugins and platforms looks up
+// are plain words ("game", "iterative") and could not be on it.
+var searched = []string{
+	"-ansimalloc", "-stompmalloc", "-stomp2malloc", "-binnedmalloc", "-binnedmalloc2", "-binnedmalloc3", "-mimalloc",
+	"-tbbmalloc", "-libpasmalloc", "-doublefreefinder", "-tracefullcallstacks", "-basefromworkingdir", "-envafterhere",
+	"-zendisablecache", "-zenenablecache", "-zeninvalidatecache", "-zenusesimplejournal", "-zennommappedstorage",
+	"ddpi:", "+connect", "rail_debug_mode", "metalshadervalidation", "metalapivalidation",
+	"steamsocketsrelays", "csv.targetframerateoverride", "-tracehost", "/nullrhi", "/cleancrashreports",
+	"analyticsdisablecaching",
+}
+
+// SearchedNames returns the names the server's engine searches its command
+// line for as plain text and that hold no "=", in lower case.
+func SearchedNames() []string { return slices.Clone(searched) }
+
+// foldASCII lowers the ASCII capital letters of s and nothing else: the
+// engine compares names that way.
+func foldASCII(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; 'A' <= c && c <= 'Z' {
+			b := []byte(s)
+			for j := i; j < len(b); j++ {
+				if 'A' <= b[j] && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+// SearchedName returns the first of the names the engine searches its
+// command line for as plain text (searched) that s holds anywhere, in any
+// case of its ASCII letters; name is as ESM lists it, not as s has it.
+// CheckValue refuses a value that holds one without saying which.
+func SearchedName(s string) (name string, found bool) {
+	low := foldASCII(s)
+	for _, n := range searched {
+		if strings.Contains(low, n) {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// SearchedSwitch reports whether the engine would take name, a rule key or
+// the name of an extra argument (without its "-"), for one of the switches
+// it searches for as plain text although it is another: "-ansimallocx"
+// holds "-ansimalloc". A name that is such a switch itself is what it
+// says, and is not reported.
+func SearchedSwitch(name string) (searchedName string, found bool) {
+	arg := foldASCII("-" + name)
+	for _, n := range searched {
+		if arg == n || arg[1:] == n {
+			return "", false
+		}
+	}
+	return SearchedName(arg)
 }
 
 // PlainSwitchName reports whether name, a rule key or the switch name of an
@@ -329,13 +520,15 @@ func SameSwitch(a, b string) bool {
 }
 
 // UnsafeArgument reports whether value, a setting that goes onto the
-// server command line (the server name, the world name, a rule key or
-// value, an extra argument), could smuggle a switch past ESM, and says
-// why. The server joins its arguments back into one command line and
-// searches that for switches, so separate arguments are no boundary: a
-// double quote can end a quoted value, white space followed by "-" and a
-// name starts a new switch (a lone " - " does not), and -MULTIHOME is
-// found wherever its name stands. Such values are refused.
+// server command line (the server name, the world name, the map, a rule
+// key or value, an extra argument), breaks one of the rules that every
+// such setting has followed since ESM's first release, and says why: a
+// double quote, the name MULTIHOME, or white space (EngineSpace) followed
+// by "-" and more (a lone " - " is fine). An instance stored by any
+// release keeps to these, so they are checked on every change of an
+// instance, for all of its settings. What a value set from now on may hold
+// besides is CheckValue's. A secret is never checked here: the answer may
+// name what the value holds.
 func UnsafeArgument(value string) (why string, unsafe bool) {
 	switch {
 	case strings.Contains(value, `"`):
@@ -345,7 +538,7 @@ func UnsafeArgument(value string) (why string, unsafe bool) {
 	}
 	rs := []rune(value)
 	for i := 1; i+1 < len(rs); i++ {
-		if rs[i] == '-' && unicode.IsSpace(rs[i-1]) && !unicode.IsSpace(rs[i+1]) {
+		if rs[i] == '-' && EngineSpace(rs[i-1]) && !EngineSpace(rs[i+1]) {
 			return `has white space followed by "-" and more, which the server would read as a switch of its own`, true
 		}
 	}

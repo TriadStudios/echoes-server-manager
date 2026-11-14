@@ -8,12 +8,13 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
-// No value may bring a switch of its own onto the server command line: a
-// value without a space, which the server reads unquoted, may not hold
-// "=", "," or ")", and a rule key or the switch name of an extra argument
-// is ASCII letters and digits only. This is checked when a value is set; one
-// stored earlier keeps loading. A value with a space is quoted whole, so
-// what looks like a switch inside it is not one.
+// No value may bring a switch of its own onto the server command line: no
+// value holds "=", a value without a space, which the server reads
+// unquoted, holds no "," or ")" either, and a rule key or the switch name
+// of an extra argument is ASCII letters and digits only. This is checked
+// when a value is set; one stored earlier keeps loading. A value with a
+// space is quoted, but a name and "=" inside it is still found by some of
+// the engine's code, so "abc Password=x" is refused like "a;Password=x".
 func TestSwitchesCannotHideInValues(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -40,7 +41,11 @@ func TestSwitchesCannotHideInValues(t *testing.T) {
 	if len(r.m.List()) != 0 {
 		t.Fatal("a refused instance was created")
 	}
-	r.create("alpha", map[string]string{"Foo": "abc Password=x", "Bar": "abcPassword"})
+	if _, err := r.m.Create(CreateRequest{Name: "bad", Settings: Settings{BindIP: ptr("127.0.0.1"),
+		Rules: &map[string]string{"Foo": "abc Password=" + hidden}}}); !fault.Is(err, fault.Invalid) || strings.Contains(err.Error(), hidden) {
+		t.Errorf("a name and \"=\" in a value with a space: %v", err)
+	}
+	r.create("alpha", map[string]string{"Foo": "abc Password x", "Bar": "abcPassword"})
 	if _, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{ExtraArgs: &[]string{"-PvP=True", "-Mode=Fast", "-NoSteam"},
 		Map: ptr("/Game/Maps/PvP")}}); err != nil {
 		t.Fatalf("an extra argument that is the switch itself: %v", err)

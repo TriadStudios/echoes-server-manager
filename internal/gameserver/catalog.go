@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // This file is the catalog of the game settings that the server takes on
@@ -286,10 +285,11 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		}
 		// The list is passed with ", " between its items, quoted whole when
 		// it has two or more; an item that could not stand alone as a value
-		// is refused all the same.
+		// is refused all the same. Only plain spaces may stand around an
+		// item: any other white space counts as part of it.
 		for _, item := range strings.Split(value, ",") {
-			item = strings.TrimSpace(item)
-			if strings.ContainsFunc(item, unicode.IsSpace) || strings.ContainsAny(item, `"=)`) {
+			item = strings.Trim(item, " ")
+			if strings.ContainsFunc(item, EngineSpace) || strings.ContainsAny(item, `"=)`) {
 				return bad(`items are separated by commas and may not hold white space, "=", ")" or a double quote`)
 			}
 		}
@@ -299,7 +299,7 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		}
 		if s.Format == FormatURL {
 			u, err := url.Parse(value)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsFunc(value, unicode.IsSpace) {
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsFunc(value, EngineSpace) {
 				return bad("must be an http or https address like https://example.com/path")
 			}
 			// A base address: the server adds its own path and query to the

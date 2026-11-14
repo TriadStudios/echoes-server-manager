@@ -86,7 +86,7 @@ func WarningText(code string) string {
 		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
 			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
 	case WarnUnsafeStoredSettings:
-		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored; change or remove them"
+		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored; change or remove them, or, for the name of an instance, make the instance anew under another name"
 	}
 	return code
 }

@@ -575,6 +575,11 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 	if !ValidName(req.Name) {
 		return View{}, invalid("name", "must match %s", nameRe)
 	}
+	// The name is in the folders ESM puts on the server command line.
+	if found, ok := gameserver.SearchedName(req.Name); ok {
+		return View{}, fault.New(fault.Invalid, "unsafe_argument",
+			"name: an instance name may not hold %q: the server's engine searches its whole command line for that as plain text, and the instance's folders are on that line", found)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {

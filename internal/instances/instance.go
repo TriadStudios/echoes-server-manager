@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
@@ -437,15 +436,17 @@ func (in *Instance) Validate() error {
 // The server joins its arguments into one line and finds its switches
 // anywhere in it (see gameserver.CheckValue), so everything an operator
 // sets that goes onto its command line follows one set of rules: the
-// display name, the world name, every rule value and the value of every
-// extra argument pass gameserver.CheckValue. A rule key, and the switch
-// name of an extra argument ("-Name" or "-Name=Value"), is ASCII letters
-// and digits only (gameserver.PlainSwitchName), and no other rule or extra
-// argument names the same switch in any case: the server reads the first
-// one only. A rule that names a setting of the game's catalog is checked
-// by the setting's type and range too, and one that names a catalog
-// setting in another case is refused. A map that starts with "/" needs a
-// folder and a name: the server reads "/PvP" alone as the switch PvP.
+// display name, the world name, the map, every rule value and the value
+// of every extra argument pass gameserver.CheckValue. A rule key, and the
+// switch name of an extra argument ("-Name" or "-Name=Value"), is ASCII
+// letters and digits only (gameserver.PlainSwitchName), does not hold a
+// switch the engine searches for as plain text unless it is that switch
+// (gameserver.SearchedSwitch), and no other rule or extra argument names
+// the same switch in any case: the server reads the first one only. A
+// rule that names a setting of the game's catalog is checked by the
+// setting's type and range too, and one that names a catalog setting in
+// another case is refused. A map that starts with "/" needs a folder and a
+// name: the server reads "/PvP" alone as the switch PvP.
 func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 	// The server takes at most gameserver.MaxPlayersLimit players. A value
 	// stored before ESM knew that stays until max_players is changed (the
@@ -465,8 +466,13 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 			return err
 		}
 	}
-	if (old == nil || in.Map != old.Map) && mapIsSwitch(in.Map) {
-		return fault.New(fault.Invalid, "unsafe_argument", `map: a map that starts with "/" needs a folder and a name, like /Game/Maps/Name: the server reads "/" and a name alone as a switch of its own`)
+	if (old == nil || in.Map != old.Map) && in.Map != "" {
+		if mapIsSwitch(in.Map) {
+			return fault.New(fault.Invalid, "unsafe_argument", `map: a map that starts with "/" needs a folder and a name, like /Game/Maps/Name: the server reads "/" and a name alone as a switch of its own`)
+		}
+		if err := checkValue("map", "the map", in.Map); err != nil {
+			return err
+		}
 	}
 	names := in.switchNames()
 	var before map[string]string
@@ -482,6 +488,9 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		// may be repeated.
 		if !gameserver.PlainSwitchName(k) {
 			return fault.New(fault.Invalid, "unsafe_argument", `rules: key %q may hold only ASCII letters and digits: the server would find a switch of its own after a "_"`, k)
+		}
+		if name, found := gameserver.SearchedSwitch(k); found {
+			return fault.New(fault.Invalid, "unsafe_argument", "rules: the server's engine would find its switch %q in the key %s: it searches its whole command line for that name as plain text", name, k)
 		}
 		s, ok := gameserver.LookupGameSetting(k)
 		if !ok {
@@ -519,6 +528,9 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		if !gameserver.PlainSwitchName(name) {
 			return fault.New(fault.Invalid, "unsafe_argument", "extra_args: %s must be -Name or -Name=Value with a name of ASCII letters and digits only: the server would find a switch of its own inside a name with anything else", pos)
 		}
+		if found, ok := gameserver.SearchedSwitch(name); ok {
+			return fault.New(fault.Invalid, "unsafe_argument", "extra_args: the server's engine would find its switch %q in the name of %s: it searches its whole command line for that name as plain text", found, pos)
+		}
 		if other, dup := names.repeated(len(in.Rules) + i); dup {
 			return fault.New(fault.Invalid, "unsafe_argument", "extra_args: %s names the same switch as %s: the server finds a switch without regard to case and reads only the first", pos, other)
 		}
@@ -538,12 +550,18 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 
 // checkValue checks text an operator set that goes onto the server command
 // line as the value of a switch (gameserver.CheckValue). what names the
-// setting without repeating its value.
+// setting without repeating its value. A name the engine searches for is
+// named: it is the engine's, and no secret is checked here (see
+// Secrets.commandLineProblem).
 func checkValue(field, what, value string) error {
-	if why, bad := gameserver.CheckValue(value); bad {
-		return fault.New(fault.Invalid, "unsafe_argument", "%s: %s %s", field, what, why)
+	why, bad := gameserver.CheckValue(value)
+	if !bad {
+		return nil
 	}
-	return nil
+	if name, found := gameserver.SearchedName(value); found && why == gameserver.HoldsSearchedName {
+		why = fmt.Sprintf("holds %q, a name that the server's engine searches its whole command line for as plain text, in a quoted value too", name)
+	}
+	return fault.New(fault.Invalid, "unsafe_argument", "%s: %s %s", field, what, why)
 }
 
 // mapIsSwitch reports whether the server would read m, the map an instance
@@ -601,8 +619,9 @@ func (s switchNames) repeatedBefore(i int) bool {
 // storedUnsafe names the settings of in, and with command-line delivery
 // the secrets in s, that break the rules for the server command line (see
 // checkChanges) and that ESM keeps passing as an earlier version stored
-// them, so the server may read them otherwise than ESM shows: the display
-// name, the world name and the map by their field, a rule as
+// them, so the server may read them otherwise than ESM shows: the name
+// (which is in the folders on the command line, and cannot be changed),
+// the display name, the world name and the map by their field, a rule as
 // "rules.<key>", an extra argument by its position from 1
 // ("extra_args.2", never by what it holds), and a secret by its field.
 // An empty rule, and an extra argument that ends in "=", is among them; it
@@ -614,13 +633,23 @@ func (in Instance) storedUnsafe(s Secrets) []string {
 		_, bad := gameserver.CheckValue(v)
 		return bad
 	}
+	// A switch name that is not plain, that the engine would take for
+	// another switch, or that ESM refuses when it is set now.
+	badName := func(name string) bool {
+		_, searched := gameserver.SearchedSwitch(name)
+		_, refused := gameserver.RefusedSwitch(name)
+		return !gameserver.PlainSwitchName(name) || searched || refused
+	}
+	if _, found := gameserver.SearchedName(in.Name); found {
+		out = append(out, "name")
+	}
 	if in.DisplayName != "" && unsafe(in.DisplayName) {
 		out = append(out, "display_name")
 	}
 	if unsafe(in.World) {
 		out = append(out, "world")
 	}
-	if mapIsSwitch(in.Map) {
+	if in.Map != "" && (mapIsSwitch(in.Map) || unsafe(in.Map)) {
 		out = append(out, "map")
 	}
 	names := in.switchNames()
@@ -629,13 +658,13 @@ func (in Instance) storedUnsafe(s Secrets) []string {
 		if g, ok := gameserver.LookupGameSetting(k); ok && g.Type == gameserver.TypeList {
 			v = gameserver.ListValue(v)
 		}
-		if !gameserver.PlainSwitchName(k) || unsafe(v) || names.repeatedBefore(i) {
+		if badName(k) || unsafe(v) || names.repeatedBefore(i) {
 			out = append(out, "rules."+k)
 		}
 	}
 	for i, a := range in.ExtraArgs {
 		name, value, hasValue := extraSwitch(a)
-		if !gameserver.PlainSwitchName(name) || hasValue && unsafe(value) || strings.HasSuffix(a, "=") || names.repeatedBefore(len(in.Rules)+i) {
+		if badName(name) || hasValue && unsafe(value) || strings.HasSuffix(a, "=") || names.repeatedBefore(len(in.Rules)+i) {
 			out = append(out, "extra_args."+strconv.Itoa(i+1))
 		}
 	}
@@ -673,7 +702,7 @@ func checkExtraArg(instance string, pos int, a string) error {
 	// be plain ASCII. Every plain run of characters before "=" is checked
 	// for secret words too.
 	name := strings.TrimLeft(key, "-")
-	if i := strings.IndexFunc(name, func(r rune) bool { return r == ':' || unicode.IsSpace(r) }); i >= 0 {
+	if i := strings.IndexFunc(name, func(r rune) bool { return r == ':' || gameserver.EngineSpace(r) }); i >= 0 {
 		name = name[:i]
 	}
 	plain := strings.FieldsFunc(key, func(r rune) bool {
@@ -758,9 +787,9 @@ func (s Secrets) fields() []struct{ field, v string } {
 
 // commandLineProblem reports the first secret of s that is set and that
 // cannot go on the server command line (gameserver.CheckValue), by its
-// field, and why; never its value. With secret_delivery "file" a secret
-// may be anything; with "command_line" it is a value on the command line
-// like any other.
+// field, and why: which rule it breaks, never its value or a part of it.
+// With secret_delivery "file" a secret may be anything; with
+// "command_line" it is a value on the command line like any other.
 func (s Secrets) commandLineProblem() (field, why string, bad bool) {
 	for _, f := range s.fields() {
 		if f.v == "" {

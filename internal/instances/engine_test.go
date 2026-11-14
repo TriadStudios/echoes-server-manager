@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
@@ -76,16 +77,56 @@ func meant(r *rig, in Instance, sec Secrets) []switchWant {
 	return out
 }
 
+// stray returns the names the engine searches its command line for as
+// plain text (cmdline.Searched) that stand in an argument of argv without
+// being meant. An argument may be one of those switches itself, because a
+// rule or an extra argument names it: it starts with the name, after its
+// "-" when the name has none, and its own name ends where that name does
+// (at the end of the argument or at its "="). That part ESM shows as what
+// it is; a name anywhere after it is not meant.
+func stray(argv []string) []string {
+	var out []string
+	for _, a := range argv {
+		rest := a
+		for _, s := range cmdline.Searched {
+			head := a
+			if !strings.HasPrefix(s, "-") {
+				head = strings.TrimPrefix(a, "-")
+			}
+			if len(head) < len(s) || !cmdline.SameName(head[:len(s)], s) {
+				continue
+			}
+			if after := head[len(s):]; (strings.Contains(s, "=") || after == "" || after[0] == '=') && len(after) < len(rest) {
+				rest = after
+			}
+		}
+		out = append(out, cmdline.Found([]string{rest})...)
+	}
+	return out
+}
+
 // serverReads reads argv, the command line ESM built for in with the
 // secrets sec, the way the server does, and says where that differs from
 // what ESM shows: outside quotes the only switches with a value are the
 // ones ESM means to pass, each once and each read with the whole value ESM
-// shows, and no switch of the game that is on or off is set unless a rule
-// or an extra argument sets it.
+// shows; no switch of the game that is on or off is set unless a rule or
+// an extra argument sets it; every "=" on the line, in quotes or not, is
+// the one ESM wrote after the name of a switch; no name that the engine
+// searches the line for as plain text is on it, unless a rule or an extra
+// argument is that switch; and the engine starts with the line at all.
 func serverReads(r *rig, in Instance, sec Secrets, argv []string) []string {
 	line := cmdline.Join(argv)
 	want := meant(r, in, sec)
 	var problems, wantNames, gotNames []string
+	if n := strings.Count(line, "="); n != len(want) {
+		problems = append(problems, fmt.Sprintf("the line has %d \"=\", ESM passes %d switches with a value", n, len(want)))
+	}
+	for _, name := range stray(argv) {
+		problems = append(problems, fmt.Sprintf("the server's engine finds %q on the line, which no rule or extra argument is", name))
+	}
+	if why := cmdline.Refuses(line); why != "" {
+		problems = append(problems, "the server's engine does not start: "+why)
+	}
 	for _, w := range want {
 		wantNames = append(wantNames, lowerASCII(w.name))
 	}
@@ -137,9 +178,17 @@ func TestAcceptedSettingsReachTheServerAsShown(t *testing.T) {
 	rng := rand.New(rand.NewPCG(20261113, 14))
 	pieces := []string{"a", "Z", "q7", "9", "=", "=", ",", ")", "(", ";", " ", " ", " ", "-", "_", ".", ":", "/", "?", "#", `"`,
 		"\t", "\n", "\u00a0", "\u212A", "\u0130", "é", "PvP", "LAN", "Password", "AdminPassword", "LOG", "Port", "ini", "x"}
+	// The white space of every host of the engine, characters that are not
+	// printable text, an en dash, and the names the engine searches its
+	// line for.
+	pieces = append(pieces, "-", "+", "5", "PLUGIN", string(rune(0x2013)))
+	for _, r := range slices.Concat(hostSpaces, notText) {
+		pieces = append(pieces, string(r))
+	}
+	pieces = append(pieces, cmdline.Searched...)
 	// Half of the values come from fewer pieces, which ESM accepts more
-	// often: a value with a space and "=", "," or ")" in it, for one.
-	fewer := []string{"a", "Z", "q7", " ", "=", ",", ")", ";", "PvP", "Password"}
+	// often: a value with a space and "," or ")" in it, for one.
+	fewer := []string{"a", "Z", "q7", " ", ",", ")", ";", "-", "/", "PvP", "Password"}
 	gen := func(lo, hi int) string {
 		from := pieces
 		if rng.IntN(2) == 0 {
@@ -149,10 +198,24 @@ func TestAcceptedSettingsReachTheServerAsShown(t *testing.T) {
 		for n := lo + rng.IntN(hi-lo+1); n > 0; n-- {
 			b.WriteString(from[rng.IntN(len(from))])
 		}
+		// Now and then a name the engine searches for, in the middle.
+		if rng.IntN(12) == 0 {
+			name := cmdline.Searched[rng.IntN(len(cmdline.Searched))]
+			if rng.IntN(2) == 0 {
+				name = strings.ToUpper(name)
+			}
+			s := b.String()
+			at := rng.IntN(len(s) + 1)
+			for at < len(s) && !utf8.RuneStart(s[at]) {
+				at++
+			}
+			return s[:at] + name + s[at:]
+		}
 		return b.String()
 	}
 	keys := []string{"Banner", "banner", "BANNER", "Mode", "Motto", "Tag", "PvP", "pvp", "LAN", "x_PvP", "Foo.LAN", "Foo-Port", "Foo:Port",
-		"A1", "LOG", "Rate2"}
+		"A1", "LOG", "Rate2", "ansimalloc", "AnsiMallocs", "vmapoolscale", "binnedmalloc2", "binnedmalloc22", "PLUGIN", "CmdLineFile",
+		"SteamSocketsRelays", "xSteamSocketsRelays", "tracehost", "TraceHosts"}
 	key := func() string {
 		if rng.IntN(3) == 0 {
 			return gen(1, 3)
@@ -175,7 +238,7 @@ func TestAcceptedSettingsReachTheServerAsShown(t *testing.T) {
 	}
 	accepted := map[string]int{}
 	failures := 0
-	for i := 0; i < 1500; i++ {
+	for i := 0; i < 2500; i++ {
 		v, _ := m.Get(name)
 		rules, args := maps.Clone(v.Rules), slices.Clone(v.ExtraArgs)
 		if len(rules) > 6 {
@@ -327,7 +390,16 @@ func TestAttackStringsAreRefused(t *testing.T) {
 		// Not in the list of strings that slipped through: a bare switch after
 		// white space the server does not quote, if its engine counts it as
 		// white space.
-		"x\u00a0/PvP", "x\u2028/LAN"}
+		"x\u00a0/PvP", "x\u2028/LAN",
+		// White space of a Windows host that Unicode does not list, a format
+		// character, names the engine searches for inside a quoted value,
+		// its plugin folder switch, an en dash, and a plain "=" in a value
+		// with a space.
+		"Hi\u180e-AllowNonSteamClients", "Hi\u180e/LAN", "Hi\u200b-PvP", "well x-sigdfl=5 met", "x-vmapoolscale=4 y", "a x-stompmalloc b",
+		"see PLUGIN=/tmp/x now", "Alpha \u2013 EU", "a b=c", "My-AnsiMalloc Server", "a-CmdLineFile=x.txt b",
+		// A space followed by "-" and more, and "-" with a letter at the
+		// start of a word, with nothing else wrong.
+		"Zq7Jx -Kv9 pass", "Zq7Jx;-Kv9Wy"}
 	refused := func(what string, err error) {
 		t.Helper()
 		if !fault.Is(err, fault.Invalid) {

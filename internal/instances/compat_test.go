@@ -220,11 +220,10 @@ func TestCommandLineDelivery(t *testing.T) {
 }
 
 // Passwords that can go on the server command line (no double quote, no
-// space at either end or before a "-"), with spaces, shell and JSON
-// punctuation and something that looks like a switch inside, which the
-// server reads as part of the quoted value.
+// "=", no space at either end or before a "-"), with spaces and shell and
+// JSON punctuation, which the server reads as part of the quoted value.
 const (
-	cmdServerPW = `ovs7 Qq$&';%,=<>1 Zed=1 zk-old9`
+	cmdServerPW = `ovs7 Qq$&';%,+<>1 Zed+1 zk-old9`
 	cmdAdminPW  = `oad4 Wy8 \ $HOME jm-old3`
 )
 

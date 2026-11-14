@@ -285,25 +285,28 @@ func TestLaunchArgsLeaveEmptyValuesOut(t *testing.T) {
 	}
 }
 
-// The server finds a switch anywhere in its command line, outside quotes,
-// where "Name=" follows something that is not an ASCII letter or digit,
-// and ends a value without quotes at "," or ")". So a value without a
-// space, which the server does not quote, may hold none of "=", "," and
-// ")"; one with a space is quoted whole and may. These rules do not look
-// for names: a name of any switch, in any script, is caught the same way.
+// The server finds a switch anywhere in its command line where "Name="
+// follows something that is not an ASCII letter or digit: outside quotes
+// by its usual lookup, and inside them too by some of its code. And it
+// ends a value without quotes at "," or ")". So no value holds "=", and a
+// value without a space, which the server does not quote, holds no ","
+// or ")" either; one with a space is quoted whole and may. These rules do
+// not look for names: a name of any switch, in any script, is caught the
+// same way.
 func TestCheckValue(t *testing.T) {
 	for _, v := range []string{
 		"", " ", " lead", "trail ", "a\tb", "a\nb", "a\u00a0b", "a\u2028b", "a\u0085b", "a\x7fb", `my"pass99`, "x -Port=1",
 		"x;LOG=", "Hi=", "\u212AAdminPassword=evil", "\u0130LAN=1", "secret,AdminPassword=evil", "secret;AdminPassword=",
 		"abc,def123", "pass)word99", "adm;Password=joinme", "https://e.com/n?AdminPassword=x", "-iniFile=/x", "Hi;LOG=x.log",
-		"a=b", "PORT=1", "(motd=hi)", "1,2", "use multihome", "\xff",
+		"a=b", "PORT=1", "(motd=hi)", "1,2", "x = y", "Hi, PvP=True all", "a b,c)d=e",
+		"Welcome x-Port=1 to all", "a, b=c (d)", "\xff",
 	} {
 		if why, bad := CheckValue(v); !bad || why == "" || strings.Contains(why, v) && v != "" && v != " " {
 			t.Errorf("%q: %v %q", v, bad, why)
 		}
 	}
 	for _, v := range []string{
-		"Alpha", "Alpha EU - west", "Welcome, traveller", "Be nice (please)", "x = y", "Hi, PvP=True all", "a b,c)d=e",
+		"Alpha", "Alpha EU - west", "Welcome, traveller", "Be nice (please)", "x - y", "Hi, PvP True all", "a b,c)d;e",
 		"Café", "\u212Aelvin", "-5", "https://example.com/path", "rude, ruder", "q7;x", "Password", "/Game/x",
 	} {
 		if why, bad := CheckValue(v); bad {
@@ -325,11 +328,10 @@ func TestCheckValue(t *testing.T) {
 			}
 		}
 	}
-	// Quoted whole, a value with a space may hold anything printable but a
-	// double quote. A list of two or more items is written with ", ", so
-	// it is quoted whole too.
+	// Quoted whole, a value with a space may hold "," and ")". A list of
+	// two or more items is written with ", ", so it is quoted whole too.
 	for key, values := range map[string][]string{
-		"MOTD":             {"Welcome x-Port=1 to all", "a, b=c (d)"},
+		"MOTD":             {"Welcome x-Port 1 to all", "a, b;c (d)"},
 		"AdminPlayerIds":   {"1,2", "abc,def123"},
 		"ChatBlockedWords": {"rude;x,ruder"},
 	} {
