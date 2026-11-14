@@ -339,9 +339,10 @@ var Searched = []string{
 }
 
 // Found returns the names of Searched that stand in an argument of argv,
-// each once, in the order of Searched. It is plain text search, as the
-// engine's: an argument that is the switch itself ("-ansimalloc") holds its
-// name too.
+// each once, in the order of Searched. It is plain text search: an argument
+// that is the switch itself ("-ansimalloc") holds its name too. That is
+// what the engine does for most of the names, and never less than it does:
+// a few of them it finds at the start of a word only, and Found anywhere.
 func Found(argv []string) []string {
 	var out []string
 	for _, name := range Searched {

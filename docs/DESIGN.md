@@ -373,8 +373,12 @@ most 256 characters, a list at most 2000. A refusal is 422
 the setting, never its value.
 
 The name of an instance is not a value, but it is in the folders ESM puts
-on the command line (`-UserDir=`, `-abslog=`, the secrets file). A new
+on the command line (`-UserDir=`, `-abslog=`, the secrets file), and it
+is the server's name while the instance has no display name. A new
 instance's name may not hold one of the names above (`x-ansimalloc`).
+The other rules are not applied to it: of them, a name of lower-case
+letters, digits and `-` could only break the one about a `-` before a
+letter (`a--b`).
 
 **The length of the line.** ESM counts the command line of an instance
 the way the engine does: a space before every argument, the two quotes
@@ -1514,27 +1518,34 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   quotes, `MULTIHOME` and white space followed by `-` in every setting that
   goes onto the command line (see [Instances](#instances)), and a value
   set from now on follows the rules in [Game settings](#game-settings).
-  By how a value is built, those rules keep out every switch the engine
-  finds by a name and `=`, whatever its name and quoted or not, and every
-  switch its usual lookup finds written alone after white space in the
-  line, on a Linux and on a Windows host. They do not keep out, by how a
-  value is built, a name that the engine looks for as plain text without
-  an `=`, nor a `/Name` after a space inside a value with a space: the
-  usual lookup does not look inside quotes, but on Windows one piece of
-  the engine reads the single arguments without their quotes (for what it
-  hands on to the crash reporter). For those ESM has a list of the names
-  it knows, taken from the engine the server builds are made with: what
-  its own runtime code and its Steam plugins search for on a Linux or a
-  Windows host. A name that a later engine,
-  another plugin or the game itself searches for is not on it, and
-  neither is a name that such code looks up without an `=` at the start
-  of a word. Two names of that kind that the engine's source has for
-  other plugins and platforms are plain words (`game`, `iterative`), which
-  no list could refuse. The model of how the server reads its command
-  line comes from the engine's source and is what the tests and the fake
-  server follow; it is not yet checked against a real server. A value
-  stored before is not checked again: an empty one is left out, any other
-  is passed as it is, with the warning `unsafe_stored_settings`.
+  By how a value is built, those rules keep out of a value every switch
+  the engine finds by a name and `=`, whatever its name and quoted or not
+  (a value holds no `=`), and every switch its usual lookup finds written
+  alone after white space in the line, on a Linux and on a Windows host.
+  They do not keep out, by how a value is built, a name that the engine
+  looks for as plain text without an `=`, nor a `/Name` after a space
+  inside a value with a space: the usual lookup does not look inside
+  quotes, but on Windows one piece of the engine reads the single
+  arguments without their quotes (for what it hands on to the crash
+  reporter). For those ESM has a list of the names it knows, taken from
+  the engine the server builds are made with: what its own runtime code
+  and its Steam plugins search for on a Linux or a Windows host. A name
+  that a later engine, another plugin or the game itself searches for is
+  not on it, and neither is a name that such code looks up without an `=`
+  at the start of a word. Two names of that kind that the engine's source
+  has for other plugins and platforms are plain words (`game`,
+  `iterative`), which no list could refuse. Whether a rule key, or the
+  name of an extra argument, ends in the name of a switch that is not on
+  that list is not looked at: `XPort` is not `Port` to the engine's usual
+  lookup, which wants the start of a word, but code that searches the
+  line for `Port=` as plain text finds it at the end of the longer name
+  too. The one search of that kind known in the engine's source asks
+  whether a run is one that fills its asset cache; ESM does not check
+  for it. The model of how the server reads its command line comes from
+  the engine's source and is what the tests and the fake server follow;
+  it is not yet checked against a real server. A value stored before is
+  not checked again: an empty one is left out, any other is passed as it
+  is, with the warning `unsafe_stored_settings`.
 - **What ESM itself puts on the command line is not checked.** The
   folders (`-UserDir=`, `-abslog=`, the secrets file) come from ESM's
   root and the instance's name, the program from the path of the build,
