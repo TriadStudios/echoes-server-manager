@@ -21,6 +21,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/service"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
@@ -444,6 +445,19 @@ func TestEveryScreen(t *testing.T) {
 		}
 	}
 	admin, op, rd := pages["session"], pages[oper], pages[read]
+
+	// A server with its passwords on the command line says on its settings
+	// what a password there may not hold, the en dash and every name the
+	// engine searches for among it; one with the secrets file does not.
+	note := html.UnescapeString(admin["/servers/beta/settings"])
+	for _, want := range append([]string{"no en dash"}, gameserver.SearchedNames()...) {
+		if !strings.Contains(note, want) {
+			t.Errorf("the settings of beta do not say %q of a password on the command line", want)
+		}
+	}
+	if strings.Contains(admin["/servers/alpha/settings"], "data-searched") {
+		t.Error("the settings of alpha state the rules for passwords on the command line")
+	}
 
 	// What each role is offered.
 	if !strings.Contains(admin["/"], `data-act="stop" data-name="alpha"`) || !strings.Contains(op["/"], `data-act="stop" data-name="alpha"`) ||
