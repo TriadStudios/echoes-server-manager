@@ -500,7 +500,7 @@ paths:
     post:
       tags: [instances]
       summary: Start (operator)
-      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count. The first start after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed. An instance whose stored command line is longer than the 16383 characters the server's engine starts with is not started (409 command_line_too_long).
+      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count. The first start after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed. The server's engine does not start with a command line of more than 16383 characters or with an en dash (U+2013) anywhere on it, and only settings stored by an earlier version (or a path of ESM's own) can get there; ESM does not start such a server then. An instance whose stored command line is longer than 16127 characters (ESM keeps 256 of the 16383 free for what a build's start script may add) is not started (409 command_line_too_long, with the numbers), and neither is one with an en dash on it (409 command_line_unsafe, which names the setting, a secret by its field, never a value). The same holds for a restart.
       parameters:
         - $ref: "#/components/parameters/Name"
         - $ref: "#/components/parameters/Wait"
@@ -991,7 +991,13 @@ components:
                 or token), command_line_too_long (422: a create, a change or
                 a secret would make the server command line longer than
                 12000 characters; 409 on a start: the stored command line is
-                longer than the 16383 the server's engine starts with), no_build, no_map (409: neither the instance nor its build
+                longer than 16127, the 16383 the server's engine starts with
+                less 256 kept free for what a build's start script may add),
+                command_line_unsafe (409 on a start: the server command line
+                would hold an en dash, U+2013, with which the server's engine
+                does not start; only a setting stored by an earlier version,
+                or a path of ESM's own, holds one; the answer names the
+                setting, a secret by its field, never a value), no_build, no_map (409: neither the instance nor its build
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
@@ -1297,11 +1303,15 @@ components:
         version break the rules for values on the server command line (see
         Settings), so the server may read them otherwise than ESM shows; an
         empty one is left out when the server starts, any other is passed
-        as stored. The instance's `unsafe_stored_settings` names them.
-        `command_line_too_long`: the server command line of the instance,
-        as an earlier version stored its settings, is longer than the 12000
-        characters a change may lead to; beyond 16383, which is all the
-        server's engine starts with, ESM does not start the server.
+        as stored, but one with an en dash (U+2013), with which the
+        server's engine does not start, keeps ESM from starting the server
+        (409 command_line_unsafe). The instance's `unsafe_stored_settings`
+        names them. `command_line_too_long`: the server command line of the
+        instance, as an earlier version stored its settings, is longer than
+        the 12000 characters a change may lead to; beyond 16127 ESM does not
+        start the server: the server's engine starts with no more than
+        16383, and ESM keeps 256 of them free for what a build's start
+        script may add.
     Settings:
       type: object
       additionalProperties: false

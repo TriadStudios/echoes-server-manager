@@ -389,17 +389,30 @@ create, a change or a new secret that would make it longer than 12000 is
 refused with 422 `command_line_too_long`, which has the two numbers and
 nothing of a value. 12000 is well under the engine's 16383 because what
 starts the server may add to the line (a start script the name of the
-game, say).
+game's project, say). ESM runs the program a build's manifest names and
+does not know what it adds, so at a start it keeps 256 of the 16383 free
+for that: it starts a server with a line of at most 16127, as ESM passes
+it. 256 is a judgment (room for a project name and a few switches), not a
+measurement.
 
 A value stored before these rules (by an earlier version, or by hand) is
 not checked again until it is changed, and ESM keeps passing it, with
-one exception: ESM never passes a switch with an empty value, neither as
+two exceptions. ESM never passes a switch with an empty value, neither as
 `-Key=` nor as the bare switch `-Key` (which turns a setting like PvP or
 AllowNonSteamClients on). So an empty rule and an extra argument that
 ends in `=` are left off the command line, and the service log names them
-(rule keys, and extra arguments by position) at every start. Any other
-stored value that breaks the rules, and with command-line delivery a
-stored password or token that does, is passed as it is; the instance
+(rule keys, and extra arguments by position) at every start. And ESM does
+not start a server whose command line would hold an en dash, with which
+the engine stops at once (`Alpha - EU` as a display name stored by an
+earlier version, with an en dash for the `-`): the start (or restart) is
+refused with 409 `command_line_unsafe`, which names where the en dash is
+(the setting as below, a secret by its field, or the folders of the
+instance when ESM's root holds one) and never a value; the supervisor is
+not asked. Any other stored value that breaks the rules, and with
+command-line delivery a stored password or token that does, is passed as
+it is; so is a stored rule key or extra argument that ESM now refuses
+(`-CmdLineFile=`, an override of the configuration files), and the
+instance then takes no other change until it is removed. The instance
 carries the warning `unsafe_stored_settings`, and its
 `unsafe_stored_settings` field names the settings: `name`,
 `display_name`, `world`, `map`, `rules.<key>`, `extra_args.<position>`
@@ -408,8 +421,8 @@ Changing or removing them clears the warning (a name cannot be changed:
 such an instance has to be made anew under another one). A stored
 command line that is longer than 12000 characters stays as it is, with
 the warning `command_line_too_long`; a change is taken as long as it does
-not make the line longer. Up to 16383 the server is started as before and
-the service log says that its line is long. Beyond that the engine would
+not make the line longer. Up to 16127 the server is started as before and
+the service log says that its line is long. Beyond that the engine may
 stop at once, so ESM does not start the server (409
 `command_line_too_long`).
 
@@ -568,7 +581,9 @@ refused with 422 `unsafe_argument`; the answer names the secret
 nothing the value holds: not the name it holds either, when that is the
 rule. With the secrets file a password may be anything, as before. A
 secret stored before these rules on an instance in this mode is passed as
-it is, and named in the warning `unsafe_stored_settings`. The secrets
+it is, and named in the warning `unsafe_stored_settings`; one with an en
+dash keeps the server from starting (409 `command_line_unsafe`, which
+names the secret's field and nothing it holds). The secrets
 count for the length of the command line in this mode (422
 `command_line_too_long`).
 
@@ -1544,17 +1559,24 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   for it. The model of how the server reads its command line comes from
   the engine's source and is what the tests and the fake server follow;
   it is not yet checked against a real server. A value stored before is
-  not checked again: an empty one is left out, any other is passed as it
-  is, with the warning `unsafe_stored_settings`.
+  not checked again: an empty one is left out, one with an en dash keeps
+  the server from starting (409 `command_line_unsafe`), any other is
+  passed as it is, with the warning `unsafe_stored_settings`.
 - **What ESM itself puts on the command line is not checked.** The
   folders (`-UserDir=`, `-abslog=`, the secrets file) come from ESM's
   root and the instance's name, the program from the path of the build,
   and the map of an instance that names none from its build's manifest.
   Only a new instance's name is checked, and only for the names on the
   list. A root or a build whose path holds an `=`, a double quote, a
-  space followed by `-`, an en dash or one of those names is read by the
-  server like any such value. Choose plain paths; `esm doctor` does not
-  look at this.
+  space followed by `-` or one of those names is read by the server like
+  any such value. An en dash in the folders is the one thing ESM looks
+  for: it does not start the server then (409 `command_line_unsafe`).
+  Choose plain paths; `esm doctor` does not look at this.
+- **The room left for a start script is a judgment.** ESM keeps 256 of
+  the 16383 characters the engine starts with free for what starts the
+  server to add to the line, and does not know what a build's start
+  script adds; a script that adds more can still take a stored line of
+  up to 16127 over what the engine starts with.
 - **A map that is the game's own name.** The engine takes an argument
   that is exactly the name of the game's project, or of its project file,
   for the game itself and drops it from the line. ESM does not know that

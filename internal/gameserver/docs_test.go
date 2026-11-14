@@ -29,7 +29,7 @@ func TestDocumentsListTheSearchedNames(t *testing.T) {
 		}
 	}
 	for _, doc := range [][]byte{design, api} {
-		for _, n := range []string{strconv.Itoa(MaxLineLength), strconv.Itoa(EngineLineLimit)} {
+		for _, n := range []string{strconv.Itoa(MaxLineLength), strconv.Itoa(EngineLineLimit), strconv.Itoa(StartLineLimit), strconv.Itoa(StartRoom)} {
 			if !strings.Contains(string(doc), n) {
 				t.Errorf("a document does not name the limit %s", n)
 			}

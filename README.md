@@ -471,24 +471,33 @@ The name of an instance is in the folders ESM puts on the command line,
 so a new instance's name may not hold one of those names either. And the
 whole command line of an instance, with everything on it, may have 12000
 characters after a change: the server's engine does not start with more
-than 16383. A change that would make it longer is refused
-(`command_line_too_long`).
+than 16383, and what starts the server may add to the line. A change that
+would make it longer is refused (`command_line_too_long`).
 
 A value stored by an earlier version is kept until it is changed. An
 empty one (a rule, or an extra argument that ends in `=`) is left off the
 command line when the server starts, and the service log says so; any
 other that breaks the rules is passed as it is, and the instance carries
 the warning `unsafe_stored_settings`, which names the settings (never
-their values) to change. An instance whose stored command line is longer
-than 12000 characters carries the warning `command_line_too_long`; beyond
-16383 ESM does not start its server, and says why.
+their values) to change. One exception: with an en dash anywhere on its
+command line the server's engine stops at once, so ESM does not start a
+server whose line would hold one (409 `command_line_unsafe`, which names
+the setting, a password or token by its field, and never a value). An
+instance whose stored command line is longer than 12000 characters
+carries the warning `command_line_too_long`; beyond 16127 ESM does not
+start its server, and says why (409 `command_line_too_long`): of the
+16383 the engine starts with, ESM keeps 256 free for what a build's start
+script may put on the line besides (the name of the game's project, say),
+since it does not know what a build's script adds.
 
 These rules follow how the engine reads its command line, as far as ESM
 knows it from the engine's source; they are not yet checked against a
 real server, and they do not cover everything. What ESM puts on the line
 from its own configuration is not checked: the folders below ESM's root,
 the path of a build, and a build's default map; keep those free of `=`,
-of double quotes, of a space followed by `-` and of the names above. The
+of double quotes, of a space followed by `-` and of the names above (an
+en dash in the folders is the one thing ESM looks for there: it does not
+start the server then, 409 `command_line_unsafe`). The
 list of names is the one of the engine the server builds are made with:
 a later engine, a plugin or the game itself may search for a name ESM
 does not know yet. The rest is in the
