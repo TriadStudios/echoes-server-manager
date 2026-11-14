@@ -323,7 +323,11 @@ func TestAttackStringsAreRefused(t *testing.T) {
 		}
 	}
 	attacks := []string{"x;LOG=", "Hi=", "\u212AAdminPassword=evil", "\u0130LAN=1", "secret,AdminPassword=evil", "secret;AdminPassword=",
-		"my\"pass99", "abc,def123", "pass)word99", "adm;Password=joinme", "https://e.com/n?AdminPassword=x", "-iniFile=/x", "Hi;LOG=x.log"}
+		"my\"pass99", "abc,def123", "pass)word99", "adm;Password=joinme", "https://e.com/n?AdminPassword=x", "-iniFile=/x", "Hi;LOG=x.log",
+		// Not in the list of strings that slipped through: a bare switch after
+		// white space the server does not quote, if its engine counts it as
+		// white space.
+		"x\u00a0/PvP", "x\u2028/LAN"}
 	refused := func(what string, err error) {
 		t.Helper()
 		if !fault.Is(err, fault.Invalid) {
