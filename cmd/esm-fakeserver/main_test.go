@@ -17,6 +17,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
+	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
 func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
@@ -52,6 +53,18 @@ func TestParseArgs(t *testing.T) {
 		if _, _, err := parseArgs([]string{"M", a}, nil); err == nil || !strings.Contains(err.Error(), "refused") {
 			t.Errorf("%s accepted: %v", a, err)
 		}
+	}
+	// What the engine does not start with: a line longer than it keeps, and
+	// an en dash anywhere on it.
+	long := "-Motd=" + strings.Repeat("x", cmdline.Limit)
+	if _, _, err := parseArgs([]string{"M", long}, nil); err == nil || !strings.Contains(err.Error(), "longer") {
+		t.Errorf("a command line of more than %d characters: %v", cmdline.Limit, err)
+	}
+	if _, _, err := parseArgs([]string{"M", "-ServerName=Alpha \u2013 EU"}, nil); err == nil || !strings.Contains(err.Error(), "en dash") {
+		t.Errorf("an en dash: %v", err)
+	}
+	if _, _, err := parseArgs([]string{"M", "-ServerName=Alpha - EU", "-Motd=" + strings.Repeat("x", 4000)}, nil); err != nil {
+		t.Errorf("a long line with a hyphen: %v", err)
 	}
 }
 

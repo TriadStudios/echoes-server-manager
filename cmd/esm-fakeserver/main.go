@@ -11,7 +11,9 @@
 // server it joins its arguments into one line and looks every switch up
 // there (testkit/cmdline), so it reads what the real server would read: a
 // switch inside the value of another one, the first of two, and the next
-// argument for an empty value.
+// argument for an empty value. And like the real server it does not start
+// (exit code 2) with a command line that is too long for the engine or
+// that holds an en dash.
 //
 // Extra switches, only for tests:
 //
@@ -235,6 +237,9 @@ func parseArgs(args []string, file map[string]string) (mapName string, sw switch
 		}
 	}
 	sw = switches{line: cmdline.Join(args), file: file}
+	if why := cmdline.Refuses(sw.line); why != "" {
+		return "", switches{}, fmt.Errorf("%s: the game server does not start with that", why)
+	}
 	multihome := key(gameserver.MultihomeSwitch)
 	if _, found := cmdline.Value(sw.line, multihome); found || cmdline.Param(sw.line, multihome) {
 		return "", switches{}, fmt.Errorf("%s is refused: ESM must never pass it", gameserver.MultihomeSwitch)
