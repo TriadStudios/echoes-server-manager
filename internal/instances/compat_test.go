@@ -219,6 +219,15 @@ func TestCommandLineDelivery(t *testing.T) {
 	}
 }
 
+// Passwords that can go on the server command line (no double quote, no
+// space at either end or before a "-"), with spaces, shell and JSON
+// punctuation and something that looks like a switch inside, which the
+// server reads as part of the quoted value.
+const (
+	cmdServerPW = `ovs7 Qq$&';%,=<>1 Zed=1 zk-old9`
+	cmdAdminPW  = `oad4 Wy8 \ $HOME jm-old3`
+)
+
 // A start that fails with the passwords on the command line: even when the
 // supervisor repeats the whole command line in its error, the passwords are
 // masked for operators and admins, and the read role gets the notice.
@@ -232,20 +241,20 @@ func TestCommandLineStartFailure(t *testing.T) {
 		BindIP: ptr("127.0.0.1"), SecretDelivery: ptr(gameserver.DeliveryCommandLine)}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(testServerPW), AdminPassword: ptr(testAdminPW)}); err != nil {
+	if _, _, err := m.SetSecrets("alpha", SecretsRequest{ServerPassword: ptr(cmdServerPW), AdminPassword: ptr(cmdAdminPW)}); err != nil {
 		t.Fatal(err)
 	}
-	secret := pieces(testServerPW, testAdminPW)
+	secret := pieces(cmdServerPW, cmdAdminPW)
 	_, err := m.Start(context.Background(), "alpha", true)
 	if fault.CodeOf(err) != "start_failed" || !strings.Contains(err.Error(), "-Password="+gameserver.Mask) {
 		t.Fatalf("start error: %v", err)
 	}
 	noPieces(t, "start error", err.Error(), secret)
 	spec, _, _ := sup.last(t)
-	if !slices.Equal(spec.SecretValues, []string{testServerPW, testAdminPW}) {
+	if !slices.Equal(spec.SecretValues, []string{cmdServerPW, cmdAdminPW}) {
 		t.Fatalf("the supervisor was told these secret values: %q", spec.SecretValues)
 	}
-	if !slices.Contains(spec.Args, "-Password="+testServerPW) || !slices.Contains(spec.Args, "-AdminPassword="+testAdminPW) ||
+	if !slices.Contains(spec.Args, "-Password="+cmdServerPW) || !slices.Contains(spec.Args, "-AdminPassword="+cmdAdminPW) ||
 		strings.Contains(strings.Join(spec.Args, "\n"), gameserver.SecretsFileSwitch) {
 		t.Fatalf("the command line with command-line delivery: %q", spec.Args)
 	}

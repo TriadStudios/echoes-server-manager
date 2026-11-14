@@ -12,7 +12,8 @@ import (
 
 // A rule or an extra argument without a value is refused when it is set:
 // the server would read the next argument as the value. One stored
-// earlier keeps loading and is never passed as -Key=.
+// earlier keeps loading and is left off the command line: not passed as
+// -Key=, and not as the bare switch either, which turns a setting on.
 func TestEmptyValuesAreRefusedWhenSet(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -52,11 +53,11 @@ func TestEmptyValuesAreRefusedWhenSet(t *testing.T) {
 	m.Start(context.Background(), "alpha", false)
 	spec, _, _ := sup.last(t)
 	for _, a := range spec.Args {
-		if strings.HasSuffix(a, "=") || strings.HasPrefix(a, "-MOTD") {
+		if strings.HasSuffix(a, "=") || strings.HasPrefix(a, "-MOTD") || strings.HasPrefix(a, "-Foo") || strings.HasPrefix(a, "-Bar") {
 			t.Errorf("%q is on the command line", a)
 		}
 	}
-	if !slices.Contains(spec.Args, "-Foo") || !slices.Contains(spec.Args, "-Bar") {
-		t.Errorf("the stored free rule and argument are not passed bare: %q", spec.Args)
+	if !slices.Contains(spec.Args, "-ServerName=Alpha") {
+		t.Errorf("the command line: %q", spec.Args)
 	}
 }

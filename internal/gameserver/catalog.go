@@ -231,8 +231,9 @@ var boolWords = []string{"true", "false", "yes", "no", "1", "0"}
 
 // Check reports whether value is a value of s that the server reads as
 // given. now is the time it is checked at (a date may not be in the
-// future). The error names the setting and what it allows; it repeats no
-// value.
+// future). Besides its type and range, the value as ESM passes it follows
+// the rules for every value on the command line (CheckValue). The error
+// names the setting and what it allows; it repeats no value.
 func (s GameSetting) Check(value string, now time.Time) error {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf(s.Key+" "+format, args...)
@@ -253,28 +254,24 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		if !slices.Contains(boolWords, strings.ToLower(value)) {
 			return bad("must be True or False")
 		}
-		return nil
 	case TypeInt:
 		n, err := strconv.ParseInt(value, 10, 32)
 		if !intRe.MatchString(value) || err != nil || !s.inRange(float64(n)) {
 			return bad("must be a whole number %s", s.rangeWords())
 		}
-		return nil
 	case TypeFloat:
 		f, err := strconv.ParseFloat(value, 64)
 		if !floatRe.MatchString(value) || err != nil || !s.inRange(f) {
 			return bad("must be a number %s", s.rangeWords())
 		}
-		return nil
 	case TypeEnum:
 		var values []string
 		for _, c := range s.Choices {
-			if strings.EqualFold(c.Value, value) {
-				return nil
-			}
 			values = append(values, c.Value)
 		}
-		return bad("must be %s", orList(values))
+		if !slices.ContainsFunc(values, func(c string) bool { return strings.EqualFold(c, value) }) {
+			return bad("must be %s", orList(values))
+		}
 	case TypeDate:
 		d, err := time.Parse(time.DateOnly, value)
 		if !dateRe.MatchString(value) || err != nil || d.Year() < 2000 {
@@ -283,40 +280,22 @@ func (s GameSetting) Check(value string, now time.Time) error {
 		if y, m, dd := now.UTC().Date(); d.After(time.Date(y, m, dd, 0, 0, 0, 0, time.UTC)) {
 			return bad("may not be in the future (the server ignores such a date)")
 		}
-		return nil
 	case TypeList:
 		if len(value) > s.MaxLength {
 			return bad("must be at most %d characters", s.MaxLength)
 		}
+		// The list is passed with ", " between its items, quoted whole when
+		// it has two or more; an item that could not stand alone as a value
+		// is refused all the same.
 		for _, item := range strings.Split(value, ",") {
 			item = strings.TrimSpace(item)
-			if strings.ContainsFunc(item, unicode.IsSpace) || strings.ContainsAny(item, `")`) {
-				return bad("items are separated by commas and may not hold white space, ')' or a double quote")
+			if strings.ContainsFunc(item, unicode.IsSpace) || strings.ContainsAny(item, `"=)`) {
+				return bad(`items are separated by commas and may not hold white space, "=", ")" or a double quote`)
 			}
 		}
-		for _, v := range []string{value, ListValue(value)} {
-			if why, unsafe := UnsafeArgument(v); unsafe {
-				return bad("%s", why)
-			}
-		}
-		if name, found := SwitchInValue(value); found {
-			return bad("%s", SwitchInValueWhy(name))
-		}
-		return nil
 	case TypeString:
 		if len(value) > s.MaxLength {
 			return bad("must be at most %d characters", s.MaxLength)
-		}
-		if why, unsafe := UnsafeArgument(value); unsafe {
-			return bad("%s", why)
-		}
-		if name, found := SwitchInValue(value); found {
-			return bad("%s", SwitchInValueWhy(name))
-		}
-		// The engine quotes a value that holds a space (" "), and reads a
-		// quoted value whole; other white space does not count.
-		if !strings.Contains(value, " ") && strings.ContainsAny(value, ",)") {
-			return bad("may not hold ',' or ')' unless it also holds a space: the server ends a value without spaces there")
 		}
 		if s.Format == FormatURL {
 			u, err := url.Parse(value)
@@ -324,14 +303,18 @@ func (s GameSetting) Check(value string, now time.Time) error {
 				return bad("must be an http or https address like https://example.com/path")
 			}
 			// A base address: the server adds its own path and query to the
-			// announcements address, and a query could hold a switch.
+			// announcements address.
 			if strings.ContainsAny(value, "?#") {
 				return bad("must be a base address, without a query (?) or a fragment (#)")
 			}
 		}
-		return nil
+	default:
+		return bad("has an unknown type %q", s.Type)
 	}
-	return bad("has an unknown type %q", s.Type)
+	if why, unsafe := CheckValue(switchValue(s.Key, value)); unsafe {
+		return bad("%s", why)
+	}
+	return nil
 }
 
 func (s GameSetting) inRange(f float64) bool {

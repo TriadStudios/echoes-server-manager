@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path"
@@ -29,6 +30,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Mask stands in for a secret value in text that ESM shows.
@@ -94,8 +96,10 @@ type Launch struct {
 	SecretsFile string
 	// Secrets are the passwords and tokens. They are put on the command
 	// line with DeliveryCommandLine, and never otherwise.
-	Secrets   Secrets
-	ExtraArgs []string // appended as-is, one argv entry each
+	Secrets Secrets
+	// ExtraArgs are appended as they are, one argv entry each, except one
+	// that ends in "=" (see Args).
+	ExtraArgs []string
 }
 
 // Args builds the argument list (without the executable). It never builds a
@@ -107,68 +111,73 @@ type Launch struct {
 // args. -MULTIHOME is never part of it: a bind address configured
 // for an instance is not given to the server.
 //
-// No argument ends in "=". The server reads an empty value that is not
-// quoted as the argument after it, so "-MOTD=" would take the next switch
-// for its value. An empty value (one stored before ESM refused them) is
-// left out for a setting of the catalog, so the server uses its default,
-// and written as the bare switch otherwise; an extra argument that ends in
-// "=" is passed without its trailing "=".
+// A switch with an empty value is never passed, as "-Key=" or as the bare
+// switch: the server reads an empty value that is not quoted as the
+// argument after it ("-MOTD=" would take the next switch for its value),
+// and reads a bare switch as on ("-PvP"). So a rule with an empty value
+// (one stored before ESM refused them) is left out, and so is an extra
+// argument that ends in "="; LeftOut names them. Other values are passed
+// as they are: one stored before ESM checked values as CheckValue does is
+// still passed unchanged, and may end in "=".
 func (l Launch) Args() []string {
-	argv := []string{
-		l.Map,
-		UnattendedSwitch,
-		withValue(PortSwitch, strconv.Itoa(l.GamePort)),
-		withValue(QueryPortSwitch, strconv.Itoa(l.QueryPort)),
-		withValue(ServerNameSwitch, l.ServerName),
-		withValue(WorldNameSwitch, l.WorldName),
-		withValue(MaxPlayersSwitch, strconv.Itoa(l.MaxPlayers)),
-		withValue(ListInBrowserSwitch, boolWord(l.Listed)),
-		withValue(UserDirSwitch, l.UserDir),
-		withValue(LogFileSwitch, l.LogFile),
-	}
-	keys := make([]string, 0, len(l.Rules))
-	for k := range l.Rules {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
-		v := switchValue(k, l.Rules[k])
-		if _, known := LookupGameSetting(k); known && v == "" {
-			continue
+	argv := []string{l.Map, UnattendedSwitch}
+	for _, s := range [][2]string{
+		{PortSwitch, strconv.Itoa(l.GamePort)},
+		{QueryPortSwitch, strconv.Itoa(l.QueryPort)},
+		{ServerNameSwitch, l.ServerName},
+		{WorldNameSwitch, l.WorldName},
+		{MaxPlayersSwitch, strconv.Itoa(l.MaxPlayers)},
+		{ListInBrowserSwitch, boolWord(l.Listed)},
+		{UserDirSwitch, l.UserDir},
+		{LogFileSwitch, l.LogFile},
+	} {
+		if s[1] != "" {
+			argv = append(argv, s[0]+"="+s[1])
 		}
-		argv = append(argv, withValue("-"+k, v))
+	}
+	for _, k := range slices.Sorted(maps.Keys(l.Rules)) {
+		if v := switchValue(k, l.Rules[k]); v != "" {
+			argv = append(argv, "-"+k+"="+v)
+		}
 	}
 	if l.Delivery == DeliveryCommandLine {
-		if l.Secrets.ServerPassword != "" {
-			argv = append(argv, ServerPasswordSwitch+"="+l.Secrets.ServerPassword)
-		}
-		if l.Secrets.AdminPassword != "" {
-			argv = append(argv, AdminPasswordSwitch+"="+l.Secrets.AdminPassword)
-		}
-		if l.Secrets.AnnouncementsToken != "" {
-			argv = append(argv, AnnouncementsTokenSwitch+"="+l.Secrets.AnnouncementsToken)
-		}
-		if l.Secrets.ProblemReportToken != "" {
-			argv = append(argv, ProblemReportTokenSwitch+"="+l.Secrets.ProblemReportToken)
+		for _, s := range [][2]string{
+			{ServerPasswordSwitch, l.Secrets.ServerPassword},
+			{AdminPasswordSwitch, l.Secrets.AdminPassword},
+			{AnnouncementsTokenSwitch, l.Secrets.AnnouncementsToken},
+			{ProblemReportTokenSwitch, l.Secrets.ProblemReportToken},
+		} {
+			if s[1] != "" {
+				argv = append(argv, s[0]+"="+s[1])
+			}
 		}
 	} else if l.SecretsFile != "" {
 		argv = append(argv, SecretsFileSwitch+"="+l.SecretsFile)
 	}
 	for _, a := range l.ExtraArgs {
-		if a = strings.TrimRight(a, "="); strings.Trim(a, "-") != "" {
+		if !strings.HasSuffix(a, "=") && strings.Trim(a, "-") != "" {
 			argv = append(argv, a)
 		}
 	}
 	return argv
 }
 
-// withValue writes a switch with its value, or the bare switch for an
-// empty value (see Args).
-func withValue(name, value string) string {
-	if value == "" {
-		return name
+// LeftOut names what Args leaves out because its value is empty: the rule
+// keys, and the extra arguments by position ("extra argument 2"), never by
+// what they hold.
+func (l Launch) LeftOut() []string {
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(l.Rules)) {
+		if switchValue(k, l.Rules[k]) == "" {
+			out = append(out, k)
+		}
 	}
-	return name + "=" + value
+	for i, a := range l.ExtraArgs {
+		if strings.HasSuffix(a, "=") {
+			out = append(out, "extra argument "+strconv.Itoa(i+1))
+		}
+	}
+	return out
 }
 
 // boolWord writes a switch value the way the engine's own switches are
@@ -220,54 +229,98 @@ func RefusedSwitch(key string) (why string, refused bool) {
 	return "", false
 }
 
-// lookedUp are the names, besides the catalog's, by which the server or
-// the engine looks a value up on the command line ("Name=") and that no
-// value may hold: ESM's own switches, the passwords, and the engine's
-// configuration overrides. Each is written as SwitchInValue names it.
-var lookedUp = []string{
-	"Unattended", "Port", "QueryPort", "ServerName", "WorldName", "MaxPlayers", "ListInBrowser", "UserDir", "abslog",
-	"Password", "AdminPassword", "SecretsFile", "iniFile", "CustomConfig",
-}
+// How the server reads its command line, which the checks below follow.
+// Its launcher joins the arguments into one line, each after a space, and
+// puts an argument that holds a space (only the plain space counts) in
+// double quotes, after its first "=". The server then looks a switch up as
+// "Name=" in that line: without regard to the case of ASCII letters, only
+// where the character before the name is not an ASCII letter or digit,
+// and never between double quotes, also inside the value of another
+// switch ("-MOTD=x,PvP=True" sets PvP). A value in quotes is read whole;
+// any other value ends at the first ",", ")" or white space, and an empty
+// one takes the next argument. A switch written alone ("-PvP") turns a
+// setting that is on or off on.
+//
+// So the rules below make sure that on the line, outside quotes, the only
+// "Name=" are the switches ESM writes, each once and each followed by the
+// whole value ESM shows. They look at how a value is built, not at which
+// names it holds: no list of names could know every switch of the engine.
 
-// SwitchInValue reports whether value holds a switch the server would read,
-// and names it. The server finds "Name=" anywhere in its command line,
-// without regard to case, where the character before the name is not a
-// letter or digit (or the name starts an argument), also inside the value
-// of another switch: "-MOTD=x,PvP=True" sets PvP. The names looked for are
-// those of the catalog and of lookedUp. Values that hold one are refused
-// when they are set.
-func SwitchInValue(value string) (name string, found bool) {
-	low := strings.ToLower(value)
-	alnum := func(c byte) bool { return 'a' <= c && c <= 'z' || '0' <= c && c <= '9' }
-	check := func(n string) bool {
-		k := strings.ToLower(n) + "="
-		for i := 0; ; {
-			j := strings.Index(low[i:], k)
-			if j < 0 {
-				return false
-			}
-			if at := i + j; at == 0 || !alnum(low[at-1]) {
-				return true
-			}
-			i += j + 1
-		}
+// CheckValue reports whether value, text an operator sets that ESM writes
+// on the server command line as the value of a switch, is read by the
+// server whole and as that value only, and says why not. It is the one
+// check for every such text: a rule value, the value of an extra argument
+// (after its "="), the server name, the world name, and the passwords and
+// tokens when they go on the command line. A value
+//
+//   - is not empty: the server would read the next argument as its value;
+//   - has no double quote, no control character, no white space other
+//     than the plain space, no space at its start or end, and no space
+//     followed by "-" and more (see UnsafeArgument);
+//   - when it holds a space, is quoted whole, and may hold any other
+//     printable character, "=", "," and ")" too;
+//   - when it holds no space, has no "=", "," or ")": the server would end
+//     it at "," or ")", and read a name before "=" as a switch of its own.
+//
+// The answer never repeats the value.
+func CheckValue(value string) (why string, bad bool) {
+	switch {
+	case value == "":
+		return "is empty, and the server would read the next argument as its value", true
+	case !utf8.ValidString(value):
+		return "is not valid UTF-8", true
+	case strings.ContainsFunc(value, unicode.IsControl):
+		return "has a control character", true
+	case strings.ContainsFunc(value, func(r rune) bool { return r != ' ' && unicode.IsSpace(r) }):
+		return "has white space other than the plain space (a tab or a line break, say), which the server does not quote and ends a value at", true
+	case strings.HasPrefix(value, " ") || strings.HasSuffix(value, " "):
+		return "starts or ends with a space", true
 	}
-	for _, s := range gameSettings {
-		if check(s.Key) {
-			return s.Key, true
-		}
+	if why, unsafe := UnsafeArgument(value); unsafe {
+		return why, true
 	}
-	for _, n := range lookedUp {
-		if check(n) {
-			return n, true
-		}
+	if !strings.Contains(value, " ") && strings.ContainsAny(value, "=,)") {
+		return `has no space, so the server reads it unquoted, and then it may not hold "=", "," or ")": the server ends such a value at "," or ")", and reads a name followed by "=" as a switch of its own`, true
 	}
 	return "", false
 }
 
-// SwitchInValueWhy is the refusal of a value that holds the switch name.
-func SwitchInValueWhy(name string) string {
-	return `holds "` + name + `=", which the server would read as its own switch ` + name
+// PlainSwitchName reports whether name, a rule key or the switch name of an
+// extra argument (without its "-"), is ASCII letters and digits only, as
+// every switch of the server is. A name with anything else in it ("x_PvP",
+// "Foo.LAN", "Foo:Port") holds a second name the server would find on its
+// own ("PvP=", "LAN=", "Port=").
+func PlainSwitchName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// SameSwitch reports whether a and b name the same switch to the server:
+// equal but for the case of ASCII letters.
+func SameSwitch(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }
 
 // UnsafeArgument reports whether value, a setting that goes onto the

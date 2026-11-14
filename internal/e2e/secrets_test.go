@@ -37,6 +37,14 @@ const (
 	newAdminPW  = `nad2 -Vb6 $&"';%,=<>4 hq-new8`
 )
 
+// Passwords that can go on the server command line (no double quote, no
+// space at either end or before a "-"), with spaces and shell, URL and
+// JSON punctuation.
+const (
+	cmdServerPW = `ovs7 Qq$&';%,=<>1 zk-old9`
+	cmdAdminPW  = `oad4 Wy8 $&';%,=<>2 jm-old3`
+)
+
 // Passwords with "$" for a systemd that needs them doubled.
 const (
 	dollarServerPW = `sd$v7 $Kq9 w$&"x 3`

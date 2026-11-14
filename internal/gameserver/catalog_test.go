@@ -246,16 +246,16 @@ func TestLaunchArgsWriteListsWhole(t *testing.T) {
 	}
 }
 
-// No argument ends in "=": the server reads an empty unquoted value as the
-// argument that follows it, which could be another switch. A rule stored
-// with an empty value is left out when it is a setting of the catalog (the
-// server uses its default) and passed as the bare switch otherwise; an
-// extra argument that ends in "=" is passed without it.
-func TestLaunchArgsNeverEndInEquals(t *testing.T) {
+// A switch with an empty value is never passed, neither as "-Key=" (the
+// server reads an empty unquoted value as the argument that follows it,
+// which could be another switch) nor as the bare switch (which turns a
+// setting like PvP on). A rule stored with an empty value is left out, and
+// so is an extra argument that ends in "="; LeftOut names them.
+func TestLaunchArgsLeaveEmptyValuesOut(t *testing.T) {
 	l := goldenLaunch()
 	l.ServerName = ""
 	l.Rules = map[string]string{"MOTD": "", "PvP": "", "ChatBlockedWords": " , ", "Foo": "", "HarvestRate": "2"}
-	l.ExtraArgs = []string{"-Bar=", "-Baz==", "-Keep=1"}
+	l.ExtraArgs = []string{"-Bar=", "-Baz==", "-Keep=1", "-NoSteam"}
 	for _, delivery := range []string{DeliveryFile, DeliveryCommandLine} {
 		l.Delivery = delivery
 		argv := l.Args()
@@ -263,51 +263,59 @@ func TestLaunchArgsNeverEndInEquals(t *testing.T) {
 			if strings.HasSuffix(a, "=") {
 				t.Errorf("%s: %q ends in =", delivery, a)
 			}
-			for _, gone := range []string{"-MOTD", "-PvP", "-ChatBlockedWords"} {
+			for _, gone := range []string{"-MOTD", "-PvP", "-ChatBlockedWords", "-Foo", "-Bar", "-Baz", "-ServerName"} {
 				if a == gone || strings.HasPrefix(a, gone+"=") {
 					t.Errorf("%s: %q is passed although it is empty", delivery, a)
 				}
 			}
 		}
-		for _, want := range []string{"-Foo", "-Bar", "-Baz", "-Keep=1", "-HarvestRate=2", "-ServerName"} {
+		for _, want := range []string{"-Keep=1", "-NoSteam", "-HarvestRate=2"} {
 			if !slices.Contains(argv, want) {
 				t.Errorf("%s: %q is not on the command line %q", delivery, want, argv)
 			}
 		}
 	}
+	if got, want := l.LeftOut(), []string{"ChatBlockedWords", "Foo", "MOTD", "PvP", "extra argument 1", "extra argument 2"}; !slices.Equal(got, want) {
+		t.Errorf("LeftOut: %q, want %q", got, want)
+	}
+	// A value stored before the rules of CheckValue is passed unchanged.
+	l.Rules = map[string]string{"Mode": "x;LOG="}
+	if argv := l.Args(); !slices.Contains(argv, "-Mode=x;LOG=") {
+		t.Errorf("a stored value is not passed as it is: %q", argv)
+	}
 }
 
-// The server finds a switch anywhere in its command line where "Name="
-// follows something that is not a letter or digit, so a value that holds
-// one would set that switch too.
-func TestSwitchInValue(t *testing.T) {
-	for v, want := range map[string]string{
-		"https://example.com/news?AdminPassword=x": "AdminPassword",
-		"-PvP=True":             "PvP",
-		"123;Password=x":        "Password",
-		"-iniFile=/x":           "iniFile",
-		"x,customconfig=y":      "CustomConfig",
-		"a_MaxPlayers=5":        "MaxPlayers",
-		"PORT=1":                "Port",
-		"x-Port=1":              "Port",
-		"(motd=hi)":             "MOTD",
-		"x.AnnouncementsToken=": "AnnouncementsToken",
+// The server finds a switch anywhere in its command line, outside quotes,
+// where "Name=" follows something that is not an ASCII letter or digit,
+// and ends a value without quotes at "," or ")". So a value without a
+// space, which the server does not quote, may hold none of "=", "," and
+// ")"; one with a space is quoted whole and may. These rules do not look
+// for names: a name of any switch, in any script, is caught the same way.
+func TestCheckValue(t *testing.T) {
+	for _, v := range []string{
+		"", " ", " lead", "trail ", "a\tb", "a\nb", "a\u00a0b", "a\u2028b", "a\u0085b", "a\x7fb", `my"pass99`, "x -Port=1",
+		"x;LOG=", "Hi=", "\u212AAdminPassword=evil", "\u0130LAN=1", "secret,AdminPassword=evil", "secret;AdminPassword=",
+		"abc,def123", "pass)word99", "adm;Password=joinme", "https://e.com/n?AdminPassword=x", "-iniFile=/x", "Hi;LOG=x.log",
+		"a=b", "PORT=1", "(motd=hi)", "1,2", "use multihome", "\xff",
 	} {
-		if got, found := SwitchInValue(v); !found || got != want {
-			t.Errorf("%q: %q %v, want %q", v, got, found, want)
+		if why, bad := CheckValue(v); !bad || why == "" || strings.Contains(why, v) && v != "" && v != " " {
+			t.Errorf("%q: %v %q", v, bad, why)
 		}
 	}
-	for _, v := range []string{"abcPassword=x", "PvP is fun", "Password: x", "ServerPassword=x", "mypvp=1", "a=b", "", "Port 7777"} {
-		if got, found := SwitchInValue(v); found {
-			t.Errorf("%q: found %q", v, got)
+	for _, v := range []string{
+		"Alpha", "Alpha EU - west", "Welcome, traveller", "Be nice (please)", "x = y", "Hi, PvP=True all", "a b,c)d=e",
+		"Café", "\u212Aelvin", "-5", "https://example.com/path", "rude, ruder", "q7;x", "Password", "/Game/x",
+	} {
+		if why, bad := CheckValue(v); bad {
+			t.Errorf("%q refused: %s", v, why)
 		}
 	}
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	for key, values := range map[string][]string{
-		"MOTD":             {"-PvP=True", "Welcome x-Port=1 to all", "join,Password=x"},
-		"AdminPlayerIds":   {"123;Password=x", "1,2,x_LAN=1"},
-		"ChatBlockedWords": {"rude,PvP=1"},
-		"AnnouncementsUrl": {"https://example.com/news?AdminPassword=x", "https://example.com/news?x=1", "https://example.com/news#top"},
+		"MOTD":             {"-PvP=True", "join,Password=x", "Hi;LOG=x.log", "\u212AAdminPassword=evil"},
+		"AdminPlayerIds":   {"123;Password=x", "x_LAN=1", "1,2,x_LAN=1", "secret,AdminPassword=evil"},
+		"ChatBlockedWords": {"PvP=1", "rude,PvP=1"},
+		"AnnouncementsUrl": {"https://example.com/news?AdminPassword=x", "https://example.com/news?x=1", "https://example.com/news#top", "https://example.com/a=b"},
 		"ProblemReportUrl": {"https://example.com/r?token=1"},
 	} {
 		s, _ := LookupGameSetting(key)
@@ -317,8 +325,32 @@ func TestSwitchInValue(t *testing.T) {
 			}
 		}
 	}
+	// Quoted whole, a value with a space may hold anything printable but a
+	// double quote. A list of two or more items is written with ", ", so
+	// it is quoted whole too.
+	for key, values := range map[string][]string{
+		"MOTD":             {"Welcome x-Port=1 to all", "a, b=c (d)"},
+		"AdminPlayerIds":   {"1,2", "abc,def123"},
+		"ChatBlockedWords": {"rude;x,ruder"},
+	} {
+		s, _ := LookupGameSetting(key)
+		for _, v := range values {
+			if err := s.Check(v, now); err != nil {
+				t.Errorf("%s=%q refused: %v", key, v, err)
+			}
+		}
+	}
 	if why, refused := RefusedSwitch("-CustomConfig"); !refused || !strings.Contains(why, "never passed") {
 		t.Errorf("-CustomConfig: %q %v", why, refused)
+	}
+	for name, want := range map[string]bool{"PvP": true, "A1": true, "x_PvP": false, "Foo.LAN": false, "Foo-Port": false, "Foo:Port": false,
+		"": false, "\u212A": false, "Café": false, "a b": false} {
+		if got := PlainSwitchName(name); got != want {
+			t.Errorf("PlainSwitchName(%q) = %v", name, got)
+		}
+	}
+	if !SameSwitch("PvP", "pvp") || SameSwitch("k", "\u212A") || SameSwitch("PvP", "PvPx") {
+		t.Error("SameSwitch")
 	}
 }
 

@@ -698,6 +698,12 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	}
 	toFile := old.OutputHidden() && !cfg.OutputHidden()
 	toCommandLine := !old.OutputHidden() && cfg.OutputHidden()
+	// On the command line a secret is a value like any other there.
+	if field, why, bad := secrets.commandLineProblem(); toCommandLine && bad {
+		return View{}, false, fault.New(fault.Invalid, "unsafe_argument",
+			"secret_delivery: cannot be %q while the %s cannot go on the server command line: it %s; set another %s first, or keep %q",
+			gameserver.DeliveryCommandLine, field, why, field, gameserver.DeliveryFile)
+	}
 	if toFile && (active || m.alive(name)) {
 		return View{}, false, fault.New(fault.Conflict, "instance_running",
 			"instance %s is running; stop it before changing secret_delivery to %q: its server output so far holds the passwords and is set aside at the change",
@@ -930,6 +936,13 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	in.mu.Unlock()
+	// With command-line delivery a new secret is a value on the command
+	// line like any other. One stored before is passed as it is.
+	if field, why, bad := req.given().commandLineProblem(); cfg.OutputHidden() && bad {
+		return SecretFlags{}, false, fault.New(fault.Invalid, "unsafe_argument",
+			"%s: cannot go on the server command line, where this instance passes its secrets (secret_delivery %q): it %s",
+			field, gameserver.DeliveryCommandLine, why)
+	}
 	if err := checkPasswordsInSettings(cfg, s); err != nil {
 		return SecretFlags{}, false, err
 	}

@@ -8,9 +8,12 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
-// No value may hold a switch the server reads ("<not a letter or
-// digit>Name="): the server would take it as that switch. This is checked
-// when a value is set; one stored earlier keeps loading.
+// No value may bring a switch of its own onto the server command line: a
+// value without a space, which the server reads unquoted, may not hold
+// "=", "," or ")", and a rule key or the switch name of an extra argument
+// is ASCII letters and digits only. This is checked when a value is set; one
+// stored earlier keeps loading. A value with a space is quoted whole, so
+// what looks like a switch inside it is not one.
 func TestSwitchesCannotHideInValues(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -25,6 +28,8 @@ func TestSwitchesCannotHideInValues(t *testing.T) {
 		"extra custom config": {ExtraArgs: &[]string{"-CustomConfig=Server"}},
 		"display name":        {DisplayName: ptr("Alpha,PvP=True")},
 		"game setting url":    {Rules: &map[string]string{"AnnouncementsUrl": "https://example.com/news?AdminPassword=" + hidden}},
+		"same switch twice":   {Rules: &map[string]string{"Mode": "a"}, ExtraArgs: &[]string{"-mode=b"}},
+		"map that is a name":  {Map: ptr("/PvP")},
 	} {
 		s.BindIP = ptr("127.0.0.1")
 		_, err := r.m.Create(CreateRequest{Name: "bad", Settings: s})
@@ -35,15 +40,10 @@ func TestSwitchesCannotHideInValues(t *testing.T) {
 	if len(r.m.List()) != 0 {
 		t.Fatal("a refused instance was created")
 	}
-	r.create("alpha", map[string]string{"Foo": "abcPassword=x"})
-	if _, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{ExtraArgs: &[]string{"-PvP=True", "-Mode=Fast"}}}); err != nil {
+	r.create("alpha", map[string]string{"Foo": "abc Password=x", "Bar": "abcPassword"})
+	if _, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{ExtraArgs: &[]string{"-PvP=True", "-Mode=Fast", "-NoSteam"},
+		Map: ptr("/Game/Maps/PvP")}}); err != nil {
 		t.Fatalf("an extra argument that is the switch itself: %v", err)
-	}
-	for _, tok := range []string{"abc;Password=x1", "tok,PvP=True1", "x-Port=7000aa"} {
-		_, _, err := r.m.SetSecrets("alpha", SecretsRequest{ProblemReportToken: ptr(tok)})
-		if !fault.Is(err, fault.Invalid) {
-			t.Errorf("token %q: %v", tok, err)
-		}
 	}
 
 	var in Instance

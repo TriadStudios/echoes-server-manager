@@ -11,8 +11,8 @@ import (
 )
 
 // A rule that names a game setting of the catalog is checked by the
-// setting's type and range when it is set; any other rule is taken as it
-// is, as before.
+// setting's type and range when it is set; every rule value follows the
+// rules for values on the server command line (gameserver.CheckValue).
 func TestGameSettingsAreCheckedWhenSet(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -30,6 +30,7 @@ func TestGameSettingsAreCheckedWhenSet(t *testing.T) {
 		"future wipe":       {map[string]string{"LastWipe": "2999-01-01"}, []string{"LastWipe", "future"}},
 		"key in other case": {map[string]string{"harvestrate": "2"}, []string{"harvestrate", "HarvestRate"}},
 		"cut at a comma":    {map[string]string{"MOTD": "Hi,all"}, []string{"MOTD"}},
+		"free rule cut":     {map[string]string{"SomethingNew": "any,thing)"}, []string{"SomethingNew", "no space"}},
 	} {
 		err := create("bad", c.rules)
 		if !fault.Is(err, fault.Invalid) {
@@ -49,7 +50,7 @@ func TestGameSettingsAreCheckedWhenSet(t *testing.T) {
 	if err := create("alpha", map[string]string{
 		"HarvestRate": "2.5", "PvP": "True", "Difficulty": "2", "ChatFilter": "Drop", "LastWipe": "2026-01-01",
 		"MOTD": "Welcome, traveller", "ChatBlockedWords": words, "AnnouncementsUrl": "https://example.com/news",
-		"SomethingNew": "any,thing)", "Motto": "a value the catalog does not know",
+		"SomethingNew": "any, thing)", "Motto": "a value the catalog does not know",
 	}); err != nil {
 		t.Fatalf("good game settings and free rules: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestGameSettingsAreCheckedWhenSet(t *testing.T) {
 	spec, _, _ := sup.last(t)
 	for _, want := range []string{"-HarvestRate=2.5", "-PvP=True", "-Difficulty=2", "-ChatFilter=Drop", "-LastWipe=2026-01-01",
 		"-MOTD=Welcome, traveller", "-ChatBlockedWords=" + strings.ReplaceAll(words, ",", ", "),
-		"-AnnouncementsUrl=https://example.com/news", "-SomethingNew=any,thing)", "-Motto=a value the catalog does not know"} {
+		"-AnnouncementsUrl=https://example.com/news", "-SomethingNew=any, thing)", "-Motto=a value the catalog does not know"} {
 		if !slices.Contains(spec.Args, want) {
 			t.Errorf("%.60q is not on the command line", want)
 		}

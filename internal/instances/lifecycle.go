@@ -149,6 +149,11 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		m.warnUnsafe(cfg.Name)
 	}
 	argv := l.Args()
+	// A value stored by an earlier version that is empty is left out. The
+	// log names settings, never values.
+	if left := l.LeftOut(); len(left) > 0 {
+		m.log.Warn("settings without a value are left off the server command line", "instance", cfg.Name, "left_out", strings.Join(left, ", "))
+	}
 	// A status file from an earlier run must not count as ready.
 	if err := m.st.Remove(dataDir(cfg.Name) + "/" + gameserver.StatusFileRel); err != nil {
 		return nil, err

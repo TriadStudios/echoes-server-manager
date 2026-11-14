@@ -65,8 +65,8 @@ func TestCommandLineModeIsHiddenFromReadSystemd(t *testing.T) {
 func commandLineMode(t *testing.T, h *harness, name string) {
 	h.install(testkit.BuildOptions{Version: "1.0"})
 	read, oper := h.token("read"), h.token("operator")
-	pieces := passwordPieces(oldServerPW, oldAdminPW)
-	secrets := gameserver.Secrets{ServerPassword: oldServerPW, AdminPassword: oldAdminPW}
+	pieces := passwordPieces(cmdServerPW, cmdAdminPW)
+	secrets := gameserver.Secrets{ServerPassword: cmdServerPW, AdminPassword: cmdAdminPW}
 	base := "/api/v1/instances/" + name
 
 	// The mode is chosen in so many words, and every answer warns.
@@ -87,7 +87,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 	if !h.serverHas(ch.View, secrets) {
 		t.Fatal("the server did not get the passwords from its command line")
 	}
-	if line := procCommandLine(st.PID); runtime.GOOS == "linux" && !strings.Contains(line, "-Password="+oldServerPW+" -AdminPassword="+oldAdminPW) {
+	if line := procCommandLine(st.PID); runtime.GOOS == "linux" && !strings.Contains(line, "-Password="+cmdServerPW+" -AdminPassword="+cmdAdminPW) {
 		t.Fatalf("the command line of the running server, as every account can read it: %s", line)
 	}
 
@@ -188,7 +188,7 @@ func commandLineMode(t *testing.T, h *harness, name string) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s is still in place: %v", p, err)
 		}
-		if b, err := os.ReadFile(p + ".unsafe"); err != nil || !strings.Contains(string(b), "-Password="+oldServerPW) {
+		if b, err := os.ReadFile(p + ".unsafe"); err != nil || !strings.Contains(string(b), "-Password="+cmdServerPW) {
 			t.Errorf("%s was not set aside whole: %v", p, err)
 		}
 	}
@@ -295,9 +295,11 @@ func TestCommandLineStartFailureOldSystemd(t *testing.T) {
 	dir := fakeOldSystemd(t)
 	h := newSystemdESM(t)
 	h.install(testkit.BuildOptions{Version: "1.0"})
-	escaped := strings.ReplaceAll(dollarServerPW, "$", "$$")
-	pieces := passwordPieces(dollarServerPW, dollarAdminPW, escaped, strings.ReplaceAll(dollarAdminPW, "$", "$$"))
-	commandLineStartFailure(t, h, dir, unitSafeName("sdco"), dollarServerPW, dollarAdminPW, pieces, escaped)
+	// On the command line a password may not hold a double quote.
+	serverPW := strings.ReplaceAll(dollarServerPW, `"`, "")
+	escaped := strings.ReplaceAll(serverPW, "$", "$$")
+	pieces := passwordPieces(serverPW, dollarAdminPW, escaped, strings.ReplaceAll(dollarAdminPW, "$", "$$"))
+	commandLineStartFailure(t, h, dir, unitSafeName("sdco"), serverPW, dollarAdminPW, pieces, escaped)
 }
 
 // commandLineStartFailure starts an instance with command-line delivery
