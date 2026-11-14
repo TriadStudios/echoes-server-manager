@@ -35,7 +35,7 @@
 
 <fieldset class="panel"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Passwords</legend>
-<p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.</p>
+<p class="note">Passwords are never shown. Type a new one to change it; leave a field empty to keep what is set. They reach the server {{delivery $s.SecretDelivery}}.{{if eq $s.SecretDelivery "command_line"}} On the command line a password or token without a space may not hold <span class="mono">=</span>, <span class="mono">,</span> or <span class="mono">)</span>, nor a double quote.{{end}}</p>
 <div class="grid fields">
 <label class="field"><span>Join password ({{if $s.Secrets.ServerPasswordSet}}set{{else}}none{{end}})</span>
 <input type="password" name="server_password" maxlength="128" autocomplete="new-password" value="" data-orig="" data-label="Join password" data-secret></label>
@@ -74,7 +74,7 @@
 
 <fieldset class="panel" id="rules"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Other settings</legend>
-<p class="note">Rules ESM does not know by name, each passed to the server as <span class="mono">-Key=Value</span>: for a setting of a newer server build. A rule left empty here is passed empty; remove it to leave it out.</p>
+<p class="note">Rules ESM does not know by name, each passed to the server as <span class="mono">-Key=Value</span>: for a setting of a newer server build. A name has letters and digits only. A value without a space may not hold <span class="mono">=</span>, <span class="mono">,</span> or <span class="mono">)</span>; one with a space may. A rule stored empty by an earlier version is left out when the server starts: remove it.</p>
 <div class="tools">
 <label class="field grow"><span>Search rules</span><input type="search" id="rule-search" placeholder="name or value"></label>
 <label class="check"><input type="checkbox" id="rule-changed"><span>Show changed only</span></label>
@@ -88,7 +88,7 @@
 </div>{{else}}<p class="empty" data-empty>No other rules are set.</p>{{end}}
 </div>
 <div class="tools">
-<label class="field"><span>New rule name</span><input type="text" id="new-rule-key" class="mono" maxlength="64" pattern="[A-Za-z][A-Za-z0-9_]*"></label>
+<label class="field"><span>New rule name</span><input type="text" id="new-rule-key" class="mono" maxlength="64" pattern="[A-Za-z][A-Za-z0-9]*"></label>
 <label class="field grow"><span>New rule value</span><input type="text" id="new-rule-value" class="mono" maxlength="256"></label>
 <button type="button" class="btn" id="add-rule">Add rule</button>
 </div>

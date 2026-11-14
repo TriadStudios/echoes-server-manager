@@ -326,8 +326,8 @@
         var keyEl = document.getElementById('new-rule-key');
         var valueEl = document.getElementById('new-rule-value');
         var key = keyEl.value.trim();
-        if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key)) {
-          say('A rule name starts with a letter and has only letters, digits and _.', true);
+        if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(key)) {
+          say('A rule name starts with a letter and has only letters and digits.', true);
           return;
         }
         var known = f.elements['rule:' + key];
