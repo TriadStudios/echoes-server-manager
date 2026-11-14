@@ -23,8 +23,8 @@ type saveField struct {
 // map): a game setting left empty is not set and left out; every other
 // rule goes as it is unless it is removed, also one stored empty. The
 // script decides this in saveRules alone, which uses nothing of the page;
-// this test runs it with node, where node is installed (it is on the CI
-// machines), and is skipped elsewhere.
+// this test runs it with node. Without node it is skipped, except on the
+// CI machines (GITHUB_ACTIONS=true), which have node: there it fails.
 func TestSaveRulesInTheScript(t *testing.T) {
 	b, err := os.ReadFile("static/esm.js")
 	if err != nil {
@@ -41,6 +41,9 @@ func TestSaveRulesInTheScript(t *testing.T) {
 	}
 	node, err := exec.LookPath("node")
 	if err != nil {
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatal("node is not installed on this CI machine, so the script's saveRules cannot be run")
+		}
 		t.Skip("node is not installed, so the script's saveRules is not run here")
 	}
 	cases := []struct {
