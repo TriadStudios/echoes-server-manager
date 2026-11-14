@@ -481,6 +481,38 @@ func SearchedSwitch(name string) (searchedName string, found bool) {
 	return SearchedName(arg)
 }
 
+// EngineLineLimit is the longest command line the server's engine starts
+// with, counted in the 16-bit units it keeps text in. With a longer one it
+// stops at once.
+const EngineLineLimit = 16383
+
+// MaxLineLength is the longest command line ESM lets a change lead to,
+// counted the same way. It is well under EngineLineLimit: what starts the
+// server may put more on the line than ESM passes (a start script the name
+// of the game, say).
+const MaxLineLength = 12000
+
+// LineLength returns the length of the line the server's launcher joins
+// argv into, as the engine counts it: a space before every argument, the
+// two quotes the launcher puts around what holds a space, and two units
+// for a character beyond U+FFFF.
+func LineLength(argv []string) int {
+	n := 0
+	for _, a := range argv {
+		n++
+		if strings.Contains(a, " ") {
+			n += 2
+		}
+		for _, r := range a {
+			n++
+			if r > 0xffff {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // PlainSwitchName reports whether name, a rule key or the switch name of an
 // extra argument (without its "-"), is ASCII letters and digits only, as
 // every switch of the server is. A name with anything else in it ("x_PvP",
