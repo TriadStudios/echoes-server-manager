@@ -342,7 +342,7 @@ func TestCheckValue(t *testing.T) {
 			}
 		}
 	}
-	if why, refused := RefusedSwitch("-CustomConfig"); !refused || !strings.Contains(why, "never passed") {
+	if why, refused := RefusedSwitch("-CustomConfig"); !refused || !strings.Contains(why, "are refused") {
 		t.Errorf("-CustomConfig: %q %v", why, refused)
 	}
 	for name, want := range map[string]bool{"PvP": true, "A1": true, "x_PvP": false, "Foo.LAN": false, "Foo-Port": false, "Foo:Port": false,

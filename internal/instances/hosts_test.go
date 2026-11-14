@@ -278,7 +278,7 @@ func TestCommandLineFileSwitchIsRefused(t *testing.T) {
 			t.Errorf("%s at a create: accepted (%v)", what, err)
 		}
 	}
-	if why, refused := gameserver.RefusedSwitch("-CmdLineFile"); !refused || !strings.Contains(why, "never passed") {
+	if why, refused := gameserver.RefusedSwitch("-CmdLineFile"); !refused || !strings.Contains(why, "is refused") {
 		t.Errorf("RefusedSwitch: %q %v", why, refused)
 	}
 	untouched(t, m)
@@ -347,7 +347,7 @@ func TestStoredSettingsTheNewRulesRefuse(t *testing.T) {
 		t.Errorf("the service log does not name the settings:\n%s", r.log.String())
 	}
 
-	// A change must leave out the switch ESM never passes; then the stored
+	// A change must leave out the switch ESM refuses; then the stored
 	// values sent back as they are do not stand in the way of it.
 	if _, _, err := m.Patch(old.Name, PatchRequest{Settings: Settings{Autostart: ptr(true)}}); !fault.Is(err, fault.Invalid) {
 		t.Errorf("a change with the stored -CmdLineFile= left in: %v", err)

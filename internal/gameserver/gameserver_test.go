@@ -131,7 +131,7 @@ func TestReservedAndRefusedSwitches(t *testing.T) {
 		}
 	}
 	for _, k := range []string{"ini", "-INI", "-iniFile", "IniFile"} {
-		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "never passed") {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "are refused") {
 			t.Errorf("%q not refused (%q)", k, why)
 		}
 	}
@@ -150,7 +150,7 @@ func TestReservedAndRefusedSwitches(t *testing.T) {
 // -CmdLineFile= is refused like the overrides of the configuration files.
 func TestCommandLineFileIsARefusedSwitch(t *testing.T) {
 	for _, k := range []string{"CmdLineFile", "-CmdLineFile", "cmdlinefile", "-CMDLINEFILE"} {
-		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "never passed") {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "is refused") {
 			t.Errorf("%q not refused (%q)", k, why)
 		}
 	}
