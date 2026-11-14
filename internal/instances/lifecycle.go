@@ -98,18 +98,30 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		return nil, err
 	}
 	given := sec.forServer()
+	// The configured bind address is not given to the server (see
+	// gameserver.MultihomeSwitch): it only says where ESM checks and
+	// probes the ports.
+	l, err := m.launchOf(cfg, sec, mapName)
+	if err != nil {
+		return nil, err
+	}
+	argv := l.Args()
+	// The server's engine stops at once at a command line longer than it
+	// keeps. Only settings stored by an earlier version get there: a change
+	// is held well below (see checkLine).
+	switch n := gameserver.LineLength(argv); {
+	case n > gameserver.EngineLineLimit:
+		return nil, fault.New(fault.Conflict, "command_line_too_long",
+			"the server command line of instance %s has %d characters, and the server's engine does not start with more than %d: shorten or remove rules or extra arguments first",
+			cfg.Name, n, gameserver.EngineLineLimit)
+	case n > gameserver.MaxLineLength:
+		m.log.Warn("the server command line is longer than a change may make it", "instance", cfg.Name, "characters", n,
+			"most_after_a_change", gameserver.MaxLineLength, "most_the_engine_starts_with", gameserver.EngineLineLimit)
+	}
 	if err := m.st.MkdirAll(dataDir(cfg.Name), 0o700); err != nil {
 		return nil, err
 	}
-	dataAbs, err := m.st.Abs(dataDir(cfg.Name))
-	if err != nil {
-		return nil, err
-	}
 	if err := m.st.WriteFile(runSecretsFile(cfg.Name), given.File(), 0o600); err != nil {
-		return nil, err
-	}
-	secretsAbs, err := m.st.Abs(runSecretsFile(cfg.Name))
-	if err != nil {
 		return nil, err
 	}
 	// Every start begins a new server log; the last one is kept beside it.
@@ -121,34 +133,15 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	if err := m.st.MkdirAll(instDir(cfg.Name)+"/logs", 0o700); err != nil {
 		return nil, err
 	}
-	logAbs, err := m.st.Abs(serverLog(cfg.Name))
-	if err != nil {
-		return nil, err
-	}
 	outAbs, _ := m.st.Abs(consoleFile(cfg.Name))
 	memMax, _ := ParseMemory(cfg.Limits.MemoryMax)
-	name := cfg.DisplayName
-	if name == "" {
-		name = cfg.Name
-	}
-	// The configured bind address is not given to the server (see
-	// gameserver.MultihomeSwitch): it only says where ESM checks and
-	// probes the ports.
-	l := gameserver.Launch{
-		Map: mapName, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query,
-		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Listed: cfg.Listed, Rules: cfg.Rules,
-		UserDir: dataAbs, LogFile: logAbs, Delivery: cfg.SecretDelivery, SecretsFile: secretsAbs,
-		ExtraArgs: cfg.ExtraArgs,
-	}
 	// onCommandLine are the passwords that go on the command line: none,
 	// unless the instance is set to that.
 	var onCommandLine []string
 	if cfg.SecretDelivery == gameserver.DeliveryCommandLine {
-		l.Secrets = given
 		onCommandLine = given.Values()
 		m.warnUnsafe(cfg.Name)
 	}
-	argv := l.Args()
 	// Values stored by an earlier version: an empty one is left out, any
 	// other is passed as it is. The log names settings, never values.
 	if left := l.LeftOut(); len(left) > 0 {
@@ -172,7 +165,7 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 		Name: cfg.Name, Executable: exe, Args: argv, Dir: buildAbs, OutputFile: outAbs,
 		Env:          m.serverEnv(),
 		Limits:       supervisor.Limits{MemoryMaxBytes: memMax, CPUQuotaPercent: cfg.Limits.CPUQuotaPercent},
-		StopFile:     gameserver.StopRequestPath(dataAbs),
+		StopFile:     gameserver.StopRequestPath(l.UserDir),
 		SecretValues: onCommandLine,
 	}
 	m.log.Info("starting server", "instance", cfg.Name, "build", cfg.Build, "why", why)
@@ -216,6 +209,75 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	in.mu.Unlock()
 	go m.watch(in, r, w)
 	return r, nil
+}
+
+// launchOf is everything ESM puts on the command line of cfg's server: its
+// settings, the folders of the instance and, with command-line delivery,
+// the secrets sec. mapName is the map the server loads. Nothing is written
+// or looked up for it.
+func (m *Manager) launchOf(cfg Instance, sec Secrets, mapName string) (gameserver.Launch, error) {
+	var abs [3]string
+	for i, rel := range []string{dataDir(cfg.Name), serverLog(cfg.Name), runSecretsFile(cfg.Name)} {
+		p, err := m.st.Abs(rel)
+		if err != nil {
+			return gameserver.Launch{}, err
+		}
+		abs[i] = p
+	}
+	name := cfg.DisplayName
+	if name == "" {
+		name = cfg.Name
+	}
+	l := gameserver.Launch{
+		Map: mapName, GamePort: cfg.Ports.Game, QueryPort: cfg.Ports.Query,
+		MaxPlayers: cfg.MaxPlayers, ServerName: name, WorldName: cfg.World, Listed: cfg.Listed, Rules: cfg.Rules,
+		UserDir: abs[0], LogFile: abs[1], Delivery: cfg.SecretDelivery, SecretsFile: abs[2],
+		ExtraArgs: cfg.ExtraArgs,
+	}
+	if cfg.SecretDelivery == gameserver.DeliveryCommandLine {
+		l.Secrets = sec.forServer()
+	}
+	return l, nil
+}
+
+// maxMapLength is the longest map a build or an instance can name (see
+// builds.ValidMap).
+const maxMapLength = 128
+
+// lineLength is the length of the command line ESM starts cfg's server
+// with, sec being its secrets, as the server's engine counts it (see
+// gameserver.LineLength). An instance that names no map loads its build's
+// default map; that is looked up only where it can matter, when the line
+// without it is within a map's length of gameserver.MaxLineLength.
+func (m *Manager) lineLength(cfg Instance, sec Secrets) int {
+	l, err := m.launchOf(cfg, sec, cfg.Map)
+	if err != nil {
+		return 0
+	}
+	n := gameserver.LineLength(l.Args())
+	if cfg.Map == "" && n+maxMapLength > gameserver.MaxLineLength {
+		if b, err := m.builds.Get(cfg.Build); err == nil {
+			n += gameserver.LineLength([]string{b.DefaultMap}) - 1
+		}
+	}
+	return n
+}
+
+// checkLine refuses a change that would make the server command line of an
+// instance longer than gameserver.MaxLineLength, which is well below what
+// the server's engine starts with. before and beforeSec are the instance
+// and its secrets as they are (nil for a new instance): a line that an
+// earlier version left too long may stay as long as it is or get shorter,
+// and the instance carries WarnCommandLineTooLong. The refusal has the
+// lengths and nothing of a value.
+func (m *Manager) checkLine(before *Instance, beforeSec Secrets, after Instance, afterSec Secrets) error {
+	n := m.lineLength(after, afterSec)
+	if n <= gameserver.MaxLineLength || before != nil && n <= m.lineLength(*before, beforeSec) {
+		return nil
+	}
+	return fault.New(fault.Invalid, "command_line_too_long",
+		"the server command line of instance %s would have %d characters, more than the %d a change may lead to (the server's engine does not start with more than %d): shorten or remove rules, extra arguments or names, or with secret_delivery %q secrets",
+		after.Name, n, gameserver.MaxLineLength, gameserver.EngineLineLimit, gameserver.DeliveryCommandLine)
 }
 
 // serverEnv is what ESM adds to a server's environment: the Steam runtime

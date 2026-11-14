@@ -494,13 +494,14 @@ func (m *Manager) view(in *rt) View {
 	v.Secrets = sec.flags()
 	v.UnsafeStoredSettings = v.Instance.storedUnsafe(sec)
 	v.Live = m.live(v, serverID)
-	v.Warnings = m.warnings(v)
+	v.Warnings = m.warnings(v, m.lineLength(v.Instance, sec) > gameserver.MaxLineLength)
 	return v
 }
 
 // warnings lists, as codes, what an operator should know about an instance
-// on this box. It is never nil.
-func (m *Manager) warnings(v View) []string {
+// on this box. longLine says that its server command line is longer than a
+// change may make it. It is never nil.
+func (m *Manager) warnings(v View, longLine bool) []string {
 	w := []string{}
 	switch {
 	case v.OutputHidden():
@@ -516,6 +517,9 @@ func (m *Manager) warnings(v View) []string {
 	}
 	if len(v.UnsafeStoredSettings) > 0 {
 		w = append(w, WarnUnsafeStoredSettings)
+	}
+	if longLine {
+		w = append(w, WarnCommandLineTooLong)
 	}
 	return w
 }
@@ -638,6 +642,9 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 		return View{}, err
 	}
 	in.Ports = ports
+	if err := m.checkLine(nil, Secrets{}, in, Secrets{}); err != nil {
+		return View{}, err
+	}
 	for _, d := range []string{dataDir(in.Name), instDir(in.Name) + "/run"} {
 		if err := m.st.MkdirAll(d, 0o700); err != nil {
 			return View{}, err
@@ -742,6 +749,9 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 			return View{}, false, err
 		}
 		cfg.Ports = ports
+	}
+	if err := m.checkLine(&old, secrets, cfg, secrets); err != nil {
+		return View{}, false, err
 	}
 	if toFile {
 		// First the files and the reason, then the setting: if ESM stops
@@ -945,6 +955,7 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	if err != nil {
 		return SecretFlags{}, false, err
 	}
+	before := s
 	s.change(req)
 	in.mu.Lock()
 	cfg := in.cfg.clone()
@@ -958,6 +969,9 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 			field, gameserver.DeliveryCommandLine, why)
 	}
 	if err := checkPasswordsInSettings(cfg, s); err != nil {
+		return SecretFlags{}, false, err
+	}
+	if err := m.checkLine(&cfg, before, cfg, s); err != nil {
 		return SecretFlags{}, false, err
 	}
 	if err := m.st.WriteJSON(secretsFile(name), s, 0o600); err != nil {
