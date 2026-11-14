@@ -189,5 +189,5 @@ func (e *env) secret(args []string, stdin io.Reader) error {
 	if out.RestartRequired {
 		line += "; the running server gets it at its next start"
 	}
-	return e.result(out, warn(line, out.Warnings))
+	return e.result(out, warn(line, out.Warnings, out.UnsafeStoredSettings))
 }

@@ -416,6 +416,9 @@ type SecretsResult struct {
 	Secrets         instances.SecretFlags `json:"secrets"`
 	RestartRequired bool                  `json:"restart_required"`
 	Warnings        []string              `json:"warnings"`
+	// UnsafeStoredSettings names the settings of the warning
+	// unsafe_stored_settings.
+	UnsafeStoredSettings []string `json:"unsafe_stored_settings,omitempty"`
 }
 
 // UpdateRequest is the body of POST /instances/{name}/update.
@@ -530,7 +533,7 @@ func (s *Server) putSecrets(w http.ResponseWriter, r *http.Request, c *call) err
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings})
+	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings, UnsafeStoredSettings: v.UnsafeStoredSettings})
 }
 
 // action reads the target instance and an optional JSON body.

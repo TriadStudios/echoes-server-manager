@@ -152,10 +152,11 @@ func cond(ok bool, s string) string {
 	return ""
 }
 
-// warn appends the warnings of an instance to a result line, in words.
-func warn(line string, warnings []string) string {
+// warn appends the warnings of an instance to a result line, in words;
+// stored are the settings the warning unsafe_stored_settings names.
+func warn(line string, warnings, stored []string) string {
 	for _, w := range warnings {
-		line += "; warning: " + instances.WarningText(w)
+		line += "; warning: " + instances.WarningWords(w, stored)
 	}
 	return line
 }
@@ -225,7 +226,7 @@ func (e *env) status(args []string) error {
 		if err := c.do(e.ctx, "GET", "/api/v1/instances/"+url.PathEscape(pos[0]), nil, &v); err != nil {
 			return err
 		}
-		return e.result(v, warn(describeStatus(v.Status), v.Warnings))
+		return e.result(v, warn(describeStatus(v.Status), v.Warnings, v.UnsafeStoredSettings))
 	}
 	return usageErr("status takes at most one instance name")
 }
@@ -312,7 +313,7 @@ func (e *env) create(args []string) error {
 		return err
 	}
 	line := fmt.Sprintf("created %s: build %s (%s), game port %d, query port %d", out.Name, out.Build, out.Channel, out.Ports.Game, out.Ports.Query)
-	return e.result(out, warn(line, out.Warnings))
+	return e.result(out, warn(line, out.Warnings, out.UnsafeStoredSettings))
 }
 
 func (e *env) lifecycle(verb string, args []string) error {

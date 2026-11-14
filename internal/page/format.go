@@ -22,7 +22,7 @@ var funcs = template.FuncMap{
 	"iso":      func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
 	"since":    since,
 	"state":    stateWord,
-	"warning":  func(code string) string { return sentence(instances.WarningText(code)) },
+	"warning":  func(code string, stored []string) string { return sentence(instances.WarningWords(code, stored)) },
 	"why":      backupWhy,
 	"players":  playersOf,
 	"memory":   memoryOf,

@@ -2,6 +2,7 @@ package instances
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
@@ -66,6 +67,10 @@ const (
 	// above what the game server takes (gameserver.MaxPlayersLimit); the
 	// server uses its limit.
 	WarnMaxPlayersAboveGame = "max_players_above_game_limit"
+	// WarnUnsafeStoredSettings: settings stored by an earlier version break
+	// the rules for values on the server command line; the view names them
+	// in UnsafeStoredSettings.
+	WarnUnsafeStoredSettings = "unsafe_stored_settings"
 )
 
 // WarningText says in words what a warning of an instance view means.
@@ -80,8 +85,21 @@ func WarningText(code string) string {
 	case WarnMaxPlayersAboveGame:
 		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
 			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
+	case WarnUnsafeStoredSettings:
+		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored; change or remove them"
 	}
 	return code
+}
+
+// WarningWords says a warning of an instance view in words, with the
+// settings it is about: unsafeStored, the view's UnsafeStoredSettings, for
+// unsafe_stored_settings.
+func WarningWords(code string, unsafeStored []string) string {
+	text := WarningText(code)
+	if code == WarnUnsafeStoredSettings && len(unsafeStored) > 0 {
+		text += " (" + strings.Join(unsafeStored, ", ") + ")"
+	}
+	return text
 }
 
 // unsafeSuffix is added to the name of an output file when it is set

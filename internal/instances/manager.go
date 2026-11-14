@@ -85,6 +85,9 @@ type View struct {
 	Live      Live        `json:"live"`
 	Scheduled Scheduled   `json:"scheduled"`
 	Warnings  []string    `json:"warnings"`
+	// UnsafeStoredSettings names the settings of the warning
+	// unsafe_stored_settings (see Instance.storedUnsafe); never a value.
+	UnsafeStoredSettings []string `json:"unsafe_stored_settings,omitempty"`
 	// UpdateAvailable says that the Steam source the instance's build came
 	// from has a newer installed build of its channel; Update has the
 	// details.
@@ -487,7 +490,9 @@ func (m *Manager) view(in *rt) View {
 	in.mu.Unlock()
 	v.Update = m.updateInfo(v.Instance, auto)
 	v.UpdateAvailable = v.Update.Target != ""
-	v.Secrets = m.secretFlags(in.name)
+	sec, _ := m.readSecrets(in.name)
+	v.Secrets = sec.flags()
+	v.UnsafeStoredSettings = v.Instance.storedUnsafe(sec)
 	v.Live = m.live(v, serverID)
 	v.Warnings = m.warnings(v)
 	return v
@@ -508,6 +513,9 @@ func (m *Manager) warnings(v View) []string {
 	}
 	if v.MaxPlayers > gameserver.MaxPlayersLimit {
 		w = append(w, WarnMaxPlayersAboveGame)
+	}
+	if len(v.UnsafeStoredSettings) > 0 {
+		w = append(w, WarnUnsafeStoredSettings)
 	}
 	return w
 }
@@ -937,7 +945,8 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 	cfg := in.cfg.clone()
 	in.mu.Unlock()
 	// With command-line delivery a new secret is a value on the command
-	// line like any other. One stored before is passed as it is.
+	// line like any other. One stored before is passed as it is, and named
+	// in the warning unsafe_stored_settings.
 	if field, why, bad := req.given().commandLineProblem(); cfg.OutputHidden() && bad {
 		return SecretFlags{}, false, fault.New(fault.Invalid, "unsafe_argument",
 			"%s: cannot go on the server command line, where this instance passes its secrets (secret_delivery %q): it %s",

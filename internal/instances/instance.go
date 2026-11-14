@@ -430,7 +430,9 @@ func (in *Instance) Validate() error {
 // checkChanges checks what a create or a change sets, beyond Validate.
 // Only what is new or changed against old is checked (everything when old
 // is nil), so a value stored by an earlier version keeps working until it
-// is changed. now is the time of the check (a date may not lie after it).
+// is changed; the instance then carries the warning unsafe_stored_settings
+// (see storedUnsafe). now is the time of the check (a date may not lie
+// after it).
 //
 // The server joins its arguments into one line and finds its switches
 // anywhere in it (see gameserver.CheckValue), so everything an operator
@@ -583,6 +585,68 @@ func (s switchNames) repeated(i int) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// repeatedBefore reports whether a switch before the one at i names the
+// same switch: the server reads that one, and not the one at i.
+func (s switchNames) repeatedBefore(i int) bool {
+	for j := 0; j < i; j++ {
+		if gameserver.SameSwitch(s[j].name, s[i].name) {
+			return true
+		}
+	}
+	return false
+}
+
+// storedUnsafe names the settings of in, and with command-line delivery
+// the secrets in s, that break the rules for the server command line (see
+// checkChanges) and that ESM keeps passing as an earlier version stored
+// them, so the server may read them otherwise than ESM shows: the display
+// name, the world name and the map by their field, a rule as
+// "rules.<key>", an extra argument by its position from 1
+// ("extra_args.2", never by what it holds), and a secret by its field.
+// An empty rule, and an extra argument that ends in "=", is among them; it
+// is left off the command line (gameserver.Launch.Args). Of switches with
+// the same name, those after the first are named.
+func (in Instance) storedUnsafe(s Secrets) []string {
+	var out []string
+	unsafe := func(v string) bool {
+		_, bad := gameserver.CheckValue(v)
+		return bad
+	}
+	if in.DisplayName != "" && unsafe(in.DisplayName) {
+		out = append(out, "display_name")
+	}
+	if unsafe(in.World) {
+		out = append(out, "world")
+	}
+	if mapIsSwitch(in.Map) {
+		out = append(out, "map")
+	}
+	names := in.switchNames()
+	for i, k := range slices.Sorted(maps.Keys(in.Rules)) {
+		v := in.Rules[k]
+		if g, ok := gameserver.LookupGameSetting(k); ok && g.Type == gameserver.TypeList {
+			v = gameserver.ListValue(v)
+		}
+		if !gameserver.PlainSwitchName(k) || unsafe(v) || names.repeatedBefore(i) {
+			out = append(out, "rules."+k)
+		}
+	}
+	for i, a := range in.ExtraArgs {
+		name, value, hasValue := extraSwitch(a)
+		if !gameserver.PlainSwitchName(name) || hasValue && unsafe(value) || strings.HasSuffix(a, "=") || names.repeatedBefore(len(in.Rules)+i) {
+			out = append(out, "extra_args."+strconv.Itoa(i+1))
+		}
+	}
+	if in.SecretDelivery == gameserver.DeliveryCommandLine {
+		for _, f := range s.fields() {
+			if f.v != "" && unsafe(f.v) {
+				out = append(out, f.field)
+			}
+		}
+	}
+	return out
 }
 
 // secretLike is the refusal of a rule key or an extra argument that looks
