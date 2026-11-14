@@ -301,15 +301,19 @@ display name, the world name, the map, and, with secret delivery
 - **has no double quote**, which would turn the rest of the line inside
   out;
 - **is printable text**: letters, marks, digits, punctuation and symbols
-  of any script, and the plain space. Refused are control characters;
-  every white space of any host but the plain space (the list above,
-  which holds all that Unicode calls white space, and U+180E); format
-  characters (zero width space and joiners, direction marks and
-  overrides, the soft hyphen, the byte order mark); private-use code
-  points and code points Unicode has not assigned; and the en dash.
+  of any script (the Unicode categories L, M, N, P and S), and the plain
+  space. Refused are control characters (Cc); every white space of any
+  host but the plain space (the list above, which holds all that Unicode
+  calls white space, and U+180E), and with it every other space and the
+  line and paragraph separators (Zs, Zl, Zp); format characters (Cf: zero
+  width space and joiners, direction marks and overrides, the soft
+  hyphen, the byte order mark); private-use code points (Co), surrogates
+  (Cs) and code points Unicode has not assigned (Cn); and the en dash.
   These classes are refused whole, not by one host's table: what a host
-  makes of such a character can change with its next release, and none
-  of them shows in a name anyway. (An emoji that is newer than the
+  makes of such a character can change with its next release. The rule
+  goes by the class, not by how a character looks: a letter or a symbol
+  that shows as blank (U+3164, U+2800) is printable text and taken; no
+  host counts it as white space. (An emoji that is newer than the
   Unicode tables ESM was built with, or one joined from several with a
   zero width joiner, is refused with them.)
 - **has no space at its start or end**, and no space followed by `-` and
@@ -1590,7 +1594,7 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   what only looks like the start of one. No value holds `=`; `[EU]-Alpha`
   and a `-` before an ASCII letter after an accented one are refused
   (` - ` with spaces is fine); an emoji joined with a zero width joiner is
-  refused with the other characters that do not show.
+  refused with the format characters, the class the joiner belongs to.
 - **World rules reach a new world only.** The game copies them into a
   world when it creates it and keeps them with the world; ESM does not
   edit a world's saved rules. A changed world rule shows in the instance's

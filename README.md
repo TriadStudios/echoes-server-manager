@@ -444,10 +444,13 @@ same rules when it is set or changed:
   every other white space (a tab, a line break, a no-break space: any
   character that a Windows or a Linux host of the server counts as white
   space, because after white space the server reads `-Name` or `/Name` as
-  a switch); characters that do not show (zero width and direction marks,
-  the soft hyphen), private-use and unassigned code points; and the en
-  dash, which the server does not start with on its command line (write
-  `-`).
+  a switch), and with it every space and line or paragraph separator but
+  the plain space; format characters (zero width spaces and joiners,
+  direction marks, the soft hyphen, the byte order mark); private-use,
+  surrogate and unassigned code points; and the en dash, which the server
+  does not start with on its command line (write `-`). That goes by the
+  class of a character, not by how it looks: a letter or symbol that
+  shows as blank (U+3164, U+2800) is printable text and taken.
 - It has no space at its start or end, and no space followed by `-` and
   more (`a - b` is fine, `a -b` is not).
 - A `-` right before a letter A-Z or a-z has a letter or digit (A-Z, a-z,
