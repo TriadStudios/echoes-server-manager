@@ -424,12 +424,33 @@ create, `rules` in the API, the fields of the settings page). A setting
 that is not set is not passed, and the server uses its own default. A
 setting of the catalog is checked when it is set or changed: a number must
 be in its range, a choice one of its values, `True` or `False` for a
-switch, a date `YYYY-MM-DD` and not in the future. No value may be empty
-(leave a setting out for the game's default) or hold the name of another
-switch followed by `=` (`x,PvP=True`): the server would read either as
-something else. A value stored before is kept until it is changed (an
-empty one is not passed as `-Key=`). Keys outside the catalog are passed
-as they are, for settings of newer server builds.
+switch, a date `YYYY-MM-DD` and not in the future. Keys outside the
+catalog are passed as they are, for settings of newer server builds.
+
+The server joins its arguments into one line and finds a switch by its
+name and `=` anywhere in it, outside double quotes. So every value that
+goes onto the command line (a rule, an extra argument after its `=`, the
+server and world names, and the passwords and tokens in the compatibility
+mode below) follows the same rules when it is set or changed:
+
+- It is not empty (leave a setting out for the game's default), and has
+  no double quote, no control character, no white space other than the
+  plain space, no space at its start or end, and no space followed by `-`.
+- A value with a space is quoted whole by the server, so it may hold any
+  other character, `=`, `,` and `)` too (`Welcome, traveller`).
+- A value without a space may not hold `=`, `,` or `)`: the server would
+  end it at `,` or `)`, and read a name before `=` as a switch of its own
+  (`x;PvP=True` sets PvP).
+- A rule key, and the name of an extra argument (`-Name` or
+  `-Name=Value`), has ASCII letters and digits only (`x_PvP` would be the
+  switch `PvP`), and no two of them name the same switch in any case.
+
+A value stored by an earlier version is kept until it is changed. An
+empty one (a rule, or an extra argument that ends in `=`) is left off the
+command line when the server starts, and the service log says so; any
+other that breaks the rules is passed as it is, and the instance carries
+the warning `unsafe_stored_settings`, which names the settings (never
+their values) to change.
 
 | Group | Settings |
 |-------|----------|
@@ -445,9 +466,10 @@ example under a new world name); an existing world keeps its saved rules.
 
 The two tokens are secrets: set them like the passwords (below), never as
 rules. A list (`AdminPlayerIds`, `ChatBlockedWords`) is items separated by
-commas; ESM passes it with `, ` between the items (also a list stored
-before), so the server reads it whole. The two addresses are base
-addresses, without a query. The join password reaches the server as
+commas, each without white space, `=`, `)` or a double quote; ESM passes
+it with `, ` between the items (also a list stored before), so the server
+reads it whole. The two addresses are base addresses, without a query
+(and so without `=`). The join password reaches the server as
 `-Password=` in the compatibility mode. `max_players` is 1 to 70, the most
 the game server takes; an instance stored with more by an earlier version
 keeps its value (and a warning) until it is changed. Extra arguments that
@@ -485,7 +507,13 @@ its own log. ESM says UNSAFE wherever such an instance shows (`create`,
 `list`, `status`, `doctor`, the API) and gives the read role none of its
 server output and no failure details. Operators and admins still see them.
 (The secrets file is written in this mode too, as ESM's record of what the
-running server was started with; the server is not told about it.) The
+running server was started with; the server is not told about it.) In
+this mode a password or token is a value on the command line like any
+other (see [Game settings](#game-settings)): one without a space may not
+hold `=`, `,` or `)`, and none may hold a double quote. Such a secret is
+refused when it is set, and an instance that holds one is not switched to
+the mode; the refusal names the secret and why, never its value. (With
+the secrets file a password may be anything, as before.) The
 mode does not make the passwords safe. It is there only until the game
 server reads its passwords from the per-instance file, and is removed then.
 

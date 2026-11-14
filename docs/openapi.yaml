@@ -400,7 +400,12 @@ paths:
         A rule key or an extra argument that looks like a secret is refused
         with 422 `looks_like_secret`, and a change that would put one of the
         instance's passwords (in any case) into a setting with 422
-        `password_in_settings`. Changing `secret_delivery` from
+        `password_in_settings`. A value set or changed that breaks the rules
+        for values on the server command line (see Settings) is refused
+        with 422 `unsafe_argument`. Changing `secret_delivery` to
+        `command_line` is refused with 422 `unsafe_argument` while a
+        password or token is set that cannot go on the command line; the
+        answer names it, never its value. Changing `secret_delivery` from
         `command_line` to `file` is refused with 409 `instance_running`
         while the server runs; with the server stopped it sets the output
         files of the instance aside (they hold the command line) and
@@ -454,7 +459,13 @@ paths:
         masked in what ESM shows like the passwords. A password has at
         least 8 characters (422 password_too_short); a token 8 to 256 of
         printable ASCII without white space, '"', ',' or ')' (422 invalid).
-        Neither may occur, in any case, in the instance's name, display
+        With `secret_delivery: command_line` a password or token follows
+        the rules for values on the command line (see Settings): no double
+        quote, control character, white space other than a space, space at
+        either end or before "-"; without a space no "=", "," or ")". Such
+        a secret is refused there with 422 unsafe_argument, which names the
+        secret, never its value; with the secrets file a password may be
+        anything. Neither may occur, in any case, in the instance's name, display
         name, world, map, cluster, rule keys or values, or extra arguments
         (422 password_in_settings).
       parameters:
@@ -954,8 +965,12 @@ components:
                 port_in_use, no_free_ports, build_exists, build_in_use,
                 hash_mismatch, unsafe_archive, bad_manifest, too_large,
                 unsafe_argument (422: a setting that goes onto the server
-                command line holds a double quote, MULTIHOME, or white
-                space followed by "-"), no_build, no_map (409: neither the instance nor its build
+                command line breaks the rules for values there: it holds a
+                double quote, MULTIHOME, white space other than a space, a
+                space at an end or before "-", or, without a space, "=", ","
+                or ")"; or a key or switch name has more than ASCII letters
+                and digits, or names a switch twice; or, with secret_delivery
+                command_line, such a password or token), no_build, no_map (409: neither the instance nor its build
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
@@ -1246,25 +1261,45 @@ components:
         instance's server output and no state reasons.
     Warning:
       type: string
-      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced, max_players_above_game_limit]
+      enum: [secrets_on_command_line, secrets_unconfirmed, limits_not_enforced, max_players_above_game_limit, unsafe_stored_settings]
       description: |
         `secrets_on_command_line`: the instance passes its passwords (and
         tokens) on the server command line. `secrets_unconfirmed`: the
-        instance has passwords and file delivery, and its running server
-        has not confirmed that it took them; a server build that cannot
-        read the secrets file runs without passwords. `limits_not_enforced`:
-        the instance has resource limits and the supervisor in use does not
-        apply them. `max_players_above_game_limit`: the instance was stored
-        with a max_players above 70, the most the game server takes; the
-        server uses 70.
+        instance has passwords or tokens and file delivery, and its running
+        server has not confirmed that it took them all; a server build that
+        cannot read the secrets file runs without passwords and tokens.
+        `limits_not_enforced`: the instance has resource limits and the
+        supervisor in use does not apply them.
+        `max_players_above_game_limit`: the instance was stored with a
+        max_players above 70, the most the game server takes; the server
+        uses 70. `unsafe_stored_settings`: settings stored by an earlier
+        version break the rules for values on the server command line (see
+        Settings), so the server may read them otherwise than ESM shows; an
+        empty one is left out when the server starts, any other is passed
+        as stored. The instance's `unsafe_stored_settings` names them.
     Settings:
       type: object
       additionalProperties: false
+      description: |
+        Every value set or changed that goes onto the server command line
+        (display_name, world, a rule value, the value of an extra argument
+        after its first "=") follows the same rules, because the server
+        joins its arguments into one line and finds a switch by "Name="
+        anywhere in it outside double quotes: it is not empty; it has no
+        double quote, no control character, no white space other than the
+        plain space, no space at its start or end and no space followed by
+        "-"; with a space it is quoted whole and may hold "=", "," and ")";
+        without a space it may not hold "=", "," or ")". A value stored
+        earlier is kept until it is changed (see the warning
+        unsafe_stored_settings). A refusal is 422 `unsafe_argument` (or
+        `invalid` for a setting of the catalog) and never repeats the value.
       properties:
-        display_name: { type: string, maxLength: 64 }
+        display_name: { type: string, maxLength: 64, description: The server name. Empty means the instance name. }
         cluster: { type: string }
         channel: { type: string, enum: [live, test] }
-        map: { type: string, description: Empty means the build's default_map. }
+        map:
+          type: string
+          description: Empty means the build's default_map. A map set or changed that starts with "/" needs a folder and a name (/Game/Maps/Name); "/Name" alone is a switch to the server.
         world: { type: string }
         ports: { $ref: "#/components/schemas/Ports" }
         bind_ip:
@@ -1303,13 +1338,15 @@ components:
             A value has at most 256 characters; a list setting of the
             catalog at most its max_length (2000). A rule set or changed
             needs a value (the server would read the next argument as an
-            empty one; leave the rule out for its default), and may not
-            hold the name of a switch the server reads followed by "=",
-            after anything but a letter or digit (`x,PvP=True`; 422
-            `unsafe_argument` or `invalid`). An empty value stored earlier
-            is not passed as -Key=: it is left out for a catalog setting
-            and passed as the bare switch otherwise. A list is passed with
-            ", " between its items.
+            empty one; leave the rule out for its default), follows the
+            rules for values on the command line (see Settings; `x;PvP=True`
+            is refused, `Hi, PvP=True all` is a value with a space and
+            taken whole), and has a key of ASCII letters and digits only
+            that no other rule or extra argument names in any case. An
+            empty value stored earlier is left out when the server starts
+            (neither -Key= nor the bare switch -Key). A list is passed with
+            ", " between its items; its items may not hold white space,
+            "=", ")" or a double quote.
           additionalProperties: { type: string, maxLength: 2000 }
         listed: { type: boolean }
         autostart: { type: boolean }
@@ -1319,7 +1356,7 @@ components:
         limits: { $ref: "#/components/schemas/Limits" }
         extra_args:
           type: array
-          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key. A switch ESM sets itself, -MULTIHOME, and the engine's configuration overrides (-ini:<File>:[Section]:Key=Value, -iniFile= and -CustomConfig=) are refused (422), as rule keys too. An argument set or changed may not end in "=" and may not hold, after its own switch name, the name of another switch the server reads followed by "=".
+          description: Extra server arguments, each starting with "-". They are shown to every role; a switch name that looks like a secret is refused by the same rule as a rule key. A switch ESM sets itself, -MULTIHOME, and the engine's configuration overrides (-ini:<File>:[Section]:Key=Value, -iniFile= and -CustomConfig=) are refused (422), as rule keys too. An argument set or changed is -Name or -Name=Value, with a name of ASCII letters and digits only that no rule or other extra argument names in any case, and a value that follows the rules for values on the command line (see Settings); it may not end in "=". One stored earlier that ends in "=" is left out when the server starts.
           items: { type: string }
         secret_delivery: { $ref: "#/components/schemas/SecretDelivery" }
         auto_update: { $ref: "#/components/schemas/AutoUpdate" }
@@ -1413,6 +1450,17 @@ components:
           type: array
           description: Things an operator should know about the instance on this box.
           items: { $ref: "#/components/schemas/Warning" }
+        unsafe_stored_settings:
+          type: array
+          description: |
+            With the warning unsafe_stored_settings, the settings it is
+            about, never their values: display_name, world, map,
+            rules.<key>, extra_args.<position from 1>, and with
+            secret_delivery command_line the secrets by their field
+            (server_password, admin_password, announcements_token,
+            problem_report_token). Absent when there are none.
+          items: { type: string }
+          examples: [["rules.Banner", "extra_args.2", "admin_password"]]
         update_available: { type: boolean, description: A newer build of the instance's Steam source is installed (see update). }
         update: { $ref: "#/components/schemas/UpdateInfo" }
     Live:
@@ -1472,9 +1520,9 @@ components:
             `enum`: one of `choices` (any case). `list`: items separated by
             commas; ESM passes them joined by ", " so the server reads the
             list whole. `date`: YYYY-MM-DD, from 2000, not in the future.
-            `string`: text; without a space it may not hold "," or ")",
-            where the server would end it. No value may be empty or hold
-            the name of a switch the server reads followed by "=".
+            `string`: text. Every value follows the rules for values on the
+            command line (see Settings): not empty, and without a space no
+            "=", "," or ")".
         default:
           type: string
           description: What the server uses when the rule is not set, written as ESM would pass it; empty when that is empty or the server works it out itself (help says how).
@@ -1525,7 +1573,7 @@ components:
         announcements_token:
           type: string
           maxLength: 256
-          description: The game setting AnnouncementsToken. 8 to 256 characters of printable ASCII without white space, '"', ',' or ')'.
+          description: The game setting AnnouncementsToken. 8 to 256 characters of printable ASCII without white space, '"', ',' or ')'; with secret_delivery command_line no '=' either.
         problem_report_token:
           type: string
           maxLength: 256
@@ -1538,6 +1586,10 @@ components:
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }
+        unsafe_stored_settings:
+          type: array
+          description: The settings of the warning unsafe_stored_settings, as in Instance.
+          items: { type: string }
     State:
       type: string
       enum: [stopped, starting, running, stopping, crashed, failed, updating, deleted]
