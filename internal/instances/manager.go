@@ -150,6 +150,14 @@ type rt struct {
 	serverID string
 	// auto is the scheduler's state of an automatic update.
 	auto autoState
+	// unverified is an automatic update that switched the build while the
+	// instance was stopped; the next start checks it (see unverified.go).
+	unverified unverified
+	// updating are the builds an update under way may still need: the one
+	// the instance ran when the update began, which a failed update goes
+	// back to, and the one it updates to. Pruning keeps both until the
+	// update ends (see holdBuilds). Set with m.mu held as well.
+	updating []string
 }
 
 // setFilterLocked rebuilds the filter for server output. in.mu must be
@@ -282,8 +290,13 @@ func New(opts Options) (*Manager, error) {
 			}
 		}
 		r.setFilterLocked()
-		r.auto = m.loadAuto(in.Name)
-		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build}
+		r.auto, r.unverified = m.loadAuto(in.Name)
+		if r.unverified.build != in.Build {
+			// The build was changed since: nothing is left to check.
+			r.unverified = unverified{}
+		}
+		r.status = Status{Name: in.Name, State: Stopped, Since: m.now(), Build: in.Build,
+			UpdateUnverified: r.unverified.build != "", UpdateRollbackBuild: r.unverified.from}
 		var last Status
 		if err := m.st.ReadJSON(stateFile(in.Name), &last); err == nil {
 			if last.GaveUp || last.State == Failed {
@@ -964,7 +977,9 @@ func (m *Manager) Clusters() []Cluster {
 }
 
 // BuildUsers maps each build version to the instances that use it, as
-// their current build or one of their kept previous builds.
+// their current build, one of their kept previous builds, the build an
+// unproven automatic update would go back to, or a build an update under
+// way may still need (the one it began on and the one it goes to).
 func (m *Manager) BuildUsers() map[string][]string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -977,6 +992,10 @@ func (m *Manager) buildUsersLocked() map[string][]string {
 	for name, in := range m.insts {
 		in.mu.Lock()
 		refs := append([]string{in.cfg.Build}, in.cfg.PreviousBuilds[:min(keep, len(in.cfg.PreviousBuilds))]...)
+		if in.unverified.from != "" {
+			refs = append(refs, in.unverified.from)
+		}
+		refs = append(refs, in.updating...)
 		in.mu.Unlock()
 		for _, v := range refs {
 			if !slices.Contains(out[v], name) {
@@ -1000,13 +1019,41 @@ func (m *Manager) DeleteBuild(version string) error {
 	return m.builds.Remove(version)
 }
 
-// PruneBuilds removes every build that no instance uses as its current
-// build or one of its kept previous builds.
+// PruneBuilds removes every build that no instance uses (see BuildUsers).
 func (m *Manager) PruneBuilds() ([]string, error) {
+	return m.pruneBuilds(func(string) bool { return true })
+}
+
+// RemoveUnusedBuilds removes those of versions that no instance uses (see
+// BuildUsers) and returns the ones it removed. Other builds are left alone.
+func (m *Manager) RemoveUnusedBuilds(versions []string) ([]string, error) {
+	return m.pruneBuilds(func(v string) bool { return slices.Contains(versions, v) })
+}
+
+// pruneBuilds removes every build that may go and that no instance uses.
+func (m *Manager) pruneBuilds(mayGo func(version string) bool) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	users := m.buildUsersLocked()
-	return m.builds.Prune(func(v string) bool { return len(users[v]) > 0 })
+	return m.builds.Prune(func(v string) bool { return len(users[v]) > 0 || !mayGo(v) })
+}
+
+// holdBuilds counts the instance's current build and build to as in use
+// until release is called: an update under way switches to the one and may
+// go back to the other, whatever keep_previous_builds keeps. It takes m.mu
+// like a prune does, so a prune either ended before or keeps both. in.op
+// must be held.
+func (m *Manager) holdBuilds(in *rt, to string) (release func()) {
+	m.mu.Lock()
+	in.mu.Lock()
+	in.updating = []string{in.cfg.Build, to}
+	in.mu.Unlock()
+	m.mu.Unlock()
+	return func() {
+		in.mu.Lock()
+		in.updating = nil
+		in.mu.Unlock()
+	}
 }
 
 // setBuild switches the instance to build b with the given previous

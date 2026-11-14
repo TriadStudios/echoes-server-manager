@@ -48,7 +48,11 @@ func (e *env) serve(args []string) error {
 	case <-ctx.Done():
 	case runErr = <-svc.Err():
 	case <-svc.Exit():
-		fmt.Fprintln(e.errOut, "esm: ending after a self-update; the service manager starts the new binary")
+		if svc.Restarts() {
+			fmt.Fprintln(e.errOut, "esm: ending after a self-update; the service manager starts the new binary")
+		} else {
+			fmt.Fprintln(e.errOut, "esm: ending after a self-update; nothing starts ESM again: start it by hand (esm serve) to run the new binary")
+		}
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -62,7 +62,8 @@
 {{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning .}}</p>{{end}}
 {{end}}
 
-{{define "update-note"}}{{if .UpdateAvailable}}<p class="note"><span class="badge changed">Update</span> Build <span class="mono">{{.Update.Target}}</span> is available.
+{{define "update-note"}}{{if .Status.UpdateUnverified}}<p class="note"><span class="badge changed">New build</span> New build, checked at next start: <span class="mono">{{.Build}}</span> was put in place by an automatic update while the server was stopped, and nothing was started. The next start waits for it to get ready and goes back to <span class="mono">{{.Status.UpdateRollbackBuild}}</span> if it does not.</p>{{end}}
+{{if .UpdateAvailable}}<p class="note"><span class="badge changed">Update</span> Build <span class="mono">{{.Update.Target}}</span> is available.
 {{if .Update.Pending}}{{if .Update.Waiting}}Waiting: {{.Update.Waiting}}.{{else}}It is put in place at the next check.{{end}}{{else if .Update.Waiting}}{{.Update.Waiting}}.{{else}}auto_update is {{.AutoUpdate}}: update by hand.{{end}}
 {{if .Update.Overdue}}<span class="warnword">Waiting longer than {{.UpdateMaxWait}}.</span>{{end}}</p>{{end}}
 {{if .Update.LastError}}<p class="alert small">The last automatic update failed: {{.Update.LastError}}</p>{{end}}{{end}}

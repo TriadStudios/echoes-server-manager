@@ -1,7 +1,10 @@
 package steam
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -112,20 +115,40 @@ func TestScript(t *testing.T) {
 		t.Fatalf("default branch: %s", b)
 	}
 	for name, r := range map[string]Request{
-		"relative dir":      {InstallDir: "app", AppID: "1"},
-		"quote in dir":      {InstallDir: filepath.Join(dir, `a"b`), AppID: "1"},
-		"newline in dir":    {InstallDir: dir + "\nquit", AppID: "1"},
-		"app id":            {InstallDir: dir, AppID: "1 +quit"},
-		"branch":            {InstallDir: dir, AppID: "1", Branch: "a b"},
-		"password no beta":  {InstallDir: dir, AppID: "1", Password: "x"},
-		"password space":    {InstallDir: dir, AppID: "1", Branch: "b", Password: "a b"},
-		"password newline":  {InstallDir: dir, AppID: "1", Branch: "b", Password: "a\nquit"},
-		"password quote":    {InstallDir: dir, AppID: "1", Branch: "b", Password: `a"b`},
-		"password too long": {InstallDir: dir, AppID: "1", Branch: "b", Password: strings.Repeat("a", 129)},
+		"relative dir":       {InstallDir: "app", AppID: "1"},
+		"quote in dir":       {InstallDir: filepath.Join(dir, `a"b`), AppID: "1"},
+		"newline in dir":     {InstallDir: dir + "\nquit", AppID: "1"},
+		"app id":             {InstallDir: dir, AppID: "1 +quit"},
+		"branch":             {InstallDir: dir, AppID: "1", Branch: "a b"},
+		"password no beta":   {InstallDir: dir, AppID: "1", Password: "x"},
+		"password space":     {InstallDir: dir, AppID: "1", Branch: "b", Password: "a b"},
+		"password newline":   {InstallDir: dir, AppID: "1", Branch: "b", Password: "a\nquit"},
+		"password quote":     {InstallDir: dir, AppID: "1", Branch: "b", Password: `a"b`},
+		"password too long":  {InstallDir: dir, AppID: "1", Branch: "b", Password: strings.Repeat("a", 129)},
+		"password semicolon": {InstallDir: dir, AppID: "1", Branch: "b", Password: "a;quit"},
 	} {
 		if _, err := Script(r); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A branch password may hold no character that could end SteamCMD's word
+// or command early: white space, quotes, backslashes and semicolons are
+// refused; other printable ASCII is fine.
+func TestCheckPassword(t *testing.T) {
+	for _, pw := range []string{"a;b", ";", "pw;quit", "a b", "a\tb", `a"b`, "a'b", `a\b`, "a\nb", "é", "", strings.Repeat("a", MaxPasswordLength+1)} {
+		if err := CheckPassword(pw); err == nil {
+			t.Errorf("CheckPassword(%q) accepted", pw)
+		}
+	}
+	for _, pw := range []string{"s3cret-Pw", "A!#$%&()*+,-./:<=>?@[]^_`{|}~", strings.Repeat("a", MaxPasswordLength)} {
+		if err := CheckPassword(pw); err != nil {
+			t.Errorf("CheckPassword(%q): %v", pw, err)
+		}
+	}
+	if err := CheckPassword("a;b"); err == nil || !strings.Contains(err.Error(), "semicolon") {
+		t.Errorf("the message does not name semicolons: %v", err)
 	}
 }
 
@@ -336,6 +359,148 @@ func TestSteamErrors(t *testing.T) {
 	r.m.cfg.SteamCMD = filepath.Join(r.steam, "missing")
 	if _, _, err := r.m.Install(ctx, "main", true); fault.CodeOf(err) != "steamcmd_missing" {
 		t.Fatalf("missing SteamCMD: %v", err)
+	}
+}
+
+// contentSize adds up the sizes of the files in dir.
+func contentSize(t *testing.T, dir string) uint64 {
+	t.Helper()
+	var n uint64
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		n += uint64(fi.Size())
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A Steam build is copied into builds/ only when the disk that holds the
+// builds has at least twice its size free. With less, the install is
+// refused with an error the source's state keeps, and nothing is copied;
+// with twice its size free it goes ahead.
+func TestSteamInstallNeedsTwiceTheBuildSizeFree(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	size := contentSize(t, r.content)
+	var free uint64
+	var asked []string
+	r.m.opts.DiskSpace = func(dir string) (uint64, uint64, error) {
+		asked = append(asked, dir)
+		return 1 << 40, free, nil
+	}
+
+	free = 2*size - 1
+	_, _, err := r.m.Install(ctx, "main", false)
+	if fault.CodeOf(err) != "not_enough_space" || !strings.Contains(err.Error(), "steam-main-100") ||
+		!strings.Contains(err.Error(), "nothing was installed") {
+		t.Fatalf("install with too little space: %v", err)
+	}
+	if v := r.m.Sources()[0]; v.Error != err.Error() || v.Version != "" {
+		t.Fatalf("source after the refusal: %+v", v)
+	}
+	if list, err := r.builds.List(); err != nil || len(list) != 0 {
+		t.Fatalf("builds after the refusal: %+v %v", list, err)
+	}
+	for _, dir := range []string{builds.Dir, "tmp"} {
+		entries, _ := os.ReadDir(filepath.Join(r.root, dir))
+		for _, e := range entries {
+			if e.Name() != ".info" {
+				t.Errorf("%s/%s left after the refusal", dir, e.Name())
+			}
+		}
+	}
+	if len(asked) == 0 || !strings.HasPrefix(asked[0], r.st.Path()) {
+		t.Fatalf("free space asked for %v, not for the root's disk", asked)
+	}
+
+	free = 2 * size
+	b, installed, err := r.m.Install(ctx, "main", false)
+	if err != nil || !installed || b.Version != "steam-main-100" {
+		t.Fatalf("install with twice the size free: %+v %v %v", b, installed, err)
+	}
+	if v := r.m.Sources()[0]; v.Error != "" || v.Version != "steam-main-100" {
+		t.Fatalf("source after the install: %+v", v)
+	}
+}
+
+// Where the free space cannot be read, Steam builds are installed all the
+// same, and the service log says so once.
+func TestSteamInstallWithoutFreeSpaceReading(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	r.m.log = slog.New(slog.NewTextHandler(&logs, nil))
+	r.m.opts.DiskSpace = func(string) (uint64, uint64, error) {
+		return 0, 0, errors.New("not read on this system")
+	}
+	for _, id := range []string{"100", "101"} {
+		r.ctl.BuildID = id
+		testkit.SetSteamControl(t, r.steam, r.ctl)
+		b, installed, err := r.m.Install(ctx, "main", false)
+		if err != nil || !installed || b.Version != "steam-main-"+id {
+			t.Fatalf("install of %s: %+v %v %v", id, b, installed, err)
+		}
+	}
+	if n := strings.Count(logs.String(), "not read on this system"); n != 1 {
+		t.Fatalf("the log says %d times that the free space is unknown:\n%s", n, logs.String())
+	}
+}
+
+// Surplus orders a source's builds by build id as numbers, keeps the
+// newest keep_steam_builds and the build the source installed last, and
+// leaves out every other build.
+func TestSurplusOrdersByBuildID(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	if err := r.m.SetPassword("main", r.ctl.Password); err != nil {
+		t.Fatal(err)
+	}
+	r.m.cfg.KeepSteamBuilds = 2
+	for _, id := range []string{"99", "100", "7"} {
+		r.ctl.BuildID = id
+		testkit.SetSteamControl(t, r.steam, r.ctl)
+		if _, _, err := r.m.Install(ctx, "main", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Builds not of this source, some with names that start like its own.
+	for _, v := range []string{"steam-mainx-1", "steam-main-x-1", "steam-other-1", "1.0.0"} {
+		dir := filepath.Join(t.TempDir(), "b")
+		exes := testkit.MakeContent(t, dir, testkit.BuildOptions{Version: v})
+		if _, err := r.builds.InstallFolder(ctx, dir, builds.ManifestSpec{Version: v, Channel: "live", Executables: exes}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := r.m.Surplus("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 100 and 99 are the newest two; 7 was installed last, so it stays.
+	if len(got) != 0 {
+		t.Fatalf("surplus %v, want none", got)
+	}
+	r.ctl.BuildID = "100"
+	testkit.SetSteamControl(t, r.steam, r.ctl)
+	if _, installed, err := r.m.Install(ctx, "main", false); err != nil || installed {
+		t.Fatalf("same build id: %v %v", installed, err)
+	}
+	if got, err := r.m.Surplus("main"); err != nil || strings.Join(got, " ") != "steam-main-7" {
+		t.Fatalf("surplus %v %v, want steam-main-7", got, err)
 	}
 }
 

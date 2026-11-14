@@ -132,6 +132,7 @@ are refused, so typos are reported.
 | `update_check`         | `true`            | Let the service look up the newest ESM release (at most every 6 hours, only while someone looks at the box). It never updates anything by itself. |
 | `steamcmd`             | `<root>/steamcmd/steamcmd.sh` | SteamCMD (`steamcmd.exe` on Windows). A relative path is taken from the root. |
 | `steam_sources`        | (none)            | Steam apps builds come from: `name`, `app_id`, `branch` (empty for the default branch), `executable` (per system, a path inside the app's files), `default_map`, `channel`, `check_every` (default `15m`, `"0"` off, else at least `1m`). See [Builds from Steam](#builds-from-steam). |
+| `keep_steam_builds`    | `3`               | Builds of each Steam source kept, the newest by build id. After each install from a source, its older builds that no instance uses are removed. At least `1`. |
 
 ## Instances
 
@@ -522,11 +523,20 @@ UNCONFIRMED.
 the saves, stop the server if it runs, switch the build, start, and wait for
 ready. If the new build does not become ready, ESM stops it, switches back
 and starts the old build again; the answer says the update failed and was
-rolled back. World data is not touched by a rollback.
+rolled back. A rollback puts the previous build back, not the saves: what
+the new build already wrote to them stays. To go back to the saves from
+before the update, restore the backup the update made (see
+[Backups](#backups)).
 
-**Pruning** removes every build that no instance uses as its current build
-or as one of its newest `keep_previous_builds` previous builds. A single
-build can be deleted when no instance uses it.
+**Pruning** removes every build that no instance uses as its current build,
+as one of its newest `keep_previous_builds` previous builds, or as the
+build an unproven automatic update goes back to (`update_rollback_build`,
+see [Automatic updates](#automatic-updates)). While an update of an
+instance runs, the build it started from and the build it goes to count as
+used by that instance too, until the update has ended either way. A single
+build can be deleted when no instance uses it. Builds of a Steam source
+are also pruned after each install from that source (see
+[Builds from Steam](#builds-from-steam)).
 
 **Making a manifest.** `esm build manifest <folder> --version V
 --executable linux=<path> ...` writes the manifest of a build folder: the
@@ -545,11 +555,11 @@ source's own checks every `check_every` do the same:
    `steam-cache/.run-<random>/` (0700, the file 0600):
    `force_install_dir`, `login anonymous`, `app_update <app> -beta <branch>
    -betapassword <password>` (plus `validate` when a person asked), `quit`,
-   and runs `steamcmd +runscript <file>` with `HOME` set to the source's
-   cache, so SteamCMD's own files stay there. The folder is removed after
-   the run. The password is never on a command line, in the environment,
-   in a log or in the audit log; SteamCMD's output is masked before ESM
-   keeps any of it.
+   and runs `steamcmd +runscript <file>` with `HOME` set to
+   `steam-cache/<name>/home`. The folder is removed after the run. The
+   password is never on a command line, in the environment, in a log or
+   in the audit log; SteamCMD's output is masked before ESM keeps any of
+   it.
 2. A wrong password (SteamCMD says "Invalid Password") is `wrong_password`;
    any other failure is `steamcmd_failed`, with the last error line.
 3. ESM reads `steamapps/appmanifest_<app>.acf` with a strict, bounded
@@ -557,11 +567,24 @@ source's own checks every `check_every` do the same:
    4 KiB): the app id must match, `StateFlags` must say "fully installed",
    and `buildid` gives the version `steam-<name>-<buildid>`.
 4. When that build is installed already, nothing more happens. Otherwise
-   the app's files (without `steamapps/`) are copied into the install work
-   folder (links and special files refused), a manifest is made for the
-   copy (channel, default map and executables from the source), and the
-   install finishes like any other: hashes checked, `steam_appid.txt`
-   placed, read-only, moved into `builds/`.
+   ESM adds up the size of the app's files (without `steamapps/`) and
+   reads the free space of the file system that holds `builds/`. With less
+   than twice that size free, the install is refused (409
+   `not_enough_space`, with both sizes; also in the service log and the
+   source's state) and nothing is copied; the next check or install tries
+   again. Where the free space cannot be read, the install goes ahead and
+   the service log says so once. Then the app's files are copied into the
+   install work folder (links and special files refused), a manifest is
+   made for the copy (channel, default map and executables from the
+   source), and the install finishes like any other: hashes checked,
+   `steam_appid.txt` placed, read-only, moved into `builds/`.
+5. After a new build is installed, the source's builds are ordered by
+   build id (as numbers) and those beyond the newest `keep_steam_builds`
+   (default 3) are removed when no instance uses them (see Pruning above).
+   The build just installed is always kept, even when the branch went back
+   to an older build id. Builds of other sources and builds not from Steam
+   are never touched. A removal is in the service log and in the audit log
+   (`build.prune`, by the system).
 
 The cache keeps the app's files, so a check when nothing changed is quick
 and a new build is a delta download. A box holds each build twice (the
@@ -581,18 +604,38 @@ again on Steam is followed too). `auto_update`:
   (`update_available`, `update` in the instance, the dashboard and the
   overview); nothing else happens. The source's checks install builds
   whatever the instances are set to.
-- `restart`: the scheduler (every 15 seconds) updates the instance with the
-  usual update (backup, one stop signal, start, wait for ready, roll back)
-  as soon as its server answers the query port (A2S_INFO) with 0 players,
-  or right away when it is stopped. While players are on, the count is not
-  known, or the instance is starting, stopping, crashed or failed, it waits
-  and says why. After `update_max_wait` (default 6h) it raises one warning
-  (an `update` event and an audit entry) and keeps waiting. Right before
-  the stop (after the backup) the update asks the player count again; a
-  player who joined meanwhile puts it off, like an update refused because
-  the instance is busy, and the scheduler tries again later. An automatic
-  update that failed is not tried again for the same build; a newer build,
-  or an update by hand, starts over.
+- `restart`: the scheduler (every 15 seconds) updates a running instance
+  with the usual update (backup, one stop signal, start, wait for ready,
+  roll back) as soon as its server answers the query port (A2S_INFO) with
+  0 players. While players are on, the count is not known, or the instance
+  is starting, stopping, crashed or failed, it waits and says why. After
+  `update_max_wait` (default 6h) it raises one warning (an `update` event
+  and an audit entry) and keeps waiting. The update asks the player count
+  again before its backup, and once more right before the stop (after the
+  backup); a player who joined meanwhile puts it off, like an update
+  refused because the instance is busy, and the scheduler tries again
+  later. A backup made by an update that is then put off is removed again,
+  and an automatic update prunes older backups (to the instance's `keep`)
+  only once it goes ahead, so updates put off again and again on a busy
+  server never push older backups out. An automatic update that failed is
+  not tried again for the same build; a newer build, or an update by hand,
+  starts over.
+- `restart`, stopped instance: an automatic update never starts a server
+  that is not running (an operator may have stopped it on purpose). It
+  backs up the saves and switches the build (the old one goes to the
+  previous builds), and starts nothing. The instance is marked
+  `update_unverified` (with `update_rollback_build`, the build it ran
+  before; over several such updates that stays the build that last ran),
+  kept in `instances/<name>/run/autoupdate.json`. The next start, by API,
+  command line, page, a restart or autostart, starts the new build and
+  waits for ready like an update does, whatever `wait` says. If it does
+  not get ready, ESM stops it, switches back to the old build and starts
+  that, with the same events and audit entries as a failed automatic
+  update, and records the failed build so automatic updates do not try it
+  again; the start answers 422 `update_failed`. When it gets ready the
+  mark goes. While the mark is set, the build to go back to counts as in
+  use, so pruning keeps it. An update by hand of a stopped instance still
+  starts the new build to prove it and stops it again, as before.
 
 An update by hand to an older build of the same source (a lower build id)
 pauses the instance's automatic updates until the source's newest build
@@ -614,9 +657,10 @@ of where it comes from. The release workflow signs `SHA256SUMS` with an
 Ed25519 key whose public half is built into ESM; the private half is the
 secret `ESM_RELEASE_KEY` of the GitHub environment `release` (deployments
 from `v*` tags only) and a copy the project owner keeps offline. The
-workflow builds and tests in a job without secrets and with a read-only
-token, signs in a job that runs only the `esm-sign` binary the build job
-made, and publishes in a third job with the write token and no key.
+workflow builds, tests and runs govulncheck (a known vulnerability stops
+the release) in a job without secrets and with a read-only token, signs in
+a job that runs only the `esm-sign` binary the build job made, and
+publishes in a third job with the write token and no key.
 `SHA256SUMS` starts with `version <tag>`, so the signature covers which
 release the binaries belong to. ESM fetches the release list, the binaries and the two files over
 https from GitHub (redirects on https only, time limits, size caps: 1 MiB
@@ -635,6 +679,24 @@ the new public key. `esm-sign` checks the key against the built-in public
 key before signing, so a wrong secret fails in the workflow and not on the
 boxes. Updates never happen on their own: a person runs `esm update-self`
 or the admin-only `POST /api/v1/box/self-update`.
+
+`esm update-self` replaces the binary and ends nothing; the running
+service goes on with the old binary until it is restarted. The API call
+ends the service a moment after it answers, so that its service manager
+starts the new binary, and does that only when something will: on Linux
+when systemd runs ESM as a service (systemd sets `INVOCATION_ID`; the unit
+of `esm service install` has `Restart=always`). Otherwise, and always on
+Windows, where ESM has no service manager, the call is refused with 409
+`no_service_manager` and nothing changes, unless the caller sets
+`exit_anyway`; ESM then updates, ends, and has to be started by hand (the
+page asks before it sends that). An update holds the lock file
+`<binary>.update.lock` next to the binary while it runs (made with
+`O_EXCL`), so updates from the command line and the service never replace
+the binary at the same time: a second one gets 409 `busy`, or the same
+error on the command line. A lock older than 15 minutes was left by an
+update that did not finish (its downloads end within 11 minutes) and is
+taken over. Once an update through the API has put a new binary in place,
+that service takes no other until it has ended.
 
 **Steam.** A Steam build is trusted as far as Steam and the accounts that
 upload builds to the app are: ESM does not check a signature of its own on
@@ -779,7 +841,8 @@ skipped.
   200 when its build is installed already). `GET /api/v1/box` carries
   `update_available` and `release`; `POST /api/v1/box/self-update` (admin)
   puts the newest release in place and ends the service for its service
-  manager to start again.
+  manager to start again (refused with 409 `no_service_manager` when
+  nothing would, unless `exit_anyway` is set; see [Trust](#trust)).
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -1126,9 +1189,28 @@ wrong, it changes in the adapter and the fake, and nowhere else.
 - **Links in a Steam app are refused.** A depot that holds symbolic links
   cannot be installed, under the same rule as any build.
 - **Self-update leftovers.** A self-update that is killed while it
-  downloads leaves a `.esm-update-*` file next to the binary. On Windows a
-  second self-update fails while the `.previous` binary of the first one
-  still runs (it cannot be replaced); end that process first.
+  downloads leaves a `.esm-update-*` file next to the binary, and its lock
+  file `<binary>.update.lock`, which keeps other self-updates out until it
+  is 15 minutes old. On Windows a second self-update fails while the
+  `.previous` binary of the first one still runs (it cannot be replaced);
+  end that process first.
+- **A forced self-update takes an older release.** With `force` (admins
+  only), ESM takes the release that the release list names as the newest
+  even when it is older than the running ESM, as long as its signature
+  verifies and its signed version is its tag. The signature shows that the
+  binaries are those of a real release; which signed release is offered is
+  up to whoever serves the release list.
+- **Going back to an older release can need an edit of `esm.json`.** ESM
+  writes `esm.json`, with every setting, only when it starts without one.
+  A file written by a release that has `keep_steam_builds` holds that
+  setting; older releases do not know it and refuse a configuration file
+  with a setting they do not know. Before going back to one with a forced
+  self-update, remove the `keep_steam_builds` line.
+- **A stop during a Steam install can take a while.** ESM ends a Steam
+  install it is running when it stops, but the copy of the app's files
+  into the install work folder only stops between files, so a stop may
+  wait until the copy gets there. The stop timeout of the service manager
+  applies (`TimeoutStopSec=60` in the unit of `esm service install`).
 
 ## Open items
 

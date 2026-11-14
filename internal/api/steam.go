@@ -16,13 +16,17 @@ type SelfUpdateRequest struct {
 	// Force takes the newest release even when it is not newer (or this
 	// ESM is a development build).
 	Force bool `json:"force"`
+	// ExitAnyway updates and ends ESM also when nothing starts it again;
+	// it then has to be started by hand.
+	ExitAnyway bool `json:"exit_anyway"`
 }
 
 // SelfUpdateResult answers POST /box/self-update.
 type SelfUpdateResult struct {
 	release.Result
-	// Restarting says that the service ends in a moment, for its service
-	// manager to start the new binary.
+	// Restarting says that the service ends in a moment for its service
+	// manager to start the new binary. It is false after exit_anyway with
+	// nothing to start ESM again: ESM ends all the same.
 	Restarting bool   `json:"restarting"`
 	Note       string `json:"note"`
 }
@@ -36,7 +40,7 @@ func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) err
 	if s.o.SelfUpdate == nil {
 		return errStatus(http.StatusConflict, "not_available", "this ESM cannot update itself")
 	}
-	res, err := s.o.SelfUpdate(r.Context(), req.Force)
+	res, restarting, err := s.o.SelfUpdate(r.Context(), req.Force, req.ExitAnyway)
 	switch {
 	case errors.Is(err, release.ErrUpToDate):
 		return errStatus(http.StatusConflict, "up_to_date", "%v", err)
@@ -44,12 +48,17 @@ func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) err
 		return errStatus(http.StatusConflict, "unknown_version", "%v", err)
 	case errors.Is(err, release.ErrBusy):
 		return errStatus(http.StatusConflict, "busy", "%v", err)
+	case fault.Is(err, fault.Conflict):
+		return err
 	case err != nil:
 		return fault.Wrap(fault.Failed, "update_failed", err, "self-update failed")
 	}
 	c.target = "esm " + res.From + " to " + res.To
-	return writeJSON(w, http.StatusOK, SelfUpdateResult{Result: res, Restarting: true,
-		Note: "ESM ends in a moment so that its service manager starts the new binary (the unit of \"esm service install\" does); game servers keep running. Without a service manager, start it again by hand."})
+	note := "ESM ends in a moment so that its service manager starts the new binary (the unit of \"esm service install\" does); game servers keep running and the new ESM adopts them."
+	if !restarting {
+		note = "ESM ends in a moment and nothing starts it again: start it by hand (esm serve) to run the new binary. Game servers keep running and the new ESM adopts them."
+	}
+	return writeJSON(w, http.StatusOK, SelfUpdateResult{Result: res, Restarting: restarting, Note: note})
 }
 
 // --- Steam sources ---

@@ -16,8 +16,8 @@
 </dl>
 {{if $b.UpdateAvailable}}<p class="alert">ESM {{$b.Release.Latest}} is out.</p>{{end}}
 {{if $b.Release.Note}}<p class="note">{{$b.Release.Note}}</p>{{end}}
-{{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place and restart ESM? Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
-<p class="note">ESM never updates itself on its own. An update takes a release only when its signature checks out with the key built into ESM and the binary's hash matches the signed list; the old binary is kept next to it as <span class="mono">.previous</span>. ESM then restarts through its service manager (<span class="mono">esm service install</span>). On the box: <span class="mono">esm update-self</span>.</p>
+{{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place? ESM ends after the update, and its service manager, if it has one, starts the new version. Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
+<p class="note">ESM never updates itself on its own. An update takes a release only when its signature checks out with the key built into ESM and the binary's hash matches the signed list; the old binary is kept next to it as <span class="mono">.previous</span>. ESM then restarts through its service manager (<span class="mono">esm service install</span>); when nothing would start it again, the update asks first and ESM then has to be started by hand. On the box: <span class="mono">esm update-self</span>.</p>
 </section>
 
 <section class="panel stack" aria-labelledby="access-h">

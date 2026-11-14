@@ -35,6 +35,9 @@ Early development. **Not ready for real hosts yet.**
 ## Build
 
 You need Go 1.24 or newer. ESM uses only the Go standard library.
+`go.mod` names the toolchain go1.27.4, which the go command fetches by
+itself unless `GOTOOLCHAIN=local` is set. CI and releases build with the
+newest patch release of Go 1.27.
 
 ```sh
 go build ./cmd/esm
@@ -78,10 +81,20 @@ update button, admins only) downloads the newest release for this system,
 checks the signature with the built-in key and the binary's hash against
 the signed list, and only then puts the new binary in place; the old one
 stays next to it as `esm.previous` (to roll back, move it back). The page's
-button then ends the service so that its service manager starts the new
-binary; after `esm update-self` on the command line, restart the service
+button (`POST /api/v1/box/self-update`) then ends the service so that its
+service manager starts the new binary, and does that only when something
+will: on Linux, when systemd runs ESM (the unit of `esm service install`).
+Otherwise, and on Windows, the update is refused and nothing changes,
+unless the caller sets `exit_anyway` (the page asks first); ESM then
+updates, ends, and has to be started again by hand. `esm update-self` on
+the command line replaces the binary and ends nothing: restart the service
 yourself (`systemctl --user restart esm`). Game servers keep running
 either way and the new ESM adopts them.
+
+One self-update runs at a time: while it runs it holds the lock file
+`<binary>.update.lock` next to the binary, and another one, from the page
+or the command line, is refused. A lock older than 15 minutes was left by
+an update that did not finish and is taken over.
 
 ### Making a release (maintainers)
 
@@ -89,8 +102,7 @@ The release workflow signs in a job of its own that runs in the GitHub
 environment `release`, whose secret `ESM_RELEASE_KEY` is the base64 of the
 32-byte private seed. That job runs only the `esm-sign` binary the build
 job made; building, testing and publishing run without the key. Set the
-environment up once, allowing deployments from `v*` tags only (a required
-reviewer can be added in the repository settings):
+environment up once, allowing deployments from `v*` tags only:
 
 ```sh
 gh api -X PUT repos/TriadStudios/echoes-server-manager/environments/release \
@@ -99,6 +111,11 @@ gh api -X POST repos/TriadStudios/echoes-server-manager/environments/release/dep
   -f name='v*' -f type=tag
 gh secret set ESM_RELEASE_KEY --env release --repo TriadStudios/echoes-server-manager < release-key.txt
 ```
+
+Two more settings belong with the key: the `release` environment should
+require a reviewer (repository settings, Environments), so that no
+release is signed before a maintainer approves the run, and a tag
+ruleset should limit who may create `v*` tags.
 
 Then push a tag `vX.Y.Z`. Without the secret the sign job fails and
 nothing is published.
@@ -268,18 +285,32 @@ SteamCMD.
    script file that is removed after each run.
 4. `esm build install steam:main` downloads the branch (validating every
    file) and installs its build as `steam-main-<buildid>`, read-only, like
-   any build; the regular checks do the same without validation. The app's
-   files are kept in `<root>/steam-cache/main/` so later downloads are
-   deltas, and SteamCMD's own files stay there too. `esm steam list` shows
-   what each source last did; `esm doctor` checks SteamCMD, the sources and
-   the passwords.
+   any build; the regular checks do the same without validation. ESM keeps
+   the app's files in `<root>/steam-cache/main/` so later downloads are
+   deltas, and runs SteamCMD with `HOME` set to a folder there.
+   `esm steam list` shows what each source last did; `esm doctor` checks
+   SteamCMD, the sources and the passwords.
+
+A new build is installed only when the disk that holds `builds/` has at
+least twice its size free; otherwise the install is refused
+(`not_enough_space`, shown by `esm steam list`) and nothing is copied.
+After each install from a source, ESM keeps that source's newest
+`keep_steam_builds` builds by build id (default 3, at least 1, set in
+`esm.json`) and removes its older ones that no instance uses (as its
+build, a kept previous build, the build an unproven update goes back to,
+or a build an update under way still needs). Builds of other sources and
+builds not from Steam are left alone.
 
 Anyone else can fetch the same build once the tool app is released (in the
 free dedicated server package):
 
 ```sh
-steamcmd +login anonymous +app_update <app> -beta <branch> -betapassword <password> validate +quit
+steamcmd +login anonymous +app_update <app> -beta <branch> validate +quit
 ```
+
+A password-protected branch also needs its password. Keep it off the
+command line, where other accounts on the machine can read it; ESM puts
+it in a private script file that SteamCMD runs with `+runscript`.
 
 ### Making a build folder by hand
 
@@ -300,14 +331,28 @@ is its `auto_update` setting (Settings on the page, or `PATCH` the
 instance):
 
 - `off` (default) and `install`: nothing more; update by hand.
-- `restart`: ESM updates the instance itself as soon as its server answers
-  the query port with **0 players** (or at once when it is stopped): a
-  backup, one stop signal, the new build, and a roll back when the new
-  build does not get ready. The player count is asked once more right
-  before the stop; a player who joined meanwhile puts the update off. While
-  players are on it waits and asks again; after `update_max_wait` (default
-  6h) it raises a warning and keeps waiting. A failed automatic update is
-  not tried again for that build.
+- `restart`: ESM updates a running instance itself as soon as its server
+  answers the query port with **0 players**: a backup, one stop signal,
+  the new build, and a roll back to the previous build when the new build
+  does not get ready. A roll back puts the build back, not the saves: what
+  the new build already wrote stays, and restoring the backup made before
+  the update undoes that.
+  The player count is asked again before the backup and once more right
+  before the stop; a player who joined meanwhile puts the update off, and
+  a backup made for it is removed again (older backups are pruned only
+  when an update goes ahead). While players are on it waits and asks
+  again; after `update_max_wait` (default 6h) it raises a warning and
+  keeps waiting. A failed automatic update is not tried again for that
+  build.
+- A **stopped** instance set to `restart` is never started by an update:
+  ESM backs up its saves and switches its build, and that is all. The
+  instance shows `update_unverified` (on the page: "new build, checked at
+  next start"). The next start, whoever makes it (API, command line or
+  page), starts the new build and waits until it is ready; if it does not
+  get ready, ESM stops it, puts the previous build back, starts that, and
+  does not try the failed build again. Until then the previous build
+  counts as in use, so pruning keeps it. A crashed or failed instance is
+  not updated; it waits and says why.
 
 Updating an instance by hand to an older build of its source pauses its
 automatic updates until the source has a build newer than the one it
@@ -346,7 +391,7 @@ esm start alpha                              # waits until the server is ready
 esm status alpha
 esm logs alpha -n 100 -f
 esm backup alpha
-esm update alpha --to 1.1.0                  # rolls back if the new build never gets ready
+esm update alpha --to 1.1.0                  # goes back to the old build if the new one never gets ready
 esm restore alpha 20260101T120000Z-manual
 esm stop alpha
 esm list --json
@@ -447,7 +492,12 @@ Known limits are listed in [docs/DESIGN.md](docs/DESIGN.md#known-limits).
 gofmt -l .
 go vet ./...
 go test ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 ```
+
+CI runs these on Linux and Windows (gofmt and govulncheck on Linux only);
+the release workflow runs govulncheck before it builds, and a known
+vulnerability stops the release.
 
 The tests build a fake game server (`cmd/esm-fakeserver`) and a fake
 SteamCMD (`cmd/esm-fakesteamcmd`) and drive whole services through the API

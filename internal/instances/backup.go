@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 )
@@ -66,12 +67,13 @@ func (m *Manager) Backup(ctx context.Context, name, reason string) (Backup, erro
 	}
 	in.op.Lock()
 	defer in.op.Unlock()
-	return m.backupLocked(context.WithoutCancel(ctx), in, reason, "")
+	return m.backupLocked(context.WithoutCancel(ctx), in, reason, "", true)
 }
 
-// backupLocked makes a backup; protect names a backup that pruning must
-// keep. in.op must be held.
-func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect string) (Backup, error) {
+// backupLocked makes a backup. With prune the instance's backups are then
+// pruned to its keep; protect names a backup that pruning must keep.
+// in.op must be held.
+func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect string, prune bool) (Backup, error) {
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	in.mu.Unlock()
@@ -118,10 +120,26 @@ func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect stri
 		return Backup{}, err
 	}
 	m.log.Info("backup made", "instance", in.name, "id", id, "files", len(b.Files), "save_confirmed", confirmed)
-	if err := m.pruneBackups(in.name, cfg.Backup.Keep, id, protect); err != nil {
-		m.log.Warn("cannot prune backups", "instance", in.name, "err", err)
+	if prune {
+		m.pruneBackupsLogged(in.name, cfg.Backup.Keep, id, protect)
 	}
 	return b, nil
+}
+
+// pruneBackupsLogged is pruneBackups with a failure logged, not returned.
+func (m *Manager) pruneBackupsLogged(name string, keep int, protect ...string) {
+	if err := m.pruneBackups(name, keep, protect...); err != nil {
+		m.log.Warn("cannot prune backups", "instance", name, "err", err)
+	}
+}
+
+// dropBackup removes a backup that turned out not to be needed.
+func (m *Manager) dropBackup(name, id string) {
+	if err := m.st.RemoveAll(backupDir(name, id)); err != nil {
+		m.log.Warn("cannot remove a backup that is not needed", "instance", name, "id", id, "err", err)
+		return
+	}
+	m.log.Info("backup removed: the update it was made for was put off", "instance", name, "id", id)
 }
 
 // newBackupID returns "<UTC time>-<reason>", with a counter when that id
@@ -285,7 +303,7 @@ func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) 
 		}
 		return waitRun(ctx, r)
 	}
-	if _, err := m.backupLocked(ctx, in, ReasonPreRestore, id); err != nil {
+	if _, err := m.backupLocked(ctx, in, ReasonPreRestore, id, true); err != nil {
 		restart()
 		return m.mustStatus(name), fmt.Errorf("back up the current save files: %w", err)
 	}
@@ -347,24 +365,37 @@ func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 	return m.update(ctx, name, to, false)
 }
 
-// update is Update; auto marks an automatic update (see autoupdate.go):
-// the player count is asked again right before the server is stopped, and
-// a manual one may pause automatic updates.
+// update is Update; auto marks an automatic update (see autoupdate.go).
+// An automatic update of a running server asks the player count again
+// before its backup and once more right before the stop; a player on puts
+// it off (a conflict) without leaving its backup behind, and its backup
+// prunes older ones only once the update goes ahead. An automatic update
+// of an instance whose server is not running only switches the build
+// (switchStopped). A manual update may pause automatic updates.
+//
+// From the moment it has the instance until it returns, whatever the
+// outcome, the update holds the build the instance ran and the one it goes
+// to (holdBuilds), so pruning removes neither: not the new build before it
+// is switched in, and not the old one while the new one is waited for,
+// though it may be no kept previous build by then.
 func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Status, error) {
 	in, err := m.get(name)
 	if err != nil {
 		return Status{}, err
 	}
-	nb, err := m.builds.Get(to)
-	if err != nil {
-		if fault.Is(err, fault.NotFound) {
-			return Status{}, fault.New(fault.Invalid, "no_build", "build %s is not installed", to)
-		}
+	if _, err := m.buildToUpdateTo(to); err != nil {
 		return Status{}, err
 	}
 	ctx = context.WithoutCancel(ctx)
 	in.op.Lock()
 	defer in.op.Unlock()
+	release := m.holdBuilds(in, to)
+	defer release()
+	// The build may have gone while the update waited for the instance.
+	nb, err := m.buildToUpdateTo(to)
+	if err != nil {
+		return m.mustStatus(name), err
+	}
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	prevState := in.status.State
@@ -383,22 +414,44 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 	m.setLocked(in, Updating, "updating to "+to)
 	in.mu.Unlock()
 	wasRunning := m.alive(name)
-	if _, err := m.backupLocked(ctx, in, ReasonPreUpdate, ""); err != nil {
+	checkPlayers := wasRunning && auto
+	putOff := func(why string) (Status, error) {
+		in.mu.Lock()
+		m.setLocked(in, prevState, "automatic update to "+to+" put off: "+why)
+		in.mu.Unlock()
+		return m.mustStatus(name), fault.New(fault.Conflict, "players_online", "automatic update to %s put off: %s", to, why)
+	}
+	if checkPlayers {
+		// The scheduler saw no players a moment ago. Ask again before the
+		// backup, so an update that is put off costs no backup.
+		if why := m.playersWaiting(cfg); why != "" {
+			return putOff(why)
+		}
+	}
+	b, err := m.backupLocked(ctx, in, ReasonPreUpdate, "", !auto)
+	if err != nil {
 		in.mu.Lock()
 		m.setLocked(in, prevState, "update to "+to+" not started: backup failed")
 		in.mu.Unlock()
 		return m.mustStatus(name), fmt.Errorf("pre-update backup: %w", err)
 	}
-	if wasRunning && auto {
+	if checkPlayers {
 		if beforeAutoStop != nil {
 			beforeAutoStop(name)
 		}
-		// The scheduler saw no players; one may have joined since.
+		// One may have joined while the backup was made. The backup is of
+		// no use then; it goes, so updates that are put off again and again
+		// never push older backups out.
 		if why := m.playersWaiting(cfg); why != "" {
-			in.mu.Lock()
-			m.setLocked(in, prevState, "automatic update to "+to+" put off: "+why)
-			in.mu.Unlock()
-			return m.mustStatus(name), fault.New(fault.Conflict, "players_online", "automatic update to %s put off: %s", to, why)
+			m.dropBackup(name, b.ID)
+			return putOff(why)
+		}
+	}
+	if auto {
+		// The update goes ahead: now the backups are pruned to keep.
+		m.pruneBackupsLogged(name, cfg.Backup.Keep, b.ID)
+		if !wasRunning {
+			return m.switchStopped(ctx, in, cfg, to)
 		}
 	}
 	if wasRunning {
@@ -420,6 +473,13 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 				return m.mustStatus(name), err
 			}
 		}
+		// The build the instance has now was seen ready: an unproven
+		// automatic update from before is settled.
+		in.mu.Lock()
+		if m.clearUnverifiedLocked(in) {
+			m.emitLocked(in)
+		}
+		in.mu.Unlock()
 		m.log.Info("instance updated", "instance", name, "from", old, "to", to)
 		if !auto {
 			m.noteManualUpdate(in, old, to)
@@ -449,4 +509,13 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 		in.mu.Unlock()
 	}
 	return m.mustStatus(name), fault.New(fault.Failed, "update_failed", "update failed, rolled back to %s: %v", old, cause)
+}
+
+// buildToUpdateTo looks up the build an update goes to.
+func (m *Manager) buildToUpdateTo(to string) (builds.Build, error) {
+	nb, err := m.builds.Get(to)
+	if fault.Is(err, fault.NotFound) {
+		return builds.Build{}, fault.New(fault.Invalid, "no_build", "build %s is not installed", to)
+	}
+	return nb, err
 }

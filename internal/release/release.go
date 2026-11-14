@@ -14,6 +14,7 @@ package release
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -145,7 +146,54 @@ func Newer(latest, current string) (newer, ok bool) {
 	case c.pre == "":
 		return false, true
 	}
-	return l.pre > c.pre, true
+	return comparePre(l.pre, c.pre) > 0, true
+}
+
+// comparePre orders two pre-release parts (the text after "-") the way
+// semantic versioning does, and returns -1, 0 or +1. They are compared
+// identifier by identifier (split at "."): two numbers by value, a number
+// below an identifier with letters, two of those by their ASCII text. When
+// every identifier of the shorter list equals the other's, the shorter one
+// is lower.
+func comparePre(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := range min(len(as), len(bs)) {
+		if c := compareIdent(as[i], bs[i]); c != 0 {
+			return c
+		}
+	}
+	return cmp.Compare(len(as), len(bs))
+}
+
+func compareIdent(a, b string) int {
+	an, bn := isDigits(a), isDigits(b)
+	switch {
+	case an && bn:
+		// By value, whatever their length: without leading zeros, the
+		// longer number is the larger one.
+		a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+		if c := cmp.Compare(len(a), len(b)); c != 0 {
+			return c
+		}
+		return strings.Compare(a, b)
+	case an:
+		return -1
+	case bn:
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- keys and signatures ---

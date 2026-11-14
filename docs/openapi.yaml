@@ -215,6 +215,21 @@ paths:
         `unknown_version` for a development build. SHA256SUMS starts with
         `version <tag>`; the signed version must be the release's tag (also
         with `force`) and decides whether the release is newer.
+
+        ESM ends only when something starts it again: on Linux, when
+        systemd runs it as a service (it sets `INVOCATION_ID`; the unit of
+        `esm service install` has `Restart=always`). Otherwise, and always
+        on Windows, the call is refused with 409 `no_service_manager` and
+        nothing is changed, unless `exit_anyway` is set: then ESM updates
+        and ends all the same (`restarting` false) and has to be started
+        by hand.
+
+        While an update runs it holds the lock file
+        `<binary>.update.lock` next to the binary; a second update, from
+        the API or from `esm update-self`, gets 409 `busy`, and so does one
+        after an update worked and before ESM has ended. A lock older than
+        15 minutes was left by an update that did not finish and is taken
+        over.
       requestBody:
         content:
           application/json:
@@ -275,7 +290,11 @@ paths:
         `steam-<name>-<buildid>` when no build of that build id is installed
         yet (201). When it is installed already the answer is 200 with that
         build. A wrong branch password is 422 `wrong_password`; SteamCMD
-        missing is 422 `steamcmd_missing`.
+        missing is 422 `steamcmd_missing`. With less than twice the build's
+        size free on the disk that holds the builds, nothing is installed
+        and the answer is 409 `not_enough_space`. After a new install, the
+        source's builds beyond the newest `keep_steam_builds` by build id
+        that no instance uses are removed.
       requestBody:
         required: true
         content:
@@ -449,7 +468,7 @@ paths:
     post:
       tags: [instances]
       summary: Start (operator)
-      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count.
+      description: Returns once the server is launched (state starting), or with wait=true once it is running or has failed. A manual start clears the crash count. The first start after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed.
       parameters:
         - $ref: "#/components/parameters/Name"
         - $ref: "#/components/parameters/Wait"
@@ -490,6 +509,7 @@ paths:
     post:
       tags: [instances]
       summary: Stop, then start (operator)
+      description: Like a start, the first restart after an automatic update switched the build of the stopped instance (update_unverified) always waits; when the new build does not get ready it is rolled back, the previous build is started, and the answer is 422 update_failed.
       parameters:
         - $ref: "#/components/parameters/Name"
         - $ref: "#/components/parameters/Wait"
@@ -511,9 +531,11 @@ paths:
         Backs up the save files, stops a running server, starts the new
         build and waits until it is ready. If it does not become ready the
         old build is put back and started, and the answer is 422 with code
-        update_failed ("update failed, rolled back to ..."). World data is
-        not touched by a rollback. An instance that was stopped is stopped
-        again after the new build proved ready. Always waits.
+        update_failed ("update failed, rolled back to ..."). A rollback
+        puts the old build back, not the saves: what the new build already
+        wrote stays (restore the backup the update made for that). An
+        instance that was stopped is stopped again after the new build
+        proved ready. Always waits.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -739,8 +761,8 @@ paths:
         Stored in `<root>/secrets/steam.json` (0600). It is never returned,
         logged or written to the audit log, and reaches SteamCMD only in a
         private script file, never on a command line. 1 to 128 printable
-        ASCII characters without spaces, quotes or backslashes; "" removes
-        it.
+        ASCII characters without spaces, quotes, backslashes or
+        semicolons; "" removes it.
       parameters:
         - $ref: "#/components/parameters/Name"
       requestBody:
@@ -1010,6 +1032,9 @@ components:
       additionalProperties: false
       properties:
         force: { type: boolean, description: Take the newest release even when it is not newer. }
+        exit_anyway:
+          type: boolean
+          description: Update and end ESM also when nothing starts it again (it then has to be started by hand). Without it, such an update is refused with 409 no_service_manager.
     SelfUpdateResult:
       type: object
       properties:
@@ -1017,7 +1042,9 @@ components:
         to: { type: string }
         binary: { type: string, description: The replaced binary. }
         previous: { type: string, description: Where the old binary was kept (move it back to roll back). }
-        restarting: { type: boolean }
+        restarting:
+          type: boolean
+          description: ESM ends in a moment and its service manager starts the new binary. False after exit_anyway with nothing to start ESM again; ESM ends all the same.
         note: { type: string }
     SteamSource:
       type: object
@@ -1241,15 +1268,20 @@ components:
         What happens when the Steam source the instance's build came from
         (a build steam-<source>-<buildid>) has a newer build of the
         instance's channel. off and install: nothing; the build shows as
-        available (the source's checks install it). restart: the instance
-        is updated as soon as its server answers the query port with 0
-        players (or right away when it is stopped): backup, one stop
-        signal, start of the new build, roll back when it does not become
-        ready. The player count is asked again right before the stop; a
-        player who joined puts the update off. A failed automatic update is
-        not tried again for that build. An update by hand to an older build
-        of the source pauses automatic updates until the source has a build
-        newer than the one left.
+        available (the source's checks install it). restart: a running
+        instance is updated as soon as its server answers the query port
+        with 0 players: backup, one stop signal, start of the new build,
+        roll back to the previous build when it does not become ready
+        (saves the new build already wrote stay; restore the pre-update
+        backup for those). The player count is asked again before the
+        backup and right before the stop; a player who joined puts the
+        update off, and a backup made for it is removed again. A stopped
+        instance is never started: its saves are backed up and its build
+        is switched (Status update_unverified), and the next start checks
+        the new build and rolls it back when it does not get ready. A
+        failed automatic update is not tried again for that build. An
+        update by hand to an older build of the source pauses automatic
+        updates until the source has a build newer than the one left.
     UpdateInfo:
       type: object
       properties:
@@ -1404,6 +1436,18 @@ components:
         gave_up: { type: boolean }
         next_restart: { type: string, format: date-time }
         restart_required: { type: boolean }
+        update_unverified:
+          type: boolean
+          description: |
+            An automatic update switched the build while the instance was
+            stopped, and nothing was started; the new build has not been
+            seen ready yet. The next start (any start or restart) checks it:
+            it starts the new build and waits for ready, and when it does
+            not get ready puts update_rollback_build back and starts that.
+            Left out when there is no such update.
+        update_rollback_build:
+          type: string
+          description: The build the next start goes back to when the new one does not get ready (left out when update_unverified is not set). It counts as in use, so pruning keeps it.
     UpdateRequest:
       type: object
       required: [to]

@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,22 +34,37 @@ var (
 	// ErrUnknownVersion: this ESM is not a release version, so newer cannot
 	// be told.
 	ErrUnknownVersion = errors.New("this ESM is not a release version (a development build); update with --force to take the newest release anyway")
-	// ErrBusy: another update runs.
+	// ErrBusy: another update of the same binary runs, in this process or
+	// another one (its lock file is there).
 	ErrBusy = errors.New("an update is already running")
 )
 
-var updating sync.Mutex
+// LockSuffix names the lock file of a self-update: exe+LockSuffix, next to
+// the binary.
+const LockSuffix = ".update.lock"
+
+// LockStale is the age at which a lock file counts as left behind by an
+// update that never finished (killed, or the machine went down); the next
+// update takes it over. An update that runs is done well before that: its
+// downloads are bounded by APITimeout and DownloadTimeout.
+const LockStale = 15 * time.Minute
 
 // Update replaces the binary at exe with the newest release's binary for
 // goos/goarch. The release's SHA256SUMS must carry a valid signature by the
 // built-in key and list that binary with the hash it has. The new binary is
 // written next to exe and moved in place; the old one is kept as
 // exe+".previous". Unless force is set, only a newer release is taken.
+//
+// While it runs, the update holds the lock file exe+LockSuffix, so a second
+// update of the same binary, from this process or another (the command line
+// and the service), gets ErrBusy instead of replacing the binary at the same
+// time. The lock is removed however the update ends.
 func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, force bool) (Result, error) {
-	if !updating.TryLock() {
-		return Result{}, ErrBusy
+	unlock, err := lockUpdate(exe + LockSuffix)
+	if err != nil {
+		return Result{}, err
 	}
-	defer updating.Unlock()
+	defer unlock()
 	r, err := c.Latest(ctx)
 	if err != nil {
 		return Result{}, err
@@ -200,6 +217,95 @@ func copyFile(src, dst string) error {
 		err = cerr
 	}
 	return err
+}
+
+// --- the update lock ---
+
+// lockUpdate makes the lock file path (O_EXCL, so of two updates only one
+// can) and returns the function that removes it again. A lock file that is
+// there already belongs to another update: ErrBusy, unless it is LockStale
+// old, when it is taken over.
+func lockUpdate(path string) (unlock func(), err error) {
+	var tok [16]byte
+	rand.Read(tok[:])
+	mine := fmt.Appendf(nil, "esm self-update\npid %d\nstarted %s\ntoken %s\n",
+		os.Getpid(), time.Now().UTC().Format(time.RFC3339), hex.EncodeToString(tok[:]))
+	for try := 0; ; try++ {
+		err := createLock(path, mine)
+		if err == nil {
+			return func() { removeLock(path, mine) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("cannot make the update lock %s: %w", path, err)
+		}
+		held, made, err := readLock(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist) && try == 0:
+			continue // the other update just ended
+		case err != nil:
+			return nil, fmt.Errorf("%w: cannot read its lock %s: %v", ErrBusy, path, err)
+		case time.Since(made) < LockStale || try > 0 || !takeOver(path, held):
+			return nil, fmt.Errorf("%w: its lock %s is from %s (an update takes over a lock older than %d minutes)",
+				ErrBusy, path, made.UTC().Format(time.RFC3339), int(LockStale.Minutes()))
+		}
+	}
+}
+
+func createLock(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(path)
+	}
+	return err
+}
+
+// readLock returns a lock file's content and when it was made, both read
+// from the same open file.
+func readLock(path string) ([]byte, time.Time, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
+	return b, fi.ModTime(), err
+}
+
+// takeOver removes the stale lock at path, whose content is stale. It is
+// first moved to a name of its own, so that of two updates that find the
+// same stale lock only one removes it. When what was moved is not that
+// lock (another update took it over and made its own meanwhile), it is put
+// back.
+func takeOver(path string, stale []byte) bool {
+	var b [8]byte
+	rand.Read(b[:])
+	moved := path + ".stale-" + hex.EncodeToString(b[:])
+	if err := os.Rename(path, moved); err != nil {
+		return false
+	}
+	if got, err := os.ReadFile(moved); err != nil || !bytes.Equal(got, stale) {
+		os.Rename(moved, path)
+		return false
+	}
+	return os.Remove(moved) == nil
+}
+
+// removeLock removes the lock file when it is still this update's.
+func removeLock(path string, mine []byte) {
+	if b, err := os.ReadFile(path); err == nil && bytes.Equal(b, mine) {
+		os.Remove(path)
+	}
 }
 
 // Checker keeps the result of the last check for a newer release and

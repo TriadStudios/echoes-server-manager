@@ -59,6 +59,15 @@ type Status struct {
 	GaveUp          bool      `json:"gave_up"`
 	NextRestart     time.Time `json:"next_restart,omitzero"`
 	RestartRequired bool      `json:"restart_required"`
+	// UpdateUnverified says that an automatic update switched the build of
+	// this instance while it was stopped, and the new build has not been
+	// seen ready yet. The next start checks it: it starts the new build
+	// and waits for ready, and when it does not get ready, puts back
+	// UpdateRollbackBuild and starts that. Both are left out of the JSON
+	// when there is no such update, so a state file without one stays
+	// readable by an earlier release.
+	UpdateUnverified    bool   `json:"update_unverified,omitempty"`
+	UpdateRollbackBuild string `json:"update_rollback_build,omitempty"`
 }
 
 // BackoffDelay is the wait before the restart that follows crash number n
