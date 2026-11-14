@@ -302,6 +302,13 @@ func printable(r rune) bool {
 // at start.
 const enDash = 0x2013
 
+// HasEnDash reports whether s holds an en dash (U+2013): with one anywhere
+// on its command line the server's engine stops at start. checkText
+// refuses it in what an operator sets; ESM does not start a server whose
+// command line holds one all the same (stored by an earlier version, or
+// in a path of ESM's own).
+func HasEnDash(s string) bool { return strings.ContainsRune(s, enDash) }
+
 // asciiAlnum reports whether r is an ASCII letter or digit: what the engine
 // takes for part of a name when it looks for the start of one.
 func asciiAlnum(r rune) bool {

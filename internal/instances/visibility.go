@@ -69,7 +69,8 @@ const (
 	WarnMaxPlayersAboveGame = "max_players_above_game_limit"
 	// WarnUnsafeStoredSettings: settings stored by an earlier version break
 	// the rules for values on the server command line; the view names them
-	// in UnsafeStoredSettings.
+	// in UnsafeStoredSettings. One with an en dash keeps the server from
+	// starting (see enDashIn).
 	WarnUnsafeStoredSettings = "unsafe_stored_settings"
 	// WarnCommandLineTooLong: the server command line of the instance, as
 	// an earlier version stored its settings, is longer than a change may
@@ -91,7 +92,7 @@ func WarningText(code string) string {
 		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
 			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
 	case WarnUnsafeStoredSettings:
-		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored; change or remove them, or, for the name of an instance, make the instance anew under another name"
+		return "settings stored by an earlier version of ESM break the rules for values on the server command line, so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored, but with an en dash (U+2013) on its command line the server's engine does not start, and ESM does not start it then; change or remove them, or, for the name of an instance, make the instance anew under another name"
 	case WarnCommandLineTooLong:
 		return fmt.Sprintf("the server command line of this instance is longer than %d characters, the most a change may lead to; the server's engine does not start with more than %d, and ESM does not start a server whose line is longer than that: shorten or remove rules or extra arguments",
 			gameserver.MaxLineLength, gameserver.EngineLineLimit)

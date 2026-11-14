@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,8 +109,9 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	}
 	argv := l.Args()
 	// The server's engine stops at once at a command line longer than it
-	// keeps. Only settings stored by an earlier version get there: a change
-	// is held well below (see checkLine).
+	// keeps, and at an en dash anywhere on it. Only settings stored by an
+	// earlier version, or a path of ESM's own, get there: a change is held
+	// well below the length (see checkLine) and takes no en dash.
 	switch n := gameserver.LineLength(argv); {
 	case n > gameserver.EngineLineLimit:
 		return nil, fault.New(fault.Conflict, "command_line_too_long",
@@ -117,6 +120,11 @@ func (m *Manager) launch(ctx context.Context, in *rt, why string, autoRestart bo
 	case n > gameserver.MaxLineLength:
 		m.log.Warn("the server command line is longer than a change may make it", "instance", cfg.Name, "characters", n,
 			"most_after_a_change", gameserver.MaxLineLength, "most_the_engine_starts_with", gameserver.EngineLineLimit)
+	}
+	if where := enDashIn(cfg, l); len(where) > 0 {
+		return nil, fault.New(fault.Conflict, "command_line_unsafe",
+			"the server command line of instance %s has an en dash (U+2013) in %s, and the server's engine does not start with one anywhere on its command line: write \"-\" there instead",
+			cfg.Name, strings.Join(where, ", "))
 	}
 	if err := m.st.MkdirAll(dataDir(cfg.Name), 0o700); err != nil {
 		return nil, err
@@ -238,6 +246,64 @@ func (m *Manager) launchOf(cfg Instance, sec Secrets, mapName string) (gameserve
 		l.Secrets = sec.forServer()
 	}
 	return l, nil
+}
+
+// enDashIn names what puts an en dash on the command line l builds for the
+// server of cfg: a setting by its field, as unsafe_stored_settings names
+// it (display_name, rules.<key>, extra_args.<position>, and with
+// command-line delivery a secret's field), and ESM's own part, the folders
+// of the instance (below ESM's root) and the map (the build's default map
+// when the instance names none). It never says what a value holds. Only a
+// value stored by an earlier version, or a path of ESM's own, can hold
+// one: a change takes none.
+func enDashIn(cfg Instance, l gameserver.Launch) []string {
+	has := gameserver.HasEnDash
+	var out []string
+	if has(l.ServerName) {
+		if cfg.DisplayName != "" {
+			out = append(out, "display_name")
+		} else {
+			out = append(out, "name")
+		}
+	}
+	if has(l.WorldName) {
+		out = append(out, "world")
+	}
+	if has(l.Map) {
+		if cfg.Map != "" {
+			out = append(out, "map")
+		} else {
+			out = append(out, "the default map of build "+cfg.Build)
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(l.Rules)) {
+		if has(k) || has(l.Rules[k]) {
+			out = append(out, "rules."+k)
+		}
+	}
+	for i, a := range l.ExtraArgs {
+		// One that ends in "=" is left off the line (see Launch.Args).
+		if has(a) && !strings.HasSuffix(a, "=") {
+			out = append(out, "extra_args."+strconv.Itoa(i+1))
+		}
+	}
+	if l.Delivery == gameserver.DeliveryCommandLine {
+		s := Secrets{ServerPassword: l.Secrets.ServerPassword, AdminPassword: l.Secrets.AdminPassword,
+			AnnouncementsToken: l.Secrets.AnnouncementsToken, ProblemReportToken: l.Secrets.ProblemReportToken}
+		for _, f := range s.fields() {
+			if has(f.v) {
+				out = append(out, f.field)
+			}
+		}
+	}
+	if has(l.UserDir) || has(l.LogFile) || l.Delivery != gameserver.DeliveryCommandLine && has(l.SecretsFile) {
+		out = append(out, "the folders of the instance (the path of ESM's root)")
+	}
+	// Whatever else Args may put on the line.
+	if len(out) == 0 && slices.ContainsFunc(l.Args(), has) {
+		out = append(out, "the command line")
+	}
+	return out
 }
 
 // maxMapLength is the longest map a build or an instance can name (see
