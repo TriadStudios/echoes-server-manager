@@ -888,8 +888,8 @@ const maxTokenLength = 256
 // double quote, "," or ")". A token may go on the server command line,
 // where the server ends a value without white space at "," or ")", so a
 // token holding one would arrive cut. With secret_delivery "command_line"
-// it may not hold "=" either (see SetSecrets). Its errors never repeat the
-// value.
+// it follows the other rules for values there too (see SetSecrets). Its
+// errors never repeat the value or say what it holds.
 func checkToken(field, v string) error {
 	if v == "" {
 		return nil
@@ -898,9 +898,6 @@ func checkToken(field, v string) error {
 		return r <= ' ' || r > '~' || r == '"' || r == ',' || r == ')'
 	}) {
 		return invalid(field, "must be %d to %d characters of printable ASCII, without white space, '\"', ',' or ')'", MinSecretLength, maxTokenLength)
-	}
-	if why, unsafe := gameserver.UnsafeArgument(v); unsafe {
-		return fault.New(fault.Invalid, "unsafe_argument", "%s: the token %s", field, why)
 	}
 	return nil
 }
