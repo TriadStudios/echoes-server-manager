@@ -218,13 +218,18 @@ const MaxPlayersLimit = 70
 // -MULTIHOME these are the engine's overrides of its configuration files:
 // "-ini:<File>:[<Section>]:<Key>=<Value>" (the name is "ini", up to the
 // ":"), -iniFile= and -CustomConfig=, which could change what ESM sets
-// itself (ports, networking, where the server keeps its files).
+// itself (ports, networking, where the server keeps its files); and
+// -CmdLineFile=, which makes the engine put the content of a file where
+// the switch stands on its command line: switches ESM would neither show
+// nor check.
 func RefusedSwitch(key string) (why string, refused bool) {
 	switch switchName(key) {
 	case switchName(MultihomeSwitch):
 		return MultihomeSwitch + " is never passed: with it the server advertises the bind address instead of its Steam identity and players cannot join; the box's firewall decides where the query port is reachable", true
 	case "ini", "inifile", "customconfig":
 		return "-ini:, -iniFile= and -CustomConfig= change the engine's configuration files and are never passed: they could change what ESM sets itself (ports, networking, the server's folders)", true
+	case "cmdlinefile":
+		return "-CmdLineFile= is never passed: the engine would read more of its command line from that file, switches that ESM neither shows nor checks", true
 	}
 	return "", false
 }

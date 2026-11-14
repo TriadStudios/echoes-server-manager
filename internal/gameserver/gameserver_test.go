@@ -147,6 +147,20 @@ func TestReservedAndRefusedSwitches(t *testing.T) {
 	}
 }
 
+// -CmdLineFile= is refused like the overrides of the configuration files.
+func TestCommandLineFileIsARefusedSwitch(t *testing.T) {
+	for _, k := range []string{"CmdLineFile", "-CmdLineFile", "cmdlinefile", "-CMDLINEFILE"} {
+		if why, ok := RefusedSwitch(k); !ok || !strings.Contains(why, "never passed") {
+			t.Errorf("%q not refused (%q)", k, why)
+		}
+	}
+	for _, k := range []string{"CmdLine", "File", "CmdLineFiles", "LineFile"} {
+		if _, ok := RefusedSwitch(k); ok {
+			t.Errorf("%q refused", k)
+		}
+	}
+}
+
 // Made-up lines of the real shape: the engine's time and frame prefix,
 // then a category, then the message.
 const (
