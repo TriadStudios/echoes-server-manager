@@ -8,7 +8,10 @@
 
 <div class="grid cards">
 <section class="panel stack" aria-labelledby="esm-h">
+<div class="spread">
 <h2 class="label" id="esm-h">ESM version</h2>
+{{if $b.Release.Enabled}}<button type="button" class="btn" data-act="release-check">Check now</button>{{end}}
+</div>
 <dl class="facts one">
 <div><dt>Running</dt><dd class="mono">{{$b.Version}}</dd></div>
 <div><dt>Newest release</dt><dd class="mono">{{if $b.Release.Latest}}{{$b.Release.Latest}}{{else}}not known{{end}}</dd></div>

@@ -136,6 +136,15 @@
       if (!r.removed.length) { say('No build was unused.'); return; }
       done('removed');
     },
+    // release-check looks for a newer ESM release now (or gets the result
+    // of a look that ended less than 30 seconds ago), then shows the Box
+    // screen again with it, like done() but without ?check=1, so that a
+    // health check on the screen is not run again unasked.
+    'release-check': async function () {
+      say('Looking for a newer ESM release...');
+      var r = await call('POST', '/api/v1/box/release-check');
+      location.replace('/box?done=' + (r.reused ? 'release-recent' : 'release') + '#esm-h');
+    },
     'self-update': async function () {
       var r;
       try {
