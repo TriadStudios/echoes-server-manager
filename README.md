@@ -165,11 +165,11 @@ sessions are open.
 
 A login changes its own password on the web page, on the Box screen. The
 form asks for the current password and the new one twice, and the new one
-follows the same rules as at setup (12 characters or more). The change ends
-the login's other sessions; the one that made it goes on. A wrong current
-password counts as a failed login (5 in 5 minutes, then logins wait too),
-so the form is no faster a way to guess a password than the login. An API
-token cannot change a password.
+follows the same rules as at setup (12 characters or more, at most 1024
+bytes). The change ends the login's other sessions; the one that made it
+goes on. A wrong current password counts as a failed login (5 in 5
+minutes, then logins wait too), so the form is no faster a way to guess a
+password than the login. An API token cannot change a password.
 
 A forgotten password is set anew on the box, as ESM's account:
 
@@ -177,15 +177,21 @@ A forgotten password is set anew on the box, as ESM's account:
 esm user passwd admin
 ```
 
-It asks for the new password twice and shows nothing of what is typed. From
-a script, give it as one line on standard input
-(`esm user passwd admin < new-password.txt`). It is never taken from the
-command line or the environment, where other accounts on the box could read
-it. This needs no old password because it works only over the unix socket,
-which only ESM's account can open; the same call over the network is
-refused for every login and token. It ends every session of the login, and
-the new password logs in at once, also after failed logins of that name.
-Every change and reset is in the audit log, never the password.
+It asks for the new password twice and shows nothing of what is typed; the
+terminal's echo comes back also when the command is ended while it asks
+(Ctrl-C, and on Linux Ctrl-\ or a hang-up). From a script, give it as one
+line on standard input (`esm user passwd admin < new-password.txt`). It
+asks only when standard input is a terminal or a Windows console: under
+mintty, the terminal window of Git Bash, standard input is a pipe, so the
+command asks nothing, reads one line, and mintty shows what is typed;
+there, use a Windows console (PowerShell or cmd), or pipe the password in.
+It is never taken from the command line or the environment, where other
+accounts on the box could read it, and an error never repeats what was
+given there. This needs no old password because it works only over the
+unix socket, which only ESM's account can open; the same call over the
+network is refused for every login and token. It ends every session of the
+login, and the new password logs in at once, also after failed logins of
+that name. Every change and reset is in the audit log, never the password.
 
 ### Linux: keep servers running
 

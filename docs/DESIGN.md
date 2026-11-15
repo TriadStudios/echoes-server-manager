@@ -1217,8 +1217,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 - **Setup code.** While no admin exists, ESM makes a one-time setup code
   (24 characters, valid for 24 hours), prints it once and keeps only its
   hash. `POST /api/v1/setup` with the code creates the first admin.
-- **Users and sessions.** Passwords need at least 12 characters and are
-  stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
+- **Users and sessions.** Passwords need at least 12 characters and at
+  most 1024 bytes (else 422 `invalid`, at setup, a change or a reset), and
+  are stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
   JSON body only (`Content-Type: application/json`, else 415), which a form
   on another site cannot send, and refuse a request whose `Origin` header
   names another origin (403). The origin must match in scheme too: `http`
@@ -1267,8 +1268,13 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   for the password twice with the terminal's echo off (by the system's own
   calls, without a module beyond the standard library), or, when standard
   input is not a terminal, reads one line from it; never from its
-  arguments or the environment. A name that is no login's is not repeated,
-  in the answer or the audit log. Each change is an audit entry
+  arguments or the environment. The signals that would end it while it
+  asks (Ctrl-C, SIGTERM, and on Linux Ctrl-\ and a hang-up) are caught
+  before the echo goes off and turn it back on. Under mintty (Git Bash on
+  Windows) standard input is a pipe, not a console, so nothing is asked and
+  the typed line shows. No error of the command repeats text of its
+  arguments or flags, and a name that is no login's is not repeated in the
+  answer or the audit log either. Each change is an audit entry
   `user.password.change` (by the login) and each reset
   `user.password.reset` (by the socket), naming the login; none holds a
   password or a hash. `esm user list` (`GET /api/v1/users`, admin) shows
