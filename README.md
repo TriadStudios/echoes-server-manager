@@ -96,11 +96,14 @@ GitHub answers at most 60 such lookups an hour from one address without
 a login, and the self-update uses the same lookup, so ESM asks
 sparingly: each look sends the ETag of the last answer, so an unchanged
 release list comes back as a short 304 Not Modified. When GitHub refuses
-a look as asked too often (403 or 429), ESM asks nothing more until the
+a look as asked too often (403 or 429), the release check (the pages,
+its looks in the background and Check now) asks nothing more until the
 time GitHub names (`Retry-After`, or `X-RateLimit-Reset`; at least a
-minute, at most an hour, 15 minutes when it names none). The Box page
-then says until when it waits, and Check now shows the last result
-meanwhile.
+minute, at most an hour, 15 minutes when it names none).
+`esm update-self`, the Box page's update button and `esm version --check`
+still ask GitHub when someone runs them, and while GitHub asks to wait
+they fail with its 403 or 429. The Box page says until when the check
+waits, and Check now shows the last result meanwhile.
 
 ESM never updates itself on its own, also not when a look found a newer
 release. `esm update-self` (or the Box page's update button, admins only,
