@@ -131,10 +131,22 @@ func TestUnknownPathsAndMethods(t *testing.T) {
 
 func TestRolesOfRoutes(t *testing.T) {
 	for _, r := range Routes() {
+		// Setting a password without the current one is for the unix
+		// socket alone; nothing else is.
+		if socket := r.Method == "PUT" && r.Path == "/api/v1/users/{name}/password"; r.SocketOnly != socket {
+			t.Errorf("%s %s: socket only %v, want %v", r.Method, r.Path, r.SocketOnly, socket)
+		}
 		switch {
-		case r.Path == "/api/v1/tokens" || strings.HasPrefix(r.Path, "/api/v1/tokens/") || r.Path == "/api/v1/audit":
+		case r.Path == "/api/v1/tokens" || strings.HasPrefix(r.Path, "/api/v1/tokens/") || r.Path == "/api/v1/audit" ||
+			r.Path == "/api/v1/users" || strings.HasPrefix(r.Path, "/api/v1/users/"):
 			if r.Role != "admin" {
 				t.Errorf("%s %s needs admin, has %q", r.Method, r.Path, r.Role)
+			}
+		case r.Method == "POST" && r.Path == "/api/v1/session/password":
+			// Every login changes its own password, with the current one
+			// (a token cannot: see changePassword).
+			if r.Role != "read" {
+				t.Errorf("%s %s is for every login, has %q", r.Method, r.Path, r.Role)
 			}
 		case r.Path == "/api/v1/instances/{name}/backups/{id}/download":
 			// A backup is a copy of the whole world: operators and admins.

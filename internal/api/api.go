@@ -4,11 +4,12 @@
 //
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
-// change), or by arriving on the unix socket (admin). Tokens are never read
-// from URLs. Every call that changes something (or tries to) writes an
-// audit entry, and so does every call refused for lack of a role (403); a
-// read refused for a missing login (401) does not. Errors always have the
-// shape
+// change), or by arriving on the unix socket (admin). One call, setting a
+// login's password without the current one, is answered on the socket
+// only. Tokens are never read from URLs. Every call that changes something
+// (or tries to) writes an audit entry, and so does every call refused for
+// lack of a role (403); a read refused for a missing login (401) does not.
+// Errors always have the shape
 // {"error": {"code": "...", "message": "..."}}.
 package api
 
@@ -137,6 +138,9 @@ const (
 	public   access = iota // no login; credentials are not even read
 	optional               // credentials are checked when present
 	required               // a login with at least the route's role
+	// local is for the unix socket only: over TCP the call is refused,
+	// whatever login or token comes with it.
+	local
 )
 
 type handler func(s *Server, w http.ResponseWriter, r *http.Request, c *call) error
@@ -155,6 +159,9 @@ type Route struct {
 	Method string
 	Path   string
 	Role   string // "" for endpoints that need no login
+	// SocketOnly marks an endpoint that answers only on the unix socket
+	// (which acts as admin); over TCP it is refused for every caller.
+	SocketOnly bool
 }
 
 // Routes lists every API endpoint.
@@ -162,10 +169,10 @@ func Routes() []Route {
 	out := make([]Route, 0, len(routes))
 	for _, rt := range routes {
 		role := string(rt.role)
-		if rt.access != required {
+		if rt.access != required && rt.access != local {
 			role = ""
 		}
-		out = append(out, Route{Method: rt.method, Path: rt.path, Role: role})
+		out = append(out, Route{Method: rt.method, Path: rt.path, Role: role, SocketOnly: rt.access == local})
 	}
 	return out
 }
@@ -226,6 +233,14 @@ func init() {
 	r("POST", p+"/tokens", required, admin, "token.create", (*Server).createToken)
 	r("DELETE", p+"/tokens/{id}", required, admin, "token.delete", (*Server).deleteToken)
 	r("GET", p+"/audit", required, admin, "audit.list", (*Server).auditList)
+	// The logins: names, roles, last logins (admin, like the tokens).
+	r("GET", p+"/users", required, admin, "user.list", (*Server).listUsers)
+	// A login changes its own password, and only with the current one: any
+	// role, but a browser session only (see changePassword).
+	r("POST", p+"/session/password", required, read, "user.password.change", (*Server).changePassword)
+	// A password set without the current one, for the box owner: on the
+	// unix socket only (esm user passwd).
+	r("PUT", p+"/users/{name}/password", local, admin, "user.password.reset", (*Server).resetPassword)
 }
 
 // New builds the server and its routes.
@@ -466,6 +481,13 @@ func (s *Server) authenticate(r *http.Request, rt route, c *call) error {
 	if rt.access == public {
 		return nil
 	}
+	if rt.access == local && r.Context().Value(socketKey) != true {
+		// Who tried is recorded in the audit entry, but no login or token
+		// opens this call over TCP.
+		_ = s.identify(r, c)
+		return errStatus(http.StatusForbidden, "socket_only",
+			"this call is answered only on the box, over ESM's unix socket (esm user passwd); no login or token makes it over the network")
+	}
 	err := s.identify(r, c)
 	if rt.access == optional {
 		if errors.Is(err, auth.ErrCSRF) || errors.Is(err, auth.ErrOrigin) {
@@ -566,6 +588,10 @@ func classify(err error) (int, string, string) {
 		return http.StatusUnauthorized, "bad_credentials", err.Error()
 	case errors.Is(err, auth.ErrBadSetupCode):
 		return http.StatusUnauthorized, "bad_setup_code", err.Error()
+	case errors.Is(err, auth.ErrWrongPassword):
+		// Not 401: the caller is logged in, and the page would take a 401
+		// for a login that ended.
+		return http.StatusForbidden, "wrong_password", err.Error()
 	case errors.Is(err, auth.ErrBadToken), errors.Is(err, auth.ErrNoSession):
 		return http.StatusUnauthorized, "unauthorized", err.Error()
 	case errors.Is(err, auth.ErrCSRF):
@@ -580,7 +606,7 @@ func classify(err error) (int, string, string) {
 		return http.StatusConflict, "setup_done", err.Error()
 	case errors.Is(err, auth.ErrUserExists):
 		return http.StatusConflict, "conflict", err.Error()
-	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrBadUsername), errors.Is(err, auth.ErrBadRole):
+	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrLongPassword), errors.Is(err, auth.ErrBadUsername), errors.Is(err, auth.ErrBadRole):
 		return http.StatusUnprocessableEntity, "invalid", err.Error()
 	case errors.Is(err, auth.ErrNotFound):
 		return http.StatusNotFound, "not_found", err.Error()

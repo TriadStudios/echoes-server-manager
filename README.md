@@ -158,6 +158,41 @@ esm --url https://<your-host> list
 lines in the process list.) `--url` must be https unless it points to this
 machine: over plain http the token would cross the network in clear.
 
+### Logins and passwords
+
+`esm user list` shows the logins: name, role, last login and how many
+sessions are open.
+
+A login changes its own password on the web page, on the Box screen. The
+form asks for the current password and the new one twice, and the new one
+follows the same rules as at setup (12 characters or more, at most 1024
+bytes). The change ends the login's other sessions; the one that made it
+goes on. A wrong current password counts as a failed login (5 in 5
+minutes, then logins wait too), so the form is no faster a way to guess a
+password than the login. An API token cannot change a password.
+
+A forgotten password is set anew on the box, as ESM's account:
+
+```sh
+esm user passwd admin
+```
+
+It asks for the new password twice and shows nothing of what is typed; the
+terminal's echo comes back also when the command is ended while it asks
+(Ctrl-C, and on Linux Ctrl-\ or a hang-up). From a script, give it as one
+line on standard input (`esm user passwd admin < new-password.txt`). It
+asks only when standard input is a terminal or a Windows console: under
+mintty, the terminal window of Git Bash, standard input is a pipe, so the
+command asks nothing, reads one line, and mintty shows what is typed;
+there, use a Windows console (PowerShell or cmd), or pipe the password in.
+It is never taken from the command line or the environment, where other
+accounts on the box could read it, and an error never repeats what was
+given there. This needs no old password because it works only over the
+unix socket, which only ESM's account can open; the same call over the
+network is refused for every login and token. It ends every session of the
+login, and the new password logs in at once, also after failed logins of
+that name. Every change and reset is in the audit log, never the password.
+
 ### Linux: keep servers running
 
 ESM prefers systemd user units for game servers (memory and CPU limits are
@@ -369,13 +404,16 @@ The page is served on the same address as the API: by default
 SSH tunnel (`ssh -L 8740:127.0.0.1:8740 <esm-account>@<box>`, then open
 `http://127.0.0.1:8740`) or a reverse proxy with TLS (set
 `behind_tls_proxy`). The first visit asks for the setup code and creates
-the admin login; after that the page is the login.
+the admin login; after that the page is the login. A forgotten password is
+set anew on the box with `esm user passwd` (see
+[Logins and passwords](#logins-and-passwords)).
 
 It shows the box (memory, CPUs, disk, ports, firewall commands, health
-checks, tokens), every server (state, players, memory against its ceiling,
-settings, live log, backups, timed restarts), builds, clusters and the audit
-log, and it starts, stops, restarts, updates, backs up, restores, installs
-builds and changes settings. Each screen shows only what the API returns;
+checks, tokens, and the form that changes your password), every server
+(state, players, memory against its ceiling, settings, live log, backups,
+timed restarts), builds, clusters and the audit log, and it starts, stops,
+restarts, updates, backs up, restores, installs builds and changes
+settings. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
 whether players can reach the box from outside), the page says so. A
 server's settings screen has a field for every game setting ESM knows by
@@ -404,6 +442,8 @@ esm build install steam:main                 # a new build of a Steam source, if
 esm steam list
 esm version --check                          # is a newer ESM out?
 esm update-self                              # put it in place (signature checked)
+esm user list                                # the logins and their last login
+esm user passwd admin                        # a new password for a login (asked twice)
 ```
 
 Every command prints one result line, or one JSON object with `--json`, and
@@ -595,6 +635,10 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   address, and those names, so a page of another site cannot reach it by
   pointing its own name at your box.
   Tokens are never accepted in URLs.
+- A password of a login is changed only with the current one, by the
+  login's own session (a wrong one counts as a failed login), or set anew
+  on the box over the unix socket (`esm user passwd`); a change ends the
+  login's other sessions, a reset all of them. No token changes one.
 - Requests and replies are bounded: headers 64 KiB, bodies 1 MiB, slow
   clients are cut off, a client that stops reading an event stream is
   dropped without holding anything up, and log tails are capped.

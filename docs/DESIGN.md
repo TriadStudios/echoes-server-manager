@@ -67,6 +67,9 @@ return the JSON 404 error.
   secrets/                     0700
     setup.json                 hash and expiry of the one-time setup code
     users.json                 users with PBKDF2 password hashes
+    logins.json                when each user last logged in (a file of
+                               its own, so older releases still read
+                               users.json)
     tokens.json                API tokens (SHA-256 only)
     steam.json                 branch passwords of the Steam sources (0600)
   steam/linux64/               the 64-bit Steam client libraries (put there
@@ -1214,8 +1217,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 - **Setup code.** While no admin exists, ESM makes a one-time setup code
   (24 characters, valid for 24 hours), prints it once and keeps only its
   hash. `POST /api/v1/setup` with the code creates the first admin.
-- **Users and sessions.** Passwords need at least 12 characters and are
-  stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
+- **Users and sessions.** Passwords need at least 12 characters and at
+  most 1024 bytes (else 422 `invalid`, at setup, a change or a reset), and
+  are stored as PBKDF2-SHA256 with 600,000 iterations. Login and setup take a
   JSON body only (`Content-Type: application/json`, else 415), which a form
   on another site cannot send, and refuse a request whose `Origin` header
   names another origin (403). The origin must match in scheme too: `http`
@@ -1240,6 +1244,42 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   user's name; otherwise it says `(unknown)`, or `(invalid)` for text that
   cannot be a user name, so a password typed into the name field is never
   written down.
+- **Changing a password.** A login changes its own password, and only
+  with the current one: `POST /api/v1/session/password` from its browser
+  session, with the CSRF token like every change (the form on the page's
+  Box screen). The new password follows the rules above, checked first, so
+  a refused one tests nothing and counts nothing. A wrong current password
+  (403 `wrong_password`) is answered after the same pause as a failed
+  login and counts against the same limit, with the same keys (the user
+  name, and the address of a client with an address of its own): failures
+  there make logins wait and failed logins make the change wait, so it is
+  no faster a way to guess a password than the login. The change ends the
+  login's other sessions and keeps the one it was made in. A token is not
+  a login and cannot change any password, whatever its role (403
+  `session_only`).
+- **Setting a forgotten password.** `esm user passwd <name>` on the box
+  sets a login's password without the current one. It works only over the
+  unix socket, the command line's existing trust: only ESM's account can
+  open it, and that account can read the users file anyway. The call it
+  makes, `PUT /api/v1/users/{name}/password`, is answered on the socket
+  only; over TCP it is refused (403 `socket_only`) for every caller, an
+  admin's token or session included. It ends every session of the login
+  and forgets the failed logins counted against its name. The command asks
+  for the password twice with the terminal's echo off (by the system's own
+  calls, without a module beyond the standard library), or, when standard
+  input is not a terminal, reads one line from it; never from its
+  arguments or the environment. The signals that would end it while it
+  asks (Ctrl-C, SIGTERM, and on Linux Ctrl-\ and a hang-up) are caught
+  before the echo goes off and turn it back on. Under mintty (Git Bash on
+  Windows) standard input is a pipe, not a console, so nothing is asked and
+  the typed line shows. No error of the command repeats text of its
+  arguments or flags, and a name that is no login's is not repeated in the
+  answer or the audit log either. Each change is an audit entry
+  `user.password.change` (by the login) and each reset
+  `user.password.reset` (by the socket), naming the login; none holds a
+  password or a hash. `esm user list` (`GET /api/v1/users`, admin) shows
+  the logins with their role, last login and open sessions; the last
+  login is kept in `secrets/logins.json`.
 - **Behind a reverse proxy.** The proxy terminates TLS and forwards to ESM
   on loopback. It must pass the `Host` header through unchanged (the
   `Origin` checks compare against it), that name must be listed in
@@ -1259,13 +1299,14 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   address.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
-  audit log, backup downloads, the health check (`/box/doctor`, which binds
-  every free port of both ranges for a moment; admins only, one at a time),
-  and the server output and state reasons of instances that pass their
-  passwords on the command line; `operator` sees those too and also starts,
-  stops, restarts, updates, backs up, restores and downloads backups;
-  `admin` does everything else (install builds, create, change, delete,
-  secrets, tokens, pruning). Tokens are never accepted in URLs.
+  logins (`/users`), the audit log, backup downloads, the health check
+  (`/box/doctor`, which binds every free port of both ranges for a moment;
+  admins only, one at a time), and the server output and state reasons of
+  instances that pass their passwords on the command line; `operator` sees
+  those too and also starts, stops, restarts, updates, backs up, restores
+  and downloads backups; `admin` does everything else (install builds,
+  create, change, delete, secrets, tokens, pruning). Tokens are never
+  accepted in URLs.
 - **Page headers.** Every reply ESM writes, of the page and of the API,
   errors and the router's own redirects included, carries a strict
   Content-Security-Policy (no inline scripts or styles, nothing from other
@@ -1312,7 +1353,11 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 - **Logging in.** Without a login every screen sends the browser to
   `/setup`, which is the first-run form while no admin exists (setup code,
   name, password twice) and the login after that. Where the browser goes
-  after logging in is checked to be one of the page's own paths.
+  after logging in is checked to be one of the page's own paths. The login
+  form says how a forgotten password is set anew (`esm user passwd` on
+  the box), and the Box screen has the form that changes the login's own
+  password (current password, the new one twice; see
+  [Logins and exposure](#logins-and-exposure)).
 - **Roles.** Every screen shows what the caller's role may see and offers
   only what it may do. The read role sees the API's notice in place of the
   server output of an instance that passes its passwords on the command
@@ -1376,6 +1421,7 @@ update <name> --to <version>
 backup <name>
 restore <name> <backup-id>
 token create --role read|operator|admin [--name NAME]
+user list | user passwd <name>   (asked twice without echo, or one line of standard input)
 ```
 
 With `--url` the command line talks to an ESM elsewhere with an API token,
@@ -1523,8 +1569,11 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   instance's password is refused (422 `password_in_settings`), so an admin
   can test a guess by putting it into, say, the display name. Admins set
   the passwords anyway; the API still never shows them.
-- **Users and sessions.** There is no way yet to change or remove a user,
-  or to end other sessions; restarting ESM ends every session.
+- **Users and sessions.** There is no way yet to add or remove a login
+  (there is the one made at setup), or to end a single session other than
+  one's own (by logging out): a change of a password ends the login's
+  other sessions, a reset all of them, and restarting ESM ends every
+  session.
 - **The socket on Windows.** Windows has no mode 0600 for the socket file
   and ESM sets no ACLs, so the socket is as private as its folder's ACL.
 - **A server that does not stop is left running.** After `stop_timeout` ESM

@@ -552,6 +552,8 @@ func TestStatusCodes(t *testing.T) {
 		ErrNotJSON:           415,
 		errors.Join(ErrCSRF): 403,
 		&RateLimitError{1e9}: 429,
+		ErrWrongPassword:     403,
+		ErrLongPassword:      422,
 	}
 	for err, want := range cases {
 		if got := StatusCode(err); got != want {

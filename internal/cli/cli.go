@@ -107,6 +107,12 @@ Steam:
 
 Tokens:
   token create --role read|operator|admin [--name NAME]
+
+Logins:
+  user list                     the logins: name, role, last login, open sessions
+  user passwd <name>            set a login's password (on the box only, over the
+                                socket) and end its sessions; asks twice without
+                                showing it, or reads one line from standard input
 `
 
 // Main runs the command line with args (without the program name) and
@@ -115,7 +121,8 @@ func Main(args []string, stdout, stderr io.Writer, version string) int {
 	return MainIn(args, os.Stdin, stdout, stderr, version)
 }
 
-// MainIn is Main with standard input given (for steam password).
+// MainIn is Main with standard input given (for the verbs that read a
+// password or token from it).
 func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version string) int {
 	e := &env{out: stdout, errOut: stderr, in: stdin, version: version, ctx: context.Background()}
 	top := flag.NewFlagSet("esm", flag.ContinueOnError)
@@ -125,6 +132,10 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, usage)
 			return 0
+		}
+		if namesPasswd(args, false) {
+			// The flag's text is not repeated: it may be the password.
+			return e.fail(errPasswdFlags)
 		}
 		return e.fail(usageErr("%v", err))
 	}
@@ -165,6 +176,8 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 		err = e.build(rest)
 	case "token":
 		err = e.token(rest)
+	case "user":
+		err = e.user(rest)
 	case "update-self":
 		err = e.updateSelf(rest)
 	case "service":

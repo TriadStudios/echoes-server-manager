@@ -215,6 +215,15 @@
       await call('POST', '/api/v1/builds', body);
       done('installed');
     },
+    // password changes the login's own password: the current one is
+    // checked by the API (a wrong one counts as a failed login), and the
+    // login's other sessions end.
+    password: async function (f) {
+      if (val(f, 'password') !== val(f, 'password2')) { throw new Error('The two new passwords are not the same.'); }
+      await call('POST', '/api/v1/session/password', { current_password: val(f, 'current'), new_password: val(f, 'password') });
+      f.reset();
+      done('password');
+    },
     token: async function (f) {
       var t = await call('POST', '/api/v1/tokens', { name: val(f, 'name').trim(), role: val(f, 'role') });
       var box = document.getElementById('new-token');
