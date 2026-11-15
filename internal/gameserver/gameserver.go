@@ -36,9 +36,9 @@ import (
 // Mask stands in for a secret value in text that ESM shows.
 const Mask = "********"
 
-// The switches ESM puts on every server command line. CONFIRMED: a real
-// server started with exactly these (and no others) ran, was listed and
-// was joined.
+// The switches ESM puts on every server command line, besides
+// SteamServerNameSwitch. CONFIRMED: a real server started with exactly
+// these (and no others) ran, was listed and was joined.
 const (
 	UnattendedSwitch    = "-unattended"
 	PortSwitch          = "-Port"
@@ -55,6 +55,17 @@ const (
 	// absolute path). CONFIRMED.
 	LogFileSwitch = "-abslog"
 )
+
+// SteamServerNameSwitch names the server in Steam's server list. The game
+// reads that name from this switch and not from -ServerName, so a server
+// started without it is listed without a name. ESM passes the server name
+// (Launch.ServerName) twice, as -ServerName and as this switch, built the
+// same way from the same value, one argument each, this one right after
+// the other; the value is checked once (CheckValue) and so for both.
+// UNCONFIRMED: the real server that confirmed the switches above ran
+// without it, so neither that the game takes it nor how it reads a name
+// with a space there has been seen on a real host.
+const SteamServerNameSwitch = "-SteamServerName"
 
 // MultihomeSwitch is the engine's bind-address switch. ESM never passes it
 // and refuses it as a rule or an extra argument. CONFIRMED on a real host:
@@ -73,6 +84,8 @@ type Launch struct {
 	GamePort   int
 	QueryPort  int
 	MaxPlayers int
+	// ServerName is the server's name. It goes on the command line twice,
+	// as -ServerName and as -SteamServerName (see SteamServerNameSwitch).
 	ServerName string
 	WorldName  string
 	// Listed says whether the server shows in the in-game server list.
@@ -104,12 +117,13 @@ type Launch struct {
 
 // Args builds the argument list (without the executable). It never builds a
 // shell string. Order: the map, -unattended, -Port, -QueryPort,
-// -ServerName, -WorldName, -MaxPlayers, -ListInBrowser, -UserDir, -abslog,
-// the rules sorted by key, the passwords and tokens (the secrets file
-// switch; or, with DeliveryCommandLine, -Password, -AdminPassword,
-// -AnnouncementsToken and -ProblemReportToken when set), then the extra
-// args. -MULTIHOME is never part of it: a bind address configured
-// for an instance is not given to the server.
+// -ServerName, -SteamServerName (the same name), -WorldName, -MaxPlayers,
+// -ListInBrowser, -UserDir, -abslog, the rules sorted by key, the
+// passwords and tokens (the secrets file switch; or, with
+// DeliveryCommandLine, -Password, -AdminPassword, -AnnouncementsToken and
+// -ProblemReportToken when set), then the extra args. -MULTIHOME is never
+// part of it: a bind address configured for an instance is not given to
+// the server.
 //
 // A switch with an empty value is never passed, as "-Key=" or as the bare
 // switch: the server reads an empty value that is not quoted as the
@@ -125,6 +139,7 @@ func (l Launch) Args() []string {
 		{PortSwitch, strconv.Itoa(l.GamePort)},
 		{QueryPortSwitch, strconv.Itoa(l.QueryPort)},
 		{ServerNameSwitch, l.ServerName},
+		{SteamServerNameSwitch, l.ServerName},
 		{WorldNameSwitch, l.WorldName},
 		{MaxPlayersSwitch, strconv.Itoa(l.MaxPlayers)},
 		{ListInBrowserSwitch, boolWord(l.Listed)},
@@ -190,10 +205,13 @@ func boolWord(b bool) string {
 }
 
 // reserved are the switches ESM sets itself; rules and extra args must not
-// repeat them.
+// repeat them. -SteamServerName is one from this version on: a rule or an
+// extra argument naming it that an earlier version stored stays passed
+// after ESM's own, which the server reads first (see
+// instances.Instance.storedUnsafe).
 var reserved = []string{
 	switchName(UnattendedSwitch), switchName(PortSwitch), switchName(QueryPortSwitch),
-	switchName(ServerNameSwitch), switchName(WorldNameSwitch), switchName(MaxPlayersSwitch),
+	switchName(ServerNameSwitch), switchName(SteamServerNameSwitch), switchName(WorldNameSwitch), switchName(MaxPlayersSwitch),
 	switchName(ListInBrowserSwitch), switchName(UserDirSwitch), switchName(LogFileSwitch),
 	switchName(ServerPasswordSwitch), switchName(AdminPasswordSwitch), switchName(SecretsFileSwitch),
 	switchName(AnnouncementsTokenSwitch), switchName(ProblemReportTokenSwitch),
@@ -361,8 +379,9 @@ const HoldsSearchedName = "holds a name that the server's engine searches its wh
 // on the server command line as the value of a switch, is read by the
 // server whole and as that value only, and says why not. It is the one
 // check for every such text: a rule value, the value of an extra argument
-// (after its "="), the server name, the world name, the map, and the
-// passwords and tokens when they go on the command line. A value
+// (after its "="), the server name (the value of -ServerName and of
+// -SteamServerName), the world name, the map, and the passwords and tokens
+// when they go on the command line. A value
 //
 //   - is not empty: the server would read the next argument as its value;
 //   - has no double quote, no control character, no white space other

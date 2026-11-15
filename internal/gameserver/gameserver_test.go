@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
 func goldenLaunch() Launch {
@@ -32,13 +34,15 @@ func goldenLaunch() Launch {
 }
 
 // The fixed part of every command line, in the order a real server was
-// started with.
+// started with, and the Steam server name with the same name right after
+// the server name.
 var goldenHead = []string{
 	"TestMap",
 	"-unattended",
 	"-Port=7777",
 	"-QueryPort=27015",
 	"-ServerName=Echoes Test Server",
+	"-SteamServerName=Echoes Test Server",
 	"-WorldName=main",
 	"-MaxPlayers=40",
 	"-ListInBrowser=True",
@@ -101,7 +105,7 @@ func TestLaunchArgsCommandLine(t *testing.T) {
 // no -log, and an unlisted server says so.
 func TestLaunchArgsMinimal(t *testing.T) {
 	argv := Launch{Map: "M", GamePort: 7778, QueryPort: 27016, MaxPlayers: 10, ServerName: "s", WorldName: "w", UserDir: "D", LogFile: "L"}.Args()
-	want := []string{"M", "-unattended", "-Port=7778", "-QueryPort=27016", "-ServerName=s", "-WorldName=w", "-MaxPlayers=10",
+	want := []string{"M", "-unattended", "-Port=7778", "-QueryPort=27016", "-ServerName=s", "-SteamServerName=s", "-WorldName=w", "-MaxPlayers=10",
 		"-ListInBrowser=False", "-UserDir=D", "-abslog=L"}
 	if !slices.Equal(argv, want) {
 		t.Fatalf("got %q", argv)
@@ -113,14 +117,58 @@ func TestLaunchArgsMinimal(t *testing.T) {
 	}
 }
 
+// The server name goes on the command line twice: as -ServerName and as
+// -SteamServerName, the name Steam's server list shows. Each is one
+// argument, built the same way, right after the other, so the server reads
+// the same name for both (a name with a space whole, in quotes), the second
+// costs the line five characters more than the first, neither is found
+// inside the other, and neither is passed when the name is empty.
+func TestSteamServerNameIsTheServerName(t *testing.T) {
+	for _, name := range []string{"s", "Alpha EU - west", "Welcome, traveller (and friends)", "Café \U0001F642 on", "Alpha-EU"} {
+		argv := Launch{Map: "M", MaxPlayers: 1, ServerName: name, WorldName: "w", UserDir: "D", LogFile: "L"}.Args()
+		i := slices.Index(argv, ServerNameSwitch+"="+name)
+		if i < 0 || i+1 >= len(argv) || argv[i+1] != SteamServerNameSwitch+"="+name {
+			t.Errorf("%q: argv %q", name, argv)
+			continue
+		}
+		if got := LineLength(argv[i+1:i+2]) - LineLength(argv[i:i+1]); got != len("Steam") {
+			t.Errorf("%q: the Steam server name costs %d characters more than the server name", name, got)
+		}
+		line := cmdline.Join(argv)
+		if strings.Contains(name, " ") && !strings.Contains(line, ` -SteamServerName="`+name+`" `) {
+			t.Errorf("%q: the line %q", name, line)
+		}
+		for _, sw := range []string{ServerNameSwitch, SteamServerNameSwitch} {
+			if got, ok := cmdline.Value(line, strings.TrimPrefix(sw, "-")); !ok || got != name {
+				t.Errorf("%q: the server reads %s as %q (found: %v)", name, sw, got, ok)
+			}
+		}
+		n := 0
+		for _, s := range cmdline.Switches(line) {
+			if cmdline.SameName(s.Name, "ServerName") || cmdline.SameName(s.Name, "SteamServerName") {
+				n++
+			}
+		}
+		if n != 2 {
+			t.Errorf("%q: the server finds %d server name switches on %q", name, n, line)
+		}
+	}
+	for _, a := range (Launch{Map: "M", MaxPlayers: 1, WorldName: "w"}).Args() {
+		if strings.HasPrefix(a, ServerNameSwitch) || strings.HasPrefix(a, SteamServerNameSwitch) {
+			t.Errorf("an empty server name is passed: %q", a)
+		}
+	}
+}
+
 func TestReservedAndRefusedSwitches(t *testing.T) {
 	for _, k := range []string{"Port", "-QUERYPORT", "ServerName", "worldname", "MaxPlayers", "unattended", "-ListInBrowser",
-		"UserDir", "-abslog", "Password", "adminpassword", "-SecretsFile", "secretsfile"} {
+		"UserDir", "-abslog", "Password", "adminpassword", "-SecretsFile", "secretsfile",
+		"SteamServerName", "-steamservername", "--STEAMSERVERNAME"} {
 		if !IsReservedSwitch(k) {
 			t.Errorf("%q not reserved", k)
 		}
 	}
-	for _, k := range []string{"PvP", "DayLength", "Ports", "log", "SavedDir"} {
+	for _, k := range []string{"PvP", "DayLength", "Ports", "log", "SavedDir", "SteamName", "SteamServerNames", "xSteamServerName"} {
 		if IsReservedSwitch(k) {
 			t.Errorf("%q reserved", k)
 		}
