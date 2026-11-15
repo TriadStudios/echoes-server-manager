@@ -260,8 +260,10 @@ func (e *env) fail(err error) int {
 
 func (e *env) client() (*client, error) { return newClient(&e.g) }
 
-// interruptible returns a context that ends on Ctrl-C or SIGTERM.
+// interruptible returns a context that ends on Ctrl-C or SIGTERM, also in
+// a process that was started with Ctrl-C turned off (see takeCtrlC).
 func interruptible() (context.Context, context.CancelFunc) {
+	takeCtrlC()
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
