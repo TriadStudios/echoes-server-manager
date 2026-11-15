@@ -178,7 +178,7 @@ type logLine struct {
 }
 
 type overviewData struct {
-	Updates   []api.BuildView // builds the server can update to
+	Update    updateChoice // the builds the server can update to
 	Log       []logLine
 	LogWhy    string
 	Events    []audit.Entry
@@ -192,15 +192,9 @@ func (p *Page) overview(v *view) {
 	}
 	o := overviewData{}
 	o.Log, o.LogWhy = v.logLines(d, instances.SourceServer, 20)
-	if v.Operator() {
-		var bl api.BuildList
-		if err := v.c.get("/api/v1/builds", &bl); err == nil {
-			for _, b := range bl.Builds {
-				if b.Channel == d.S.Channel && b.Version != d.S.Build {
-					o.Updates = append(o.Updates, b)
-				}
-			}
-		}
+	var bl api.BuildList
+	if err := v.c.get("/api/v1/builds", &bl); err == nil {
+		o.Update = updateChoices(d.S, bl.Builds)
 	}
 	if v.Admin() {
 		var al api.AuditList

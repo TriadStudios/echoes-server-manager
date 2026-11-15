@@ -35,9 +35,9 @@
 <div><dt>Memory</dt><dd class="mono">{{memory .}}</dd></div>
 <div><dt>Ports (game / query)</dt><dd class="mono">{{.Ports.Game}} / {{.Ports.Query}}</dd></div>
 <div><dt>Build</dt><dd class="mono">{{.Build}} {{.Channel}}</dd></div>
+<div class="wide"><dt>Update</dt><dd class="tagrow">{{template "update-pill" .}}{{if .UpdateAvailable}}<span class="mono small">{{.Update.Target}}</span>{{end}}</dd></div>
 </dl>
 {{if has .Warnings "secrets_on_command_line"}}<p class="alert error">UNSAFE: passwords on the command line.</p>{{end}}
-{{template "update-note" .}}
 <p class="note"><span data-reason-of="{{.Name}}">{{if .Status.Reason}}{{.Status.Reason}}{{else}}{{state .Status.State}}{{end}}</span>{{if not .Status.Since.IsZero}} (since <time datetime="{{iso .Status.Since}}">{{when .Status.Since}}</time>){{end}}</p>
 <div class="actions">
 {{if $v.Operator}}{{template "lifecycle" .}}{{end}}

@@ -25,6 +25,7 @@ var funcs = template.FuncMap{
 	"state":    stateWord,
 	"warning":  func(code string, stored []string) string { return sentence(instances.WarningWords(code, stored)) },
 	"why":      backupWhy,
+	"updstate": updateStatus,
 	"players":  playersOf,
 	"memory":   memoryOf,
 	"memstep":  memoryStep,

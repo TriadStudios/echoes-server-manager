@@ -558,6 +558,25 @@ func TestEveryScreen(t *testing.T) {
 		t.Error("installing builds is for admins only")
 	}
 
+	// Updates: a server has one status, and its card on the Overview has the
+	// form for an operator: the newest build chosen, the running one marked
+	// and not to be chosen.
+	for _, who := range []map[string]string{admin, op, rd} {
+		if !strings.Contains(who["/"], "Up to date</span>") || !strings.Contains(who["/servers/alpha"], "Up to date</span>") ||
+			strings.Contains(who["/"], "Newer build") || strings.Contains(who["/servers/alpha"], "Newer build") {
+			t.Error("a server on a build nothing newer is known of is up to date")
+		}
+	}
+	for _, want := range []string{`<option value="1.1" selected title="Commit fake-1.1">1.1 (live, newest)</option>`,
+		`<option value="1.0" disabled title="Commit fake-1.0">1.0 (live, running now)</option>`, `data-form="update" data-name="alpha"`} {
+		if !strings.Contains(admin["/servers/alpha"], want) || !strings.Contains(op["/servers/alpha"], want) {
+			t.Errorf("the update form lacks %q", want)
+		}
+	}
+	if strings.Contains(rd["/servers/alpha"], `data-form="update"`) {
+		t.Error("read is offered the update form")
+	}
+
 	// Live updates: the event streams each screen opens.
 	for p, want := range map[string]string{"/": `data-events="types=state,audit"`, "/servers/alpha/log": `data-events="instance=alpha&amp;types=state,log"`} {
 		if !strings.Contains(admin[p], want) {
