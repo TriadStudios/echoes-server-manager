@@ -531,19 +531,18 @@ func (s *Server) authenticate(r *http.Request, rt route, c *call) error {
 	}
 	// The call needs a login. Over TCP, an address with too many failed
 	// authentications gets 429 for every call without a valid one (see
-	// authFailed); a valid token or session goes on as always.
+	// authFailed). The failure limit is looked at only once the credentials
+	// are found not valid: a valid token or session goes on as always, and
+	// never waits for the limit's lock.
 	socket := r.Context().Value(socketKey) == true
-	key := clientKey(r)
-	var limited error
-	if !socket {
-		limited = s.lim.fails.Check(key)
-	}
 	err := s.identify(r, c)
 	// Who tried a socket-only call is recorded in the audit entry, but no
 	// login or token opens it over TCP.
 	socketOnly := errStatus(http.StatusForbidden, "socket_only",
 		"this call is answered only on the box, over ESM's unix socket (esm user passwd); no login or token makes it over the network")
 	if !socket && !c.authed {
+		key := clientKey(r)
+		limited := s.lim.fails.Check(key)
 		answer := err
 		switch {
 		case rt.access == local:

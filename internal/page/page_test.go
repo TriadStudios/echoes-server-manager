@@ -676,6 +676,19 @@ func TestScriptAndStylesheet(t *testing.T) {
 			t.Errorf("esm.js lacks %q", need)
 		}
 	}
+	// Whether the login is gone is decided in sessionEnded alone, for the
+	// calls and for the event stream's look at the session (a 401, or the
+	// 429 of an address limited for failed authentications), so that an
+	// open tab goes to the login instead of opening the stream again for
+	// ever (TestSessionEndedInTheScript runs it).
+	for _, need := range []string{"if (sessionEnded(path, resp.status)) {", "if (sessionEnded('/api/v1/session', r.status)) { toLogin(); return; }"} {
+		if strings.Count(js, need) != 1 {
+			t.Errorf("esm.js does not have %q once", need)
+		}
+	}
+	if strings.Contains(js, "status === 401 &&") || strings.Contains(js, "r.status === 401)") {
+		t.Error("esm.js decides on a 401 outside sessionEnded")
+	}
 	_, css := s.get("/static/esm.css", "")
 	for _, bad := range []string{"@import", "url(", "http://", "https://"} {
 		if strings.Contains(css, bad) {

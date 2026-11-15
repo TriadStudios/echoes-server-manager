@@ -37,6 +37,19 @@
     location.assign('/setup?next=' + enc(location.pathname));
   }
 
+  // sessionEnded: start
+  // sessionEnded says whether an answer of the API to path means that the
+  // login is gone: a 401 (but not from the login or the setup, which answer
+  // it for a wrong password or code), or a 429 from /api/v1/session, which
+  // only the limit on failed authentications of an address answers, and
+  // only to a caller without a valid login. Other 429s (a busy download,
+  // the login's own limit) are not.
+  function sessionEnded(path, status) {
+    if (status === 401) { return path !== '/api/v1/login' && path !== '/api/v1/setup'; }
+    return status === 429 && path === '/api/v1/session';
+  }
+  // sessionEnded: end
+
   // call sends one API request. Changes carry JSON and the CSRF token. It
   // resolves with the decoded answer, or rejects with the API's message.
   async function call(method, path, body) {
@@ -49,7 +62,7 @@
     var resp = await fetch(path, opts);
     var data = null;
     try { data = await resp.json(); } catch (e) { data = null; }
-    if (resp.status === 401 && path !== '/api/v1/login' && path !== '/api/v1/setup') {
+    if (sessionEnded(path, resp.status)) {
       toLogin();
     }
     if (!resp.ok) {
@@ -597,7 +610,9 @@
   // live follows the event stream. EventSource gives up by itself after an
   // HTTP error (401 when the login ended, 502 from a proxy while ESM
   // restarts), so every error closes it and it is opened again here, a
-  // little later each time; a 401 goes to the login.
+  // little later each time; when the login is gone (sessionEnded: a 401,
+  // or the 429 of an address limited for failed authentications) it goes
+  // to the login instead.
   function live(url) {
     var es = null;
     var wait = 1000;
@@ -618,7 +633,7 @@
         es.close();
         lost = true;
         fetch('/api/v1/session', { credentials: 'same-origin' }).then(function (r) {
-          if (r.status === 401) { toLogin(); return; }
+          if (sessionEnded('/api/v1/session', r.status)) { toLogin(); return; }
           retry();
         }, retry);
       };

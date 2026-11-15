@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,4 +259,59 @@ func TestAPIListenerClosesAfterAFailedAuthentication(t *testing.T) {
 	if rec := rg.do("GET", "/api/v1/session", "", header("host", "127.0.0.1:8740", "Authorization", "Bearer esm_wrong")); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("main listener, same address: %d", rec.Code)
 	}
+}
+
+// A call with a valid token or session never touches the limits of
+// callers without a valid login: not even their lock, which a flood of
+// failures from many addresses holds busy. The limits' clock counts every
+// use of them.
+func TestValidLoginsLeaveTheLimitsAlone(t *testing.T) {
+	var uses atomic.Int64
+	now := func() time.Time { uses.Add(1); return time.Now() }
+	rg := newRig(t, Options{Now: now, FailDelay: time.Millisecond})
+	if _, err := rg.auth.CreateUser("admin", "correct horse battery", auth.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	admin, _, _ := rg.auth.CreateToken("panel", auth.RoleAdmin)
+	sess, err := rg.auth.Login("", "admin", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := func() {
+		t.Helper()
+		before := uses.Load()
+		for _, c := range []struct {
+			method, path, body string
+			h                  map[string]string
+			want               int
+		}{
+			{"GET", "/api/v1/session", "", bearer(admin), http.StatusOK},
+			{"POST", "/api/v1/tokens", `{"name":"x","role":"read"}`, bearer(admin), http.StatusCreated},
+			{"GET", "/api/v1/tokens", "", header("Cookie", auth.SessionCookieName+"="+sess.ID), http.StatusOK},
+			{"POST", "/api/v1/tokens", `{"name":"y","role":"read"}`, header("Cookie", auth.SessionCookieName+"="+sess.ID, "X-CSRF-Token", sess.CSRF), http.StatusCreated},
+			{"PUT", "/api/v1/users/admin/password", `{"password":"another long password"}`, bearer(admin), http.StatusForbidden},
+		} {
+			if rec := rg.do(c.method, c.path, c.body, c.h); rec.Code != c.want {
+				t.Fatalf("%s %s: %d %s", c.method, c.path, rec.Code, rec.Body)
+			}
+		}
+		if n := uses.Load() - before; n != 0 {
+			t.Fatalf("calls with a valid login used the limits %d times", n)
+		}
+	}
+	valid()
+	// A wrong token does use them.
+	before := uses.Load()
+	rg.do("GET", "/api/v1/session", "", bearer("esm_wrong"))
+	if uses.Load() == before {
+		t.Fatal("the limits' clock is not used: the test sees nothing")
+	}
+	// And while the address is limited, still nothing.
+	for range AuthFailMax {
+		rg.do("GET", "/api/v1/session", "", bearer("esm_wrong"))
+	}
+	if rec := rg.do("GET", "/api/v1/session", "", bearer("esm_wrong")); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("not limited: %d", rec.Code)
+	}
+	valid()
 }
