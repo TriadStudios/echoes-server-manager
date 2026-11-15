@@ -35,7 +35,7 @@ func TestParseArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S EU" || !o.listed ||
+	if o.mapName != "M" || o.port != 1 || o.queryPort != 2 || o.maxPlayers != 3 || o.serverName != "S EU" || o.steamServerName != "S EU" || !o.listed ||
 		o.worldName != "W" || !filepath.IsAbs(o.userDir) || !filepath.IsAbs(o.logFile) || filepath.Base(o.logFile) != "server.log" ||
 		o.readyDelay != 10*time.Millisecond || !o.noReady || !o.ignoreStop || o.exitCode != 1 || o.saveInterval != time.Second ||
 		o.stopDelay != 300*time.Millisecond {
@@ -264,6 +264,56 @@ func TestFakeLifecycle(t *testing.T) {
 		"Saved/SaveGames/Fake/TestMap__w.json.bak2", "Saved/SaveGames/Fake/TestMap__w.meta.json"}
 	if !slices.Equal(files, want) {
 		t.Fatalf("save files %v", files)
+	}
+}
+
+// The name the query port answers with, which stands for the name the
+// game gives Steam, is the Steam server name; the session in the ready
+// line is named after -ServerName=. Without -SteamServerName= the
+// fake answers with no name (it has no engine configuration to fall back
+// to).
+func TestFakeSteamServerName(t *testing.T) {
+	read := func(args ...string) options {
+		t.Helper()
+		m, sw, err := parseArgs(append([]string{"M"}, args...), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o, err := buildOptions(m, sw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	for _, c := range []struct {
+		args               []string
+		session, steamName string
+	}{
+		{[]string{"-ServerName=Alpha EU - west"}, "Alpha EU - west", ""},
+		{[]string{"-ServerName=Alpha EU", "-SteamServerName=Alpha EU"}, "Alpha EU", "Alpha EU"},
+		{[]string{"-ServerName=Session", "-SteamServerName=Listed, here (EU)"}, "Session", "Listed, here (EU)"},
+		{[]string{"-steamservername=lower", "-ServerName=S"}, "S", "lower"},
+	} {
+		o := read(c.args...)
+		if o.serverName != c.session || o.steamServerName != c.steamName || (&server{o: o}).info().Name != c.steamName {
+			t.Errorf("%q: session %q, Steam server name %q, query answer %q", c.args, o.serverName, o.steamServerName, (&server{o: o}).info().Name)
+		}
+	}
+
+	// A running fake, started with the adapter's command line and a name
+	// with spaces, answers with that name.
+	l := testLaunch(filepath.Join(t.TempDir(), "data"))
+	l.ServerName = "Alpha EU - west (PvE)"
+	r := startFakeWith(t, testkit.FakeServer(t), l)
+	st := waitReady(t, r.data)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	info, err := gameserver.QueryInfo(ctx, "127.0.0.1", st.Ports.Query)
+	if err != nil || info.Name != l.ServerName {
+		t.Fatalf("A2S_INFO: %+v %v, want the name %q", info, err, l.ServerName)
+	}
+	if !strings.Contains(r.logText(), gameserver.ReadyLine(l.ServerName, "TestMap", l.MaxPlayers)) {
+		t.Fatalf("no ready line for the session %q:\n%s", l.ServerName, r.logText())
 	}
 }
 

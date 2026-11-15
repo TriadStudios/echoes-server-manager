@@ -54,8 +54,10 @@ func (r *rig) createWithMarker(marker, delivery string, extra map[string]string)
 }
 
 // waitCommandLine waits until the server has printed its command line, and
-// returns that line. It must repeat marker: four times, and twice more with
-// command-line delivery, for the two passwords.
+// returns that line. It must repeat marker: five times (the server name
+// twice, as -ServerName and -SteamServerName, the rule and the two extra
+// arguments), and twice more with command-line delivery, for the two
+// passwords.
 func (r *rig) waitCommandLine(name, marker, delivery string) string {
 	r.t.Helper()
 	var line string
@@ -68,9 +70,9 @@ func (r *rig) waitCommandLine(name, marker, delivery string) string {
 		}
 		return line != ""
 	}, "the server did not print its command line")
-	want := 4
+	want := 5
 	if delivery == gameserver.DeliveryCommandLine {
-		want = 6
+		want = 7
 	}
 	if got := strings.Count(line, marker); got != want {
 		r.t.Fatalf("the command line repeats the marker text %d times, want %d: %s", got, want, line)

@@ -5,15 +5,15 @@
 // way.
 //
 // Like the real server it takes the map first, then -unattended, -Port=,
-// -QueryPort=, -ServerName=, -WorldName=, -MaxPlayers=, -ListInBrowser=,
-// -UserDir=<data folder> and -abslog=<log file>, plus any -Key=Value. It
-// refuses -MULTIHOME (exit code 2): ESM must never pass it. Like the real
-// server it joins its arguments into one line and looks every switch up
-// there (testkit/cmdline), so it reads what the real server would read: a
-// switch inside the value of another one, the first of two, and the next
-// argument for an empty value. And like the real server it does not start
-// (exit code 2) with a command line that is too long for the engine or
-// that holds an en dash.
+// -QueryPort=, -ServerName=, -SteamServerName=, -WorldName=, -MaxPlayers=,
+// -ListInBrowser=, -UserDir=<data folder> and -abslog=<log file>, plus any
+// -Key=Value. It refuses -MULTIHOME (exit code 2): ESM must never pass it.
+// Like the real server it joins its arguments into one line and looks
+// every switch up there (testkit/cmdline), so it reads what the real
+// server would read: a switch inside the value of another one, the first
+// of two, and the next argument for an empty value. And like the real
+// server it does not start (exit code 2) with a command line that is too
+// long for the engine or that holds an en dash.
 //
 // Extra switches, only for tests:
 //
@@ -66,9 +66,14 @@
 // The query port answers A2S_INFO, the Source server query, only once the
 // server is ready: a request without the server's challenge gets the
 // challenge reply, one with it the info reply (name, map, players, max
-// players). Only for tests it also says whether a password is the right
-// one: "JOIN <server password>" and "ADMIN <admin password>" are answered
-// with OK or DENIED.
+// players). The name there stands for the name the game gives Steam, and
+// the fake takes it from -SteamServerName=, not from -ServerName=, as the
+// game does (gameserver.SteamServerNameSwitch). Without that switch the
+// fake answers with no name: the game would fall back to its engine
+// configuration, which the fake does not have. -ServerName= names its
+// session, in the ready line. Only for tests it also says whether a
+// password is the right one: "JOIN <server password>" and "ADMIN <admin
+// password>" are answered with OK or DENIED.
 package main
 
 import (
@@ -153,6 +158,10 @@ type options struct {
 	noQuery      bool
 	failStart    bool
 	exitCode     int
+
+	// steamServerName is the name for Steam's server list
+	// (-SteamServerName=), the one the query port answers with.
+	steamServerName string
 }
 
 func main() {
@@ -255,15 +264,16 @@ func buildOptions(mapName string, sw switches) (options, error) {
 		return v
 	}
 	o := options{
-		mapName:      mapName,
-		serverName:   str(key(gameserver.ServerNameSwitch)),
-		worldName:    str(key(gameserver.WorldNameSwitch)),
-		userDir:      str(key(gameserver.UserDirSwitch)),
-		logFile:      str(key(gameserver.LogFileSwitch)),
-		saveInterval: time.Second,
-		readyDelay:   300 * time.Millisecond,
-		stopDelay:    200 * time.Millisecond,
-		exitCode:     1,
+		mapName:         mapName,
+		serverName:      str(key(gameserver.ServerNameSwitch)),
+		steamServerName: str(key(gameserver.SteamServerNameSwitch)),
+		worldName:       str(key(gameserver.WorldNameSwitch)),
+		userDir:         str(key(gameserver.UserDirSwitch)),
+		logFile:         str(key(gameserver.LogFileSwitch)),
+		saveInterval:    time.Second,
+		readyDelay:      300 * time.Millisecond,
+		stopDelay:       200 * time.Millisecond,
+		exitCode:        1,
 	}
 	var err error
 	num := func(key string, dst *int) {
@@ -662,13 +672,14 @@ func (s *server) answerQueries() {
 	}
 }
 
-// info is the fake's answer to A2S_INFO.
+// info is the fake's answer to A2S_INFO. Its name is the Steam server
+// name, which stands for the name the game gives Steam.
 func (s *server) info() gameserver.Info {
 	osByte := byte('l')
 	if runtime.GOOS == "windows" {
 		osByte = 'w'
 	}
-	return gameserver.Info{Protocol: 17, Name: s.o.serverName, Map: shortMap(s.o.mapName), Folder: "fake", Game: "Fake",
+	return gameserver.Info{Protocol: 17, Name: s.o.steamServerName, Map: shortMap(s.o.mapName), Folder: "fake", Game: "Fake",
 		Players: int(s.players.Load()), MaxPlayers: s.o.maxPlayers, ServerType: 'd', OS: osByte, Password: s.o.secrets.ServerPassword != "",
 		Version: findVersion()}
 }

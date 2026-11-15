@@ -287,6 +287,18 @@ func invalid(field, format string, args ...any) error {
 	return fault.New(fault.Invalid, "invalid", field+": "+format, args...)
 }
 
+// maxStoredDisplayName is the longest display name earlier versions took,
+// in bytes. One set or changed from this version on has at most
+// gameserver.MaxServerNameBytes.
+const maxStoredDisplayName = 64
+
+// displayNameTooLong is the refusal of a display name that is too long or
+// not printable. It says the limit and never repeats the name.
+func displayNameTooLong() error {
+	return invalid("display_name", "must be printable text of at most %d bytes of UTF-8 (%d characters of plain ASCII): Steam limits a game server name to 64 bytes with the terminator, and the game cuts a name of 64 characters or more to 63",
+		gameserver.MaxServerNameBytes, gameserver.MaxServerNameBytes)
+}
+
 // unsafeArgument checks a setting that goes onto the server command line
 // (see gameserver.UnsafeArgument). what names the setting without
 // repeating its value: an extra argument may hold anything.
@@ -303,8 +315,12 @@ func (in *Instance) Validate() error {
 	if !ValidName(in.Name) {
 		return invalid("name", "must match %s", nameRe)
 	}
-	if len(in.DisplayName) > 64 || hasControl(in.DisplayName) {
-		return invalid("display_name", "must be at most 64 printable characters")
+	// A display name of up to maxStoredDisplayName bytes, which earlier
+	// versions took, keeps loading and does not stand in the way of other
+	// changes; a new one is held to gameserver.MaxServerNameBytes
+	// (checkChanges).
+	if len(in.DisplayName) > maxStoredDisplayName || hasControl(in.DisplayName) {
+		return displayNameTooLong()
 	}
 	if err := unsafeArgument("display_name", "the display name", in.DisplayName); err != nil {
 		return err
@@ -455,8 +471,14 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
 	}
 	// An empty display name is no value: the server gets the instance's
-	// name then.
+	// name then, which has at most 32 ASCII characters. A new one, or one
+	// changed, is held to gameserver.MaxServerNameBytes, a name the game
+	// does not cut; one stored by an earlier version that is sent back
+	// unchanged is not.
 	if (old == nil || in.DisplayName != old.DisplayName) && in.DisplayName != "" {
+		if len(in.DisplayName) > gameserver.MaxServerNameBytes {
+			return displayNameTooLong()
+		}
 		if err := checkValue("display_name", "the display name", in.DisplayName); err != nil {
 			return err
 		}
@@ -626,7 +648,18 @@ func (s switchNames) repeatedBefore(i int) bool {
 // ("extra_args.2", never by what it holds), and a secret by its field.
 // An empty rule, and an extra argument that ends in "=", is among them; it
 // is left off the command line (gameserver.Launch.Args). Of switches with
-// the same name, those after the first are named.
+// the same name, those after the first are named, and so is a rule or an
+// extra argument that names a switch ESM sets itself
+// (gameserver.IsReservedSwitch): -SteamServerName, which an earlier version
+// did not set, stored as a rule or an extra argument is passed after ESM's
+// own, and the server reads ESM's. A display name of more than
+// gameserver.MaxServerNameBytes bytes (64, which an earlier version took)
+// is named too: it is passed as stored, and the game may cut it. The game
+// cuts a name of 64 characters or more to 63, so it cuts one of 64
+// single-byte characters; what Steam shows for one of 64 bytes with
+// characters of more than one byte is not known. Neither it nor any other
+// setting named here keeps the instance from starting, unless it holds an
+// en dash (see enDashIn).
 func (in Instance) storedUnsafe(s Secrets) []string {
 	var out []string
 	unsafe := func(v string) bool {
@@ -634,16 +667,19 @@ func (in Instance) storedUnsafe(s Secrets) []string {
 		return bad
 	}
 	// A switch name that is not plain, that the engine would take for
-	// another switch, or that ESM refuses when it is set now.
+	// another switch, that ESM refuses when it is set now, or that ESM sets
+	// itself.
 	badName := func(name string) bool {
 		_, searched := gameserver.SearchedSwitch(name)
 		_, refused := gameserver.RefusedSwitch(name)
-		return !gameserver.PlainSwitchName(name) || searched || refused
+		return !gameserver.PlainSwitchName(name) || searched || refused || gameserver.IsReservedSwitch(name)
 	}
 	if _, found := gameserver.SearchedName(in.Name); found {
 		out = append(out, "name")
 	}
-	if in.DisplayName != "" && unsafe(in.DisplayName) {
+	// A display name of more than gameserver.MaxServerNameBytes bytes, which
+	// an earlier version took, is passed as stored, and the game may cut it.
+	if in.DisplayName != "" && (unsafe(in.DisplayName) || len(in.DisplayName) > gameserver.MaxServerNameBytes) {
 		out = append(out, "display_name")
 	}
 	if unsafe(in.World) {

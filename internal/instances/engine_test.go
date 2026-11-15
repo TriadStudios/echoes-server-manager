@@ -50,7 +50,7 @@ func meant(r *rig, in Instance, sec Secrets) []switchWant {
 		listed = "True"
 	}
 	out := []switchWant{{"Port", strconv.Itoa(in.Ports.Game)}, {"QueryPort", strconv.Itoa(in.Ports.Query)},
-		{"ServerName", display}, {"WorldName", in.World}, {"MaxPlayers", strconv.Itoa(in.MaxPlayers)},
+		{"ServerName", display}, {"SteamServerName", display}, {"WorldName", in.World}, {"MaxPlayers", strconv.Itoa(in.MaxPlayers)},
 		{"ListInBrowser", listed}, {"UserDir", data}, {"abslog", log}}
 	for k, v := range in.Rules {
 		if s, ok := gameserver.LookupGameSetting(k); ok && s.Type == gameserver.TypeList {

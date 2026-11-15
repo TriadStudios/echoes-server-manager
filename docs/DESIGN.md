@@ -142,7 +142,7 @@ are refused, so typos are reported.
 | Field              | Meaning |
 |--------------------|---------|
 | `name`             | `^[a-z][a-z0-9-]{0,31}$`, fixed. It is in the folders ESM puts on the server command line, so a new name may not hold a name the engine searches that line for (see [Game settings](#game-settings)). |
-| `display_name`     | Name shown to players (the server name). |
+| `display_name`     | Name shown to players (the server name); empty means the instance name. Set or changed, at most 63 bytes of UTF-8 (63 characters of plain ASCII); one of 64 bytes that an earlier version stored is kept (see below). Passed twice with the same value: as `-ServerName=` and as `-SteamServerName=`, the name for Steam's server list (see below). A change reaches a running server at its next start. |
 | `cluster`          | Optional label. |
 | `channel`          | `live` or `test`; must match the build. |
 | `build`            | Current build. Changed only by an update. |
@@ -163,8 +163,9 @@ are refused, so typos are reported.
 | `previous_builds`  | Builds this instance ran before, newest first. |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
-names, passwords and tokens, the secrets file, `-UserDir`, `-abslog` and so
-on), may not be `-MULTIHOME` (see [The real server](#the-real-server)) or an
+names, `-SteamServerName` among them, passwords and tokens, the secrets
+file, `-UserDir`, `-abslog` and so on), may not be `-MULTIHOME` (see
+[The real server](#the-real-server)) or an
 override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`,
 `-iniFile=` and `-CustomConfig=`, which could change the ports, the
 networking or the server's folders behind ESM's back), may not be
@@ -204,10 +205,44 @@ secret away.)
 
 The command line, in this order: the map, `-unattended`, `-Port=`,
 `-QueryPort=`, `-ServerName=` (the display name, or the instance name),
-`-WorldName=`, `-MaxPlayers=`, `-ListInBrowser=`, `-UserDir=<instance>/data`,
+`-SteamServerName=` (the same name), `-WorldName=`, `-MaxPlayers=`,
+`-ListInBrowser=`, `-UserDir=<instance>/data`,
 `-abslog=<instance>/logs/server.log`, then the rules (`-Key=Value`, sorted by
 key), the secrets file switch (or, in the compatibility mode, the password
 and token switches), and the extra arguments.
+
+The server name is passed twice. The game's Steam session code takes the
+name it gives Steam from `-SteamServerName=`, not from `-ServerName=`;
+only when the switch is absent does it fall back to `SteamServerName`
+under `[OnlineSubsystemSteam]` in the engine's configuration. Both are
+built the same way, each one argument (`-SteamServerName=Alpha EU` right
+after `-ServerName=Alpha EU`), from the same value, which follows the
+rules for values in [Game settings](#game-settings) once and so for
+both; an empty name passes neither. The name counts twice in the length of the line. A
+change of `display_name` reaches a running server at its next start
+(`restart_required`), like every other setting.
+
+The game cuts a name of 64 characters or more to 63 and writes a warning
+to its log, and Steamworks limits a game server name to 64 bytes
+including the terminator. So a display name set or changed has at most
+63 bytes of UTF-8, which are at most 63 characters however they are
+counted (63 characters of plain ASCII), a name the game does not cut; a
+longer one is refused with 422 `invalid`, which names the limit and not
+the name. An instance's name, which the server gets without a display
+name, has at most 32 ASCII characters. A display name of 64 bytes, which
+an earlier version took, keeps loading and starting and is passed as
+stored, and it may be cut: the game cuts it to 63 when it has 64
+characters (all of one byte), and what Steam shows for one of 64 bytes
+with characters of more than one byte is not known. The instance carries
+the warning `unsafe_stored_settings` naming `display_name`, takes other
+changes (the name sent back unchanged), refuses a change to another name
+of more than 63 bytes, and loses the warning when the name has at most
+63 bytes.
+
+No real server has run with `-SteamServerName=` yet, so two things are
+not seen: that a name with a space arrives whole there (the same form
+does for `-ServerName=`), and that the name then shows in the public
+server list (see [The real server](#the-real-server)).
 
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
@@ -390,8 +425,9 @@ letter (`a--b`).
 **The length of the line.** ESM counts the command line of an instance
 the way the engine does: a space before every argument, the two quotes
 around what holds a space, two for a character beyond U+FFFF, with
-everything on it (ESM's own switches, the folders, the map, the rules,
-the extra arguments and, with command-line delivery, the secrets). A
+everything on it (ESM's own switches, the server name twice, the folders,
+the map, the rules, the extra arguments and, with command-line delivery,
+the secrets). A
 create, a change or a new secret that would make it longer than 12000 is
 refused with 422 `command_line_too_long`, which has the two numbers and
 nothing of a value. 12000 is well under the engine's 16383 because what
@@ -418,7 +454,9 @@ instance when ESM's root holds one) and never a value; the supervisor is
 not asked. Any other stored value that breaks the rules, and with
 command-line delivery a stored password or token that does, is passed as
 it is; so is a stored rule key or extra argument that ESM now refuses
-(`-CmdLineFile=`, an override of the configuration files), and the
+(`-CmdLineFile=`, an override of the configuration files) or that names
+`-SteamServerName`, which ESM sets itself from this version on (it is
+passed after ESM's own, so the server reads the server name), and the
 instance then takes no other change until it is removed. The instance
 carries the warning `unsafe_stored_settings`, and its
 `unsafe_stored_settings` field names the settings: `name`,
@@ -431,7 +469,13 @@ the warning `command_line_too_long`; a change is taken as long as it does
 not make the line longer. Up to 16127 the server is started as before and
 the service log says that its line is long. Beyond that the engine may
 stop at once, so ESM does not start the server (409
-`command_line_too_long`).
+`command_line_too_long`). This version passes the server name a second
+time, so every line is longer than an earlier version made it, by
+` -SteamServerName=`, the name and, for a name with a space, its quotes
+(at most 84 characters): an instance whose stored line was close to 12000
+may now carry `command_line_too_long`, and one close to 16127 is now not
+started. A shorter display name (it counts twice), or shorter rules or
+extra arguments, bring it back.
 
 **World rules apply to a new world only.** The settings of the group
 "World rules" are copied into the world when the game creates it; from
@@ -1489,7 +1533,8 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
 - The command line: the map first, then exactly `-unattended -Port=
   -QueryPort= -ServerName= -WorldName= -MaxPlayers= -ListInBrowser=
   -UserDir= -abslog=`, with the build folder as working folder. Every game
-  setting also works as `-Key=Value`.
+  setting also works as `-Key=Value`. (ESM now passes `-SteamServerName=`
+  besides, which no real server has run with yet; see below.)
 - **Never `-MULTIHOME`.** With it the server advertises its bind address
   where its Steam identity belongs; players see it in the server list but
   cannot join. ESM never passes it, refuses it as a rule or extra argument,
@@ -1527,6 +1572,15 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
   query port other than the default.
 - Whether a loose per-server config file next to the build is read; ESM
   passes every setting on the command line instead.
+- `-SteamServerName=` on a real host. The game's Steam session code takes
+  the name it gives Steam from it (only without it from its engine
+  configuration) and cuts a name of 64 characters or more to 63; ESM
+  passes the server name there exactly as it passes `-ServerName=`, at
+  most 63 bytes when it is set or changed from this version on (one of 64
+  bytes stored earlier is passed as stored). No real server has run with
+  it yet: that a name with a space arrives whole (it does for
+  `-ServerName=`) and that the name shows in the public server list are
+  not seen.
 - The password and token switches on a real host (`-Password=`,
   `-AdminPassword=`, `-AnnouncementsToken=`, `-ProblemReportToken=`; the
   test server ran with neither password).

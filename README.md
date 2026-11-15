@@ -459,6 +459,29 @@ game settings, with its type, range, default and a line of help. See them
 with `esm game-settings`, `GET /api/v1/game-settings` or on a server's
 settings page.
 
+The server name (`display_name`, or the instance's name when it is empty)
+goes to the server twice, with the same value: as `-ServerName=` and as
+`-SteamServerName=`. The game's Steam session code takes the name it
+gives Steam from `-SteamServerName=`, not from `-ServerName=` (only
+without the switch does it fall back to its engine configuration), and
+cuts a name of 64 characters or more to 63, with a warning in its log;
+Steamworks limits a game server name to 64 bytes including the
+terminator. So a display name set or changed has at most 63 bytes of
+UTF-8 (63 characters of plain ASCII), and so at most 63 characters,
+which the game does not cut. Both switches are passed the same way and
+follow the rules below once, the name counts twice in the length of the
+command line, and neither switch can be set by a rule or an extra
+argument. A new name reaches a running server at its next start. No real
+server has run with `-SteamServerName=` yet: that a name with a space
+arrives whole there (it does for `-ServerName=`) and that the name then
+shows in the public server list are not seen yet. A display name of 64
+bytes, which an earlier version took, is passed as stored and may be
+cut: the game cuts it to 63 when it has 64 characters (all of one byte),
+and what Steam shows for one with characters of more than one byte is
+not known. It may be sent back unchanged, but not changed to another
+name of more than 63 bytes, and the instance carries the warning
+`unsafe_stored_settings` until the name has at most 63 bytes.
+
 An instance keeps its game settings in `rules` (`--set Key=Value` at
 create, `rules` in the API, the fields of the settings page). A setting
 that is not set is not passed, and the server uses its own default. A
@@ -512,17 +535,21 @@ same rules when it is set or changed:
 
 The name of an instance is in the folders ESM puts on the command line,
 so a new instance's name may not hold one of those names either. And the
-whole command line of an instance, with everything on it, may have 12000
-characters after a change: the server's engine does not start with more
-than 16383, and what starts the server may add to the line. A change that
-would make it longer is refused (`command_line_too_long`).
+whole command line of an instance, with everything on it (the server
+name counts twice), may have 12000 characters after a change: the
+server's engine does not start with more than 16383, and what starts the
+server may add to the line. A change that would make it longer is
+refused (`command_line_too_long`).
 
 A value stored by an earlier version is kept until it is changed. An
 empty one (a rule, or an extra argument that ends in `=`) is left off the
 command line when the server starts, and the service log says so; any
 other that breaks the rules is passed as it is, and the instance carries
 the warning `unsafe_stored_settings`, which names the settings (never
-their values) to change. One exception: with an en dash anywhere on its
+their values) to change. The warning also names a rule or an extra
+argument stored earlier that names `-SteamServerName`: it is passed after
+ESM's own, which the server reads, and the instance takes no other change
+until it is removed. One exception: with an en dash anywhere on its
 command line the server's engine stops at once, so ESM does not start a
 server whose line would hold one (409 `command_line_unsafe`, which names
 the setting, a password or token by its field, and never a value). An
@@ -531,7 +558,13 @@ carries the warning `command_line_too_long`; beyond 16127 ESM does not
 start its server, and says why (409 `command_line_too_long`): of the
 16383 the engine starts with, ESM keeps 256 free for what a build's start
 script may put on the line besides (the name of the game's project, say),
-since it does not know what a build's script adds.
+since it does not know what a build's script adds. This version passes
+the server name a second time, so every command line is longer than an
+earlier version made it, by ` -SteamServerName=`, the name and, for a
+name with a space, its quotes (at most 84 characters): an instance whose
+stored line was close to 12000 may now carry `command_line_too_long`, and
+one close to 16127 is now not started. A shorter display name (it counts
+twice), or shorter rules or extra arguments, bring it back.
 
 These rules follow how the engine reads its command line, as far as ESM
 knows it from the engine's source; they are not yet checked against a
