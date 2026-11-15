@@ -1247,7 +1247,9 @@ skipped.
   Calls that try to change something are recorded whether they work, fail
   or are refused, and so is every call refused for lack of a role (403); a
   read refused for a missing login (401) or another host name (421) is
-  not. Audit entries and logs never contain
+  not. Calls of a client without a valid login are recorded within the
+  bounds of [Failed authentications](#logins-and-exposure), so that no
+  client fills the disk without one. Audit entries and logs never contain
   passwords or tokens. Each text field of an entry is cut to 256 bytes, and
   reading the audit log skips a line it cannot read.
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
@@ -1401,6 +1403,37 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   pause, and setup codes tried that way share one limit. A client that
   connects directly from an address of its own is also limited per
   address.
+- **Failed authentications.** On every TCP listener (not the unix
+  socket), a call that needs a login and comes without a valid one is a
+  failed authentication: no credentials, a token that is wrong, unknown or
+  deleted, a session that ended, an `Authorization` header that is not a
+  bearer token, a session cookie on a listener that takes tokens only, or
+  a call answered only on the socket. They count per client address (an
+  IPv4 address, or the /64 of an IPv6 address), apart from the login's
+  limit: at 60 inside a minute, every such call of that address is
+  answered 429 `rate_limited` with `Retry-After`, before anything else
+  and without an audit entry or event, until the oldest of the 60 is a
+  minute old; the refused calls count too, so a flood keeps itself
+  refused. Guessing a token is not the concern (a token is 32 random
+  bytes); the limit is about the load and the audit log, since a client
+  that keeps its connection open can send thousands of tries a second. A
+  call with a valid token or session is never refused by it, and the
+  login, setup and the page's login form are not limited by it (the page
+  takes its 429 as "not logged in" and shows the login), so it locks no
+  user out. An honest client hits it only by retrying a wrong token about
+  once a second for a minute. Behind a proxy or a tunnel every client has
+  the proxy's address, so one client's flood makes the others without a
+  valid login wait as well; their logins still work. What is recorded of
+  clients without a valid login is bounded per address and minute: of its
+  failed authentications the first that the audit log would take (a
+  change, or a 403), and one entry `auth.limited` when the address is
+  limited ("60 failed authentications from 192.0.2.7 within 1m0s: ...
+  answered 429 and not recorded until ..."); of its other calls that the
+  audit log takes (failed logins and setup codes, refusals of the login's
+  limit, logouts without a session, changes to unknown paths) the first
+  20, and then one entry `audit.quiet`. A login or setup that works is
+  recorded whatever these bounds. Audit entries are the only events such
+  calls make, so the event stream is bounded the same way.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
   logins (`/users`), the audit log, backup downloads, the health check
@@ -1506,8 +1539,11 @@ by hand:
   clients reach it directly, so `behind_tls_proxy`, which leaves the
   address out of that count on the main listener, does not apply to it;
   the client address is taken from the connection, never from forwarding
-  headers, there as everywhere. Wrong tokens are not counted: a token is
-  32 random bytes, and every try is a TLS connection of its own.
+  headers, there as everywhere. [Failed authentications](#logins-and-exposure)
+  count per address on both listeners together, with the same bounds on
+  what is recorded; the API listener also ends the connection after a 401
+  or a 429 (`Connection: close`), so every try there costs a TLS
+  handshake of its own.
 - **Shutdown.** When ESM ends, every listener stops taking requests at
   once; event streams end first, and each listener then waits for its own
   open requests, the API listener as the main one.
@@ -1797,9 +1833,13 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   and ESM sets no ACLs, so the socket is as private as its folder's ACL.
   The same holds for the key of the certificate ESM makes for the API
   listener (`secrets/api-listener.key`).
-- **The API listener.** It counts no wrong tokens (see
-  [The API listener](#the-api-listener)), and it takes no client
-  certificates: a token is all a client shows. Its certificate is renewed
+- **Clients without a valid login are bounded per address.** An attacker
+  with many addresses (a botnet, or many IPv6 networks) gets the bounds of
+  [Failed authentications](#logins-and-exposure) once per address, so the
+  audit log still grows with the number of addresses, by a few entries a
+  minute each.
+- **The API listener.** It takes no client certificates: a token is all a
+  client shows. Its certificate is renewed
   only at a start (30 days before it ends), so an ESM that runs for the
   whole of those 30 days serves it until it ends. A certificate ESM made
   is self-signed, so every client has to pin it or trust a copy of it.

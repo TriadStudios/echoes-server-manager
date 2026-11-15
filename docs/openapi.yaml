@@ -64,6 +64,19 @@ info:
     `socket_only`). The same limits apply as on the main listener; the
     login limit there always counts per client address too, as its
     clients reach it directly (`behind_tls_proxy` does not apply to it).
+    There a 401 or 429 also ends the connection (`Connection: close`).
+
+    Failed authentications count per client address (an IPv4 address, or
+    the /64 of an IPv6 one) on every TCP listener, the unix socket never:
+    a call that needs a login and comes without a valid one (no
+    credentials, a wrong, unknown or deleted token, a session that ended,
+    an `Authorization` that is not a bearer token, a session cookie where
+    only tokens are taken, a socket-only call). At 60 of them within a
+    minute, every such call of the address gets 429 `rate_limited` with
+    `Retry-After`, before anything else is checked and without an audit
+    entry, until the oldest of them is a minute old (those refused count
+    too). A call with a valid token or session is never refused by this,
+    and login and setup have their own limit only.
 
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
@@ -74,7 +87,13 @@ info:
     POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
     `{}`); each writes an audit entry, refused or not, as does every call
     refused for lack of a role (403). A read refused for a missing login
-    (401) or another host name (421) is not recorded.
+    (401) or another host name (421) is not recorded. Of a client address
+    without a valid login, a minute holds at most: the first failed
+    authentication the log would take, one `auth.limited` entry when the
+    address is limited, 20 entries of its other calls (failed logins,
+    logouts without a session, changes to unknown paths, and so on) and
+    one `audit.quiet` entry after them. A login or setup that works is
+    always recorded.
 
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks
@@ -1121,7 +1140,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     RateLimited:
-      description: Too many failed attempts from this client or for this user name.
+      description: Too many failed attempts from this client or for this user name, or too many failed authentications from this client address (calls without a valid login).
       headers:
         Retry-After:
           description: Seconds to wait.

@@ -247,8 +247,9 @@ default, TLS only, for API tokens. Add it to `esm.json` and restart ESM
 - Without `tls_cert` and `tls_key` (your own certificate and key, set
   together; a relative path is taken from the root), ESM makes a
   self-signed certificate once and keeps it in `<root>/secrets/`. It makes
-  a new one when the listener's names change or 30 days before the ten
-  years are up, and keeps the key, so the public key pin stays the same.
+  a new one when a host name or address is added (taking one out changes
+  nothing) or 30 days before the ten years are up, and keeps the key, so
+  the public key pin stays the same.
 - It takes API tokens only, each with its role
   (`esm token create --role read --name panel`). A browser login, setup
   and the web page are refused there unless you set `"page": true`; calls
@@ -279,8 +280,12 @@ esm --url https://192.0.2.10:8743 --pin "$PIN" list
 build, ports, display name, and the player count in `live.players`, which
 is null (with the reason in `live.unknown`) while the game server does not
 report it. Login limits, request limits and the audit log are as on the
-main listener. See [The API listener](docs/DESIGN.md#the-api-listener) for
-the details.
+main listener. On both, an address with 60 failed authentications (a wrong
+token, no token) within a minute gets 429 for every call without a valid
+token until it stops for a minute; valid tokens and logins from it go on
+working, and the audit log records only a couple of entries of it a minute.
+The API listener also ends the connection after each 401 or 429. See
+[The API listener](docs/DESIGN.md#the-api-listener) for the details.
 
 ### Linux: keep servers running
 
