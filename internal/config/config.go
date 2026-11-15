@@ -121,6 +121,10 @@ type Config struct {
 	// so a page of another site cannot reach ESM by pointing its own name
 	// at this box.
 	PublicHosts []string `json:"public_hosts,omitempty"`
+	// APIListener is a second listener for the API alone, TLS only, for
+	// clients on other machines (see APIListener). Nil, and not written to
+	// the file, means off.
+	APIListener *APIListener `json:"api_listener,omitempty"`
 	// BuildImportDir is the folder a local build source (a folder or an
 	// archive) must be in. Empty means <root>/imports; a relative path is
 	// taken from the root.
@@ -307,6 +311,11 @@ func (c *Config) Validate() error {
 	for _, h := range c.PublicHosts {
 		if err := checkPublicHost(h); err != nil {
 			return fmt.Errorf("config: public_hosts: %w", err)
+		}
+	}
+	if c.APIListener != nil {
+		if err := c.APIListener.Validate(c.Listen); err != nil {
+			return fmt.Errorf("config: api_listener: %w", err)
 		}
 	}
 	g, err := ParsePortRange(c.GamePorts)
