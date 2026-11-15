@@ -1,6 +1,7 @@
 package gameserver
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strconv"
@@ -116,12 +117,9 @@ func TestCatalogEntriesAreComplete(t *testing.T) {
 				t.Errorf("%s: no maximum length", what)
 			}
 		}
-		if (s.Group == GroupWorld) != s.NewWorldOnly {
-			t.Errorf("%s: new_world_only must be set exactly for the world rules", what)
-		}
 	}
-	if s, ok := LookupGameSetting("LastWipe"); !ok || s.NewWorldOnly || s.Group == GroupWorld {
-		t.Error("LastWipe is read at every start: not a world rule")
+	if s, ok := LookupGameSetting("LastWipe"); !ok || s.Group == GroupWorld {
+		t.Error("LastWipe is one of the identity settings, not a world rule")
 	}
 	if s, ok := LookupGameSetting("AllowNonSteamClients"); !ok || !s.Caution {
 		t.Error("AllowNonSteamClients carries a caution")
@@ -134,6 +132,44 @@ func TestCatalogEntriesAreComplete(t *testing.T) {
 	}
 	if _, ok := LookupGameSetting("FakeReadyDelay"); ok {
 		t.Error("a key outside the catalog is found")
+	}
+}
+
+// The game applies the world rules at every start, and a rule left empty
+// uses the game's default and replaces the value saved with the world: the
+// note of the group says so, and nothing in the catalog speaks of a rule
+// for a new world only.
+func TestWorldRulesApplyAtEveryStart(t *testing.T) {
+	const note = "The game applies these at every start of the server. A rule left empty uses the game's default and replaces the value saved with the world."
+	found := false
+	for _, g := range GameSettingGroups() {
+		if g.ID == GroupWorld {
+			found = true
+			if g.Note != note {
+				t.Errorf("world rules note: %q", g.Note)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no group of world rules")
+	}
+	raw, err := json.Marshal(GameSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "new_world_only") {
+		t.Error("a setting still carries the flag new_world_only")
+	}
+	old := regexp.MustCompile(`(?i)new world|first created|world is created`)
+	for _, g := range GameSettingGroups() {
+		if old.MatchString(g.Note) || old.MatchString(g.Title) {
+			t.Errorf("group %s: speaks of a new world only: %q", g.ID, g.Note)
+		}
+	}
+	for _, s := range GameSettings() {
+		if old.MatchString(s.Help) || old.MatchString(s.Label) {
+			t.Errorf("%s: speaks of a new world only: %q", s.Key, s.Help)
+		}
 	}
 }
 

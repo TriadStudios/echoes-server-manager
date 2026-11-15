@@ -29,8 +29,8 @@ func TestCLIGameSettings(t *testing.T) {
 				if !strings.Contains(l, s.Type) {
 					t.Errorf("%s: no type in %q", s.Key, l)
 				}
-				if s.NewWorldOnly && !strings.Contains(l, "new world only") {
-					t.Errorf("%s: not marked as a world rule: %q", s.Key, l)
+				if strings.Contains(l, "new world only") {
+					t.Errorf("%s: still marked as for a new world only: %q", s.Key, l)
 				}
 				if s.Secret && !strings.Contains(l, "secret") {
 					t.Errorf("%s: not marked as a secret: %q", s.Key, l)
@@ -43,6 +43,9 @@ func TestCLIGameSettings(t *testing.T) {
 	}
 	if !strings.Contains(out, "HarvestRate") || !strings.Contains(out, "0.1..1000") || !strings.Contains(out, "caution") {
 		t.Fatalf("game-settings:\n%s", out)
+	}
+	if !strings.Contains(out, "World rules apply at every start of the server.") || strings.Contains(out, "first created") {
+		t.Fatalf("game-settings does not say when the world rules apply:\n%s", out)
 	}
 	code, out, _ = h.runCLI("game-settings", "--group", "chat")
 	if code != 0 || strings.Contains(out, "HarvestRate") || !strings.Contains(out, "ChatFilter") {

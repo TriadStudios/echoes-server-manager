@@ -88,7 +88,7 @@
 {{range $g := $r.Groups}}
 <fieldset class="panel" id="group-{{$g.ID}}" data-group="{{$g.ID}}"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">{{$g.Title}}</legend>
-{{if eq $g.ID "world"}}<p class="alert warn"><strong class="tag">Warning</strong> {{$g.Note}}</p>{{else}}<p class="note">{{$g.Note}}</p>{{end}}
+<p class="note">{{$g.Note}}</p>
 <div class="grid two">
 {{range $f := $g.Fields}}<div class="setting" data-setting="{{$f.Key}}">
 {{if eq $f.Input "secret"}}<label class="field"><span>{{$f.Label}} ({{if $f.Set}}set{{else}}none{{end}})</span>
@@ -138,7 +138,7 @@
 <aside class="panel pending" id="pending" aria-labelledby="pending-h">
 <h2 class="label" id="pending-h"><span id="pending-count">No</span> unsaved changes</h2>
 <ul class="changes" id="pending-list"></ul>
-<p class="note">Settings and rules take effect when the server starts; world rules only when a world is created. {{if $s.Live.Players}}{{$s.Live.Players}} players are online now.{{else}}Players online now: not known.{{end}}</p>
+<p class="note">Settings and rules take effect when the server starts. {{if $s.Live.Players}}{{$s.Live.Players}} players are online now.{{else}}Players online now: not known.{{end}}</p>
 {{if $v.Admin}}<button type="button" class="btn primary" data-save="restart" disabled>Save and restart</button>
 <button type="button" class="btn" data-save="later" disabled>Save for next restart</button>
 <button type="button" class="btn" data-save="discard" disabled>Discard</button>{{end}}

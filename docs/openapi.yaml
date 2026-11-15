@@ -1961,9 +1961,6 @@ components:
         max_length: { type: integer, description: Longest value of a string or list, in bytes. }
         format: { type: string, enum: [url], description: url is an http or https base address, without a query or fragment. }
         help: { type: string }
-        new_world_only:
-          type: boolean
-          description: A world rule. The game applies it only when the world is first created; a world that exists keeps the rules saved with it.
         caution: { type: boolean, description: The setting weakens the server's protection; help says how. }
         secret: { type: boolean, description: Not a rule. Set with the instance's secrets under secret_field; never shown. }
         secret_field: { type: string, enum: [announcements_token, problem_report_token] }

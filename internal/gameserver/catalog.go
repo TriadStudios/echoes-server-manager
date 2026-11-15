@@ -80,10 +80,6 @@ type GameSetting struct {
 	MaxLength int    `json:"max_length,omitempty"`
 	Format    string `json:"format,omitempty"`
 	Help      string `json:"help"`
-	// NewWorldOnly marks a world rule: the game applies it only when the
-	// world is first created, and a world that exists keeps the rules
-	// saved with it.
-	NewWorldOnly bool `json:"new_world_only"`
 	// Caution marks a setting that weakens the server's protection; Help
 	// says how.
 	Caution bool `json:"caution"`
@@ -99,18 +95,18 @@ func num(f float64) *float64 { return &f }
 // Rates share one range.
 func rate(key, label, help string) GameSetting {
 	return GameSetting{Key: key, Group: GroupWorld, Label: label, Type: TypeFloat, Default: "1", Min: num(0.1), Max: num(1000),
-		Help: help + " 1 is normal.", NewWorldOnly: true}
+		Help: help + " 1 is normal."}
 }
 
 func boolSetting(group, key, label, def, help string) GameSetting {
-	return GameSetting{Key: key, Group: group, Label: label, Type: TypeBool, Default: def, Help: help, NewWorldOnly: group == GroupWorld}
+	return GameSetting{Key: key, Group: group, Label: label, Type: TypeBool, Default: def, Help: help}
 }
 
 var settingGroups = []SettingGroup{
 	{ID: GroupAccess, Title: "Identity and access",
 		Note: "Read at every start of the server."},
 	{ID: GroupWorld, Title: "World rules",
-		Note: "The game applies these only when the world is first created. A world that exists keeps the rules saved with it, so a change here takes effect only for a new world (for example under a new world name)."},
+		Note: "The game applies these at every start of the server. A rule left empty uses the game's default and replaces the value saved with the world."},
 	{ID: GroupChat, Title: "Chat",
 		Note: "Read at every start of the server."},
 	{ID: GroupReports, Title: "Announcements and reports",
@@ -133,7 +129,7 @@ var gameSettings = []GameSetting{
 	{Key: "BossSummonCooldownSeconds", Group: GroupAccess, Label: "Boss summon cooldown", Type: TypeInt, Default: "0", Min: num(0), Unit: "seconds",
 		Help: "Wait between two runs of a tribute dungeon, counted from the end of the last run. 0: no wait."},
 	{Key: "LastWipe", Group: GroupAccess, Label: "Last wipe", Type: TypeDate,
-		Help: "The date the server list shows as the last wipe (UTC, not in the future). Unlike the world rules it is read at every start. Not set: the date the world keeps."},
+		Help: "The date the server list shows as the last wipe (UTC, not in the future). Read at every start. Not set: the date the world keeps."},
 
 	rate("HarvestRate", "Harvest rate", "Multiplies what gathering yields."),
 	rate("XPRate", "XP rate", "Multiplies the experience from gathering, taming and creature kills."),
@@ -145,11 +141,11 @@ var gameSettings = []GameSetting{
 	rate("CareRate", "Care rate", "How often a baby asks for care."),
 	rate("ImprintRate", "Imprint rate", "Multiplies the imprint gained with each care."),
 	{Key: "DayLengthMinutes", Group: GroupWorld, Label: "Day length", Type: TypeFloat, Default: "60", Min: num(5), Max: num(240), Unit: "minutes",
-		Help: "Length of one day and night in real minutes.", NewWorldOnly: true},
+		Help: "Length of one day and night in real minutes."},
 	boolSetting(GroupWorld, "StructureDecay", "Structure decay", "True",
 		"Structures nobody visits decay and are removed in time."),
 	{Key: "StructureDecayMultiplier", Group: GroupWorld, Label: "Decay time multiplier", Type: TypeFloat, Default: "1", Min: num(0.1), Max: num(10),
-		Help: "Multiplies the time before an unvisited structure decays.", NewWorldOnly: true},
+		Help: "Multiplies the time before an unvisited structure decays."},
 	boolSetting(GroupWorld, "PvP", "PvP", "False",
 		"Players can fight other players and damage their bases. Off: a PvE world."),
 	boolSetting(GroupWorld, "PvPStructureDamage", "PvP structure damage", "True",
@@ -157,19 +153,19 @@ var gameSettings = []GameSetting{
 	boolSetting(GroupWorld, "OfflineRaidProtection", "Offline raid protection", "False",
 		"Protect the structures and tames of a tribe while all of its members are offline."),
 	{Key: "ORPActivationMinutes", Group: GroupWorld, Label: "Protection delay", Type: TypeFloat, Default: "15", Min: num(0), Max: num(1440), Unit: "minutes",
-		Help: "How long a tribe must be offline before its protection starts.", NewWorldOnly: true},
+		Help: "How long a tribe must be offline before its protection starts."},
 	{Key: "ORPStructureDamageTaken", Group: GroupWorld, Label: "Protected structure damage", Type: TypeFloat, Default: "0.25", Min: num(0), Max: num(1),
-		Help: "Share of damage that protected structures take. 0: none.", NewWorldOnly: true},
+		Help: "Share of damage that protected structures take. 0: none."},
 	{Key: "ORPTameDamageTaken", Group: GroupWorld, Label: "Protected tame damage", Type: TypeFloat, Default: "0.25", Min: num(0), Max: num(1),
-		Help: "Share of damage that protected tames take. 0: none.", NewWorldOnly: true},
+		Help: "Share of damage that protected tames take. 0: none."},
 	{Key: "ORPTurretDamageMultiplier", Group: GroupWorld, Label: "Offline turret damage", Type: TypeFloat, Default: "2", Min: num(0), Max: num(10),
-		Help: "Multiplies the damage that the turrets of a protected tribe deal.", NewWorldOnly: true},
+		Help: "Multiplies the damage that the turrets of a protected tribe deal."},
 	{Key: "Difficulty", Group: GroupWorld, Label: "Difficulty", Type: TypeEnum, Default: "1",
 		Choices: []Choice{{"0", "Easy"}, {"1", "Normal"}, {"2", "Hard"}},
-		Help:    "Sets the highest level of wild creatures.", NewWorldOnly: true},
+		Help:    "Sets the highest level of wild creatures."},
 	{Key: "DeathDropMode", Group: GroupWorld, Label: "Dropped on death", Type: TypeEnum, Default: "Everything",
 		Choices: []Choice{{"Everything", "Everything"}, {"InventoryOnly", "Inventory only"}, {"Nothing", "Nothing"}},
-		Help:    "What a player drops on death: the inventory and what they wear and hold, the inventory only, or nothing.", NewWorldOnly: true},
+		Help:    "What a player drops on death: the inventory and what they wear and hold, the inventory only, or nothing."},
 
 	boolSetting(GroupChat, "ChatLog", "Chat log", "True",
 		"Keep a daily log file of all chat on the server."),

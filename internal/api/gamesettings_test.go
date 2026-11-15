@@ -36,10 +36,13 @@ func TestGameSettingsCatalog(t *testing.T) {
 	}
 	json.Unmarshal(rec.Body.Bytes(), &raw)
 	for _, s := range raw.Settings {
-		for _, field := range []string{"key", "group", "label", "type", "default", "help", "new_world_only", "caution", "secret"} {
+		for _, field := range []string{"key", "group", "label", "type", "default", "help", "caution", "secret"} {
 			if _, ok := s[field]; !ok {
 				t.Errorf("%v: no %s", s["key"], field)
 			}
+		}
+		if _, ok := s["new_world_only"]; ok {
+			t.Errorf("%v: still carries new_world_only", s["key"])
 		}
 	}
 	for _, rt := range Routes() {

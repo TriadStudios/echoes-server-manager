@@ -70,7 +70,7 @@ func (e *env) gameSettings(args []string) error {
 			return err
 		}
 	}
-	_, err = fmt.Fprintln(e.out, "Set one with create --set Key=Value or on the settings page; a secret with esm secret. World rules take effect only when a world is first created.")
+	_, err = fmt.Fprintln(e.out, "Set one with create --set Key=Value or on the settings page; a secret with esm secret. World rules apply at every start of the server.")
 	return err
 }
 
@@ -123,9 +123,6 @@ func allowedWords(s gameserver.GameSetting) string {
 // notes are the flags of a setting and its label.
 func notes(s gameserver.GameSetting) string {
 	var out []string
-	if s.NewWorldOnly {
-		out = append(out, "new world only")
-	}
 	if s.Caution {
 		out = append(out, "caution")
 	}
