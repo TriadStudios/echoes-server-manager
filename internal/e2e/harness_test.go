@@ -28,7 +28,12 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
-func TestMain(m *testing.M) { os.Exit(testkit.Run(m)) }
+func TestMain(m *testing.M) {
+	if code, ok := ctrlCHelper(); ok {
+		os.Exit(code) // this run only pressed Ctrl+C for a test
+	}
+	os.Exit(testkit.Run(m))
+}
 
 // Each harness gets its own ports so parallel tests never collide.
 var portBlock atomic.Int32
