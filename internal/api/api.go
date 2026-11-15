@@ -6,7 +6,9 @@
 // the session cookie of a logged-in user (with X-CSRF-Token on every
 // change), or by arriving on the unix socket (admin). One call, setting a
 // login's password without the current one, is answered on the socket
-// only. Tokens are never read from URLs. Every call that changes something
+// only. Tokens are never read from URLs. The API listener, a second TCP
+// listener for clients on other machines (APIListenerHandler), takes API
+// tokens only unless its page is on. Every call that changes something
 // (or tries to) writes an audit entry, and so does every call refused for
 // lack of a role (403); a read refused for a missing login (401) does not.
 // Errors always have the shape
@@ -106,6 +108,9 @@ type Options struct {
 	// hosts or gets 421 (see hostSet); the unix socket is not checked.
 	Listen      string
 	PublicHosts []string
+	// APIListener, when set, is the API listener, which APIListenerHandler
+	// serves; GET /box shows it.
+	APIListener *APIListenerInfo
 	// Steam installs builds from Steam sources (optional).
 	Steam *steam.Manager
 	// Release says whether a newer ESM release is out (optional), and
@@ -125,7 +130,7 @@ type Server struct {
 	mux        *http.ServeMux
 	paths      *http.ServeMux      // every API path once, for 405 answers
 	allow      map[string][]string // path pattern -> methods
-	hosts      *hostSet            // nil: no Host check
+	main       *listener           // the main TCP listener
 	doctorBusy atomic.Bool         // a health check is running
 	// logDownloads holds a token for each log download that runs.
 	logDownloads chan struct{}
@@ -152,6 +157,9 @@ type route struct {
 	role         auth.Role
 	action       string // audit action
 	h            handler
+	// login marks the calls of logging in and out (setup, login, logout),
+	// which a listener that takes API tokens only does not answer.
+	login bool
 }
 
 // Route describes a registered API endpoint.
@@ -179,6 +187,9 @@ func Routes() []Route {
 
 var routes []route
 
+// loginActions are the routes of logging in and out (see route.login).
+var loginActions = map[string]bool{"setup.status": true, "setup": true, "login": true, "logout": true}
+
 func init() {
 	const (
 		read  = auth.RoleRead
@@ -186,7 +197,8 @@ func init() {
 		admin = auth.RoleAdmin
 	)
 	r := func(method, path string, ac access, role auth.Role, action string, h handler) {
-		routes = append(routes, route{method, path, ac, role, action, h})
+		routes = append(routes, route{method: method, path: path, access: ac, role: role, action: action, h: h,
+			login: loginActions[action]})
 	}
 	const p = "/api/v1"
 	r("GET", p+"/setup", public, "", "setup.status", (*Server).setupStatus)
@@ -268,7 +280,10 @@ func New(o Options) *Server {
 		o.FailDelay = DefaultFailDelay
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
-		hosts: newHostSet(o.Listen, o.PublicHosts), logDownloads: make(chan struct{}, maxLogDownloads)}
+		logDownloads: make(chan struct{}, maxLogDownloads)}
+	s.main = &listener{hosts: newHostSet(o.Listen, o.PublicHosts), tls: o.TLS, https: o.HTTPS,
+		behindProxy: o.Config != nil && o.Config.BehindTLSProxy,
+		hostHint:    "use localhost, or add the name to public_hosts in esm.json"}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
 		if _, ok := s.allow[rt.path]; !ok {
@@ -284,6 +299,12 @@ func New(o Options) *Server {
 		page = o.Page(s.apiOnly())
 	}
 	s.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.listenerOf(r).tokensOnly {
+			web.SetSecurityHeaders(w.Header())
+			writeError(w, http.StatusNotFound, "not_found",
+				`the API listener serves no web page: it takes API tokens only, unless "page": true is set in api_listener in esm.json`)
+			return
+		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			page.ServeHTTP(w, r)
 			return
@@ -482,6 +503,10 @@ func (s *Server) wrap(rt route) http.Handler {
 
 // authenticate fills c with the caller and checks the route's role.
 func (s *Server) authenticate(r *http.Request, rt route, c *call) error {
+	if rt.login && s.listenerOf(r).tokensOnly {
+		return errStatus(http.StatusForbidden, TokensOnly,
+			`the API listener takes API tokens only (Authorization: Bearer <token>): login, setup and logout are answered there only with "page": true in api_listener in esm.json`)
+	}
 	if rt.access == public {
 		return nil
 	}
@@ -536,12 +561,17 @@ func (s *Server) identify(r *http.Request, c *call) error {
 	if err != nil || ck.Value == "" {
 		return nil
 	}
+	l := s.listenerOf(r)
+	if l.tokensOnly {
+		return errStatus(http.StatusUnauthorized, TokensOnly,
+			`the API listener takes API tokens only: send Authorization: Bearer <token>; a login's session is taken there only with "page": true in api_listener in esm.json`)
+	}
 	sess, err := s.o.Auth.Session(ck.Value)
 	if err != nil {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
-	if err := auth.CheckCookieRequest(r, sess, auth.Scheme(s.o.HTTPS)); err != nil {
+	if err := auth.CheckCookieRequest(r, sess, auth.Scheme(l.https)); err != nil {
 		return err
 	}
 	c.role = sess.Role
