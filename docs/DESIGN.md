@@ -1086,14 +1086,19 @@ of `esm service install` has `Restart=always`). Otherwise, and always on
 Windows, where ESM has no service manager, the call is refused with 409
 `no_service_manager` and nothing changes, unless the caller sets
 `exit_anyway`; ESM then updates, ends, and has to be started by hand (the
-page asks before it sends that). An update holds the lock file
-`<binary>.update.lock` next to the binary while it runs (made with
-`O_EXCL`), so updates from the command line and the service never replace
-the binary at the same time: a second one gets 409 `busy`, or the same
-error on the command line. A lock older than 15 minutes was left by an
-update that did not finish (its downloads end within 11 minutes) and is
-taken over. Once an update through the API has put a new binary in place,
-that service takes no other until it has ended.
+page asks before it sends that). After a call that ends the service for a
+restart, the page looks at `GET /api/v1/box` every 2 seconds and loads
+`/box` again (no notice, no health check) once ESM answers with the new
+version, or answers without the login (sessions are kept in memory, so a
+restarted ESM has none); it gives up after 60 seconds and says that ESM
+did not come back. An update holds the lock file `<binary>.update.lock`
+next to the binary while it runs (made with `O_EXCL`), so updates from the
+command line and the service never replace the binary at the same time: a
+second one gets 409 `busy`, or the same error on the command line. A lock
+older than 15 minutes was left by an update that did not finish (its
+downloads end within 11 minutes) and is taken over. Once an update through
+the API has put a new binary in place, that service takes no other until
+it has ended.
 
 **The release check.** With `update_check` on, the service looks up the
 newest release (the release list alone, never a binary) at most every
