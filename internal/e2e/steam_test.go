@@ -207,6 +207,11 @@ func TestSteamAndSelfUpdateRoles(t *testing.T) {
 	if box.UpdateAvailable || box.Release.Enabled || box.Release.Note == "" {
 		t.Fatalf("release status in tests: %+v", box.Release)
 	}
+	// A check by hand, which any role may ask for, looks nothing up either.
+	var rs release.Status
+	if st := h.call("POST", "/api/v1/box/release-check", rd.Token, struct{}{}, &rs); st != http.StatusOK || rs.Enabled || rs.Note != box.Release.Note {
+		t.Fatalf("release check in tests: %d %+v", st, rs)
+	}
 }
 
 // releaseServer serves release v9.9.9 over TLS on loopback, with the binary
@@ -251,6 +256,13 @@ func releaseServer(t *testing.T, restartedBy string) (exe string, tune func(*ser
 func TestSelfUpdateThroughTheAPI(t *testing.T) {
 	exe, tune := releaseServer(t, "systemd")
 	h := newESMTuned(t, "process", tune)
+	// A check by hand sees the release; a development build cannot tell
+	// whether it is newer.
+	var rs release.Status
+	h.must(http.StatusOK, "POST", "/api/v1/box/release-check", struct{}{}, &rs)
+	if !rs.Enabled || rs.Latest != "v9.9.9" || rs.Available || rs.Checked.IsZero() || !strings.Contains(rs.Note, "not a release version") {
+		t.Fatalf("release check: %+v", rs)
+	}
 	var eb api.ErrorBody
 	if st := h.call("POST", "/api/v1/box/self-update", h.admin, struct{}{}, &eb); st != http.StatusConflict || eb.Error.Code != "unknown_version" {
 		t.Fatalf("a development build without force: %d %+v", st, eb)

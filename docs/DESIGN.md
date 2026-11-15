@@ -132,7 +132,8 @@ are refused, so typos are reported.
 | `log_level`            | `info`            | `debug`, `info`, `warn` or `error`. |
 | `steam_app_id`         | (none)            | The game's Steam app id (digits). Written to `steam_appid.txt` next to the server binary of every build installed from then on. No default; `esm doctor` warns while it is unset. |
 | `steam_runtime_dir`    | `<root>/steam/linux64` | Folder with the 64-bit `steamclient.so` and `libsteamwebrtc.so`; put first on every server's `LD_LIBRARY_PATH`. A relative path is taken from the root. |
-| `update_check`         | `true`            | Let the service look up the newest ESM release (at most every 6 hours, only while someone looks at the box). It never updates anything by itself. |
+| `update_check`         | `true`            | Let the service look up the newest ESM release (at most every `update_check_every`, only while someone looks at the box, and at once when someone asks; see [Trust](#trust)). It never updates anything by itself. |
+| `update_check_every`   | `5m`              | How often the service looks up the newest ESM release at most. At least `2m`; to stop looking, set `update_check` to `false`. Not written to the file unless set. |
 | `steamcmd`             | `<root>/steamcmd/steamcmd.sh` | SteamCMD (`steamcmd.exe` on Windows). A relative path is taken from the root. |
 | `steam_sources`        | (none)            | Steam apps builds come from: `name`, `app_id`, `branch` (empty for the default branch), `executable` (per system, a path inside the app's files), `default_map`, `channel`, `check_every` (default `15m`, `"0"` off, else at least `1m`). See [Builds from Steam](#builds-from-steam). |
 | `keep_steam_builds`    | `3`               | Builds of each Steam source kept, the newest by build id. After each install from a source, its older builds that no instance uses are removed. At least `1`. |
@@ -1086,6 +1087,46 @@ update that did not finish (its downloads end within 11 minutes) and is
 taken over. Once an update through the API has put a new binary in place,
 that service takes no other until it has ended.
 
+**The release check.** With `update_check` on, the service looks up the
+newest release (the release list alone, never a binary) at most every
+`update_check_every` (default 5 minutes, at least 2 minutes), and only
+while the box is in use. Every screen of the page and every
+`GET /api/v1/box` reads the last result; one that finds it
+`update_check_every` old or older starts a new look in the background and
+still answers with the last result and its time, and the answers after
+that look ended carry the new one. Between those reads a watcher waits
+until the result turns `update_check_every` old and then looks again if a
+read came since the last look started; if none came, it ends, and nothing
+is looked up until the box is read again. So after the last read at most
+one more look is made, and a read that comes within an interval of the
+one before gets a result never older than the interval plus one look
+(how late the watcher wakes up adds to that, but never ends it while the
+box is read); after a longer pause the first read shows the old result,
+with when it was made, and starts a new look. A look gets 15 seconds; one
+that gets no answer ends, and its result says what failed.
+`POST /api/v1/box/release-check` (the Box screen's "Check now", any role,
+as it changes nothing) looks at once and waits for the answer. One look
+runs at a time: a check by hand while a look runs waits for that one; one
+within 60 seconds of the end of the last look gets its result again
+(`reused`) without asking GitHub, so a burst of clicks asks once. With
+`update_check` off nothing is looked up, by hand neither, and the page
+has no "Check now". `esm version --check` asks GitHub itself, each time.
+
+GitHub answers a limited number of lookups an hour from one address
+without a login (60), and `esm update-self` and the API's self-update use
+the same lookup, so the check spends few of them. Every look sends the
+ETag of the last answer in `If-None-Match`; GitHub answers 304 Not
+Modified while the release list is unchanged, and the check keeps the
+release it knew, with the new time. A look that GitHub refuses with 403 or
+429 (asked too often) makes the check wait until the time the answer
+names: `Retry-After` (seconds or a date), or `X-RateLimit-Reset` when
+`X-RateLimit-Remaining` is 0 or missing, the later of the two, held
+between 1 minute and 1 hour; 15 minutes when it names none. Until then
+nothing is looked up, by the reads, the watcher or a check by hand, which
+answers the last result with `reused` and `retry_after`. The status keeps
+the release known before, says until when it waits and when that release
+was looked up, and carries `retry_after`.
+
 **Steam.** A Steam build is trusted as far as Steam and the accounts that
 upload builds to the app are: ESM does not check a signature of its own on
 it. SteamCMD (Valve's program) runs with ESM's rights. The manifest of a
@@ -1229,7 +1270,10 @@ skipped.
   password); `PUT /api/v1/steam/{name}/password` sets one (admin); `POST
   /api/v1/builds` with `{"source": "steam:<name>"}` runs a source (admin;
   200 when its build is installed already). `GET /api/v1/box` carries
-  `update_available` and `release`; `POST /api/v1/box/self-update` (admin)
+  `update_available` and `release`; `POST /api/v1/box/release-check` (read
+  role, CSRF token from a browser session) looks for a newer release at
+  once and answers with that `release` status (see
+  [The release check](#trust)); `POST /api/v1/box/self-update` (admin)
   puts the newest release in place and ends the service for its service
   manager to start again (refused with 409 `no_service_manager` when
   nothing would, unless `exit_anyway` is set; see [Trust](#trust)).
@@ -1433,6 +1477,15 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
   every free port of the ranges; other roles are told it needs the admin
   role. The Builds screen offers installing only to admins.
+- **Release check by hand.** The Box screen's ESM version card shows the
+  newest release, when ESM last looked and what failed, if anything. Its
+  "Check now" button (every role, while `update_check` is on) calls
+  `POST /api/v1/box/release-check` and then loads the Box screen again
+  with a notice (a new look, a result less than a minute old given again,
+  or GitHub's request to wait, whose time the card's note names), without
+  `?check=1`, so that a health check on the screen is not run again
+  unasked. An admin then gets the update button if the newest release is
+  newer.
 - **Fonts.** The system's own fonts: a narrow sans-serif for headings, a
   plain one for text, a monospace for numbers and logs. No font files are
   shipped. Fonts under an open licence can be added later as `.woff2`
@@ -1756,7 +1809,9 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   A file written by a release that has `keep_steam_builds` holds that
   setting; older releases do not know it and refuse a configuration file
   with a setting they do not know. Before going back to one with a forced
-  self-update, remove the `keep_steam_builds` line. In the same way, an
+  self-update, remove the `keep_steam_builds` line, and an
+  `update_check_every` line if you added one (it is not written by
+  default; releases before it was added refuse it). In the same way, an
   instance with an announcements or problem report token set has a
   `secrets.json` that older releases cannot read: clear its tokens first
   (`esm secret <name> announcements-token --clear`, and the same for

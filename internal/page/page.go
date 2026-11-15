@@ -173,6 +173,12 @@ var notices = map[string]string{
 	"removed":   "Removed.",
 	"revoked":   "Token revoked.",
 	"password":  "Password changed. Your other sessions have ended; this one goes on.",
+	// After "Check now" on the Box screen: a new look, the result of a
+	// look that ended less than a minute before, or the release server's
+	// request to wait.
+	"release":        "Looked for a newer ESM release; the result is under ESM version.",
+	"release-recent": "ESM looked less than a minute ago, so that result is shown; it did not ask again.",
+	"release-wait":   "The release server asked ESM to wait before it asks again; the note under ESM version says until when.",
 }
 
 // render writes the screen template with v.

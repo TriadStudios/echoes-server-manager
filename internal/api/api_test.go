@@ -148,6 +148,12 @@ func TestRolesOfRoutes(t *testing.T) {
 			if r.Role != "read" {
 				t.Errorf("%s %s is for every login, has %q", r.Method, r.Path, r.Role)
 			}
+		case r.Method == "POST" && r.Path == "/api/v1/box/release-check":
+			// Looking for a newer release by hand changes nothing: whoever
+			// may read the box.
+			if r.Role != "read" {
+				t.Errorf("%s %s is for every role that reads the box, has %q", r.Method, r.Path, r.Role)
+			}
 		case r.Path == "/api/v1/instances/{name}/backups/{id}/download":
 			// A backup is a copy of the whole world: operators and admins.
 			if r.Role != "operator" {

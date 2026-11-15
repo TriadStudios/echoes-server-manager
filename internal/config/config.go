@@ -47,6 +47,12 @@ const (
 	// DefaultKeepSteamBuilds is how many builds of a Steam source, the
 	// newest by build id, an install from that source leaves in place.
 	DefaultKeepSteamBuilds = 3
+	// DefaultUpdateCheckEvery is how often the service looks for a newer
+	// ESM release at most when update_check_every is not set, and
+	// MinUpdateCheckEvery the shortest update_check_every allowed (the
+	// release server is not asked more often).
+	DefaultUpdateCheckEvery = 5 * time.Minute
+	MinUpdateCheckEvery     = 2 * time.Minute
 	// DefaultRootName is the folder under the user's home used when neither
 	// --root nor ESM_ROOT is given. A service install would pass
 	// --root /opt/durinn instead.
@@ -138,9 +144,14 @@ type Config struct {
 	// relative path is taken from the root.
 	SteamRuntimeDir string `json:"steam_runtime_dir,omitempty"`
 	// UpdateCheck lets the service look up the newest ESM release (at most
-	// every 6 hours, and only while someone looks at the box) to say when a
-	// newer one is out. It never updates anything by itself. On by default.
+	// every UpdateCheckEvery, and only while someone looks at the box) to
+	// say when a newer one is out. It never updates anything by itself. On
+	// by default.
 	UpdateCheck bool `json:"update_check"`
+	// UpdateCheckEvery is how often that look is made at most (see
+	// UpdateCheckInterval): default DefaultUpdateCheckEvery, at least
+	// MinUpdateCheckEvery. Unset, it is not written to the file.
+	UpdateCheckEvery *Duration `json:"update_check_every,omitempty"`
 	// SteamCMD is the path of SteamCMD (steamcmd.sh on Linux, steamcmd.exe
 	// on Windows), used to download builds of SteamSources. Empty means
 	// <root>/steamcmd/steamcmd.sh (or .exe); a relative path is taken from
@@ -243,6 +254,16 @@ func (c *Config) SocketPath() string {
 	return filepath.Join(c.Root, "esm.sock")
 }
 
+// UpdateCheckInterval is how often the service looks for a newer ESM
+// release at most: UpdateCheckEvery, or DefaultUpdateCheckEvery when it is
+// not set.
+func (c *Config) UpdateCheckInterval() time.Duration {
+	if c.UpdateCheckEvery == nil {
+		return DefaultUpdateCheckEvery
+	}
+	return c.UpdateCheckEvery.D()
+}
+
 // DefaultImportDir is the import folder inside the root.
 const DefaultImportDir = "imports"
 
@@ -326,6 +347,9 @@ func (c *Config) Validate() error {
 	}
 	if c.BackupSaveWait < 0 {
 		return errors.New("config: backup_save_wait must not be negative")
+	}
+	if c.UpdateCheckEvery != nil && c.UpdateCheckEvery.D() < MinUpdateCheckEvery {
+		return errors.New("config: update_check_every must be at least 2m (to stop looking, set update_check to false)")
 	}
 	if c.SteamAppID != "" && !steamAppIDRe.MatchString(c.SteamAppID) {
 		return errors.New("config: steam_app_id must be the app id's digits (1 to 10 of them)")

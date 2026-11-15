@@ -63,7 +63,9 @@ type site struct {
 	admin   string
 }
 
-func newSite(t *testing.T) *site {
+// newSite starts ESM on a new root; tune, when given, changes its options
+// first.
+func newSite(t *testing.T, tune ...func(*service.Options)) *site {
 	t.Helper()
 	root, err := os.MkdirTemp("", "esmp")
 	if err != nil {
@@ -85,11 +87,15 @@ func newSite(t *testing.T) *site {
 	}
 	s := &site{t: t, root: root, stderr: &lockedBuffer{},
 		http: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-	s.svc, err = service.Start(service.Options{
+	o := service.Options{
 		Root: root, Version: "test", Stderr: s.stderr,
 		WatchInterval: 50 * time.Millisecond, SchedulerInterval: time.Hour, KeepAlive: 200 * time.Millisecond,
 		PortHost: "127.0.0.1", AuthOptions: auth.Options{Iterations: 1000}, FailDelay: 10 * time.Millisecond,
-	})
+	}
+	for _, f := range tune {
+		f(&o)
+	}
+	s.svc, err = service.Start(o)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

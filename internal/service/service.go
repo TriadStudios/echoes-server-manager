@@ -218,7 +218,7 @@ func Start(o Options) (_ *Service, err error) {
 	if !cfg.UpdateCheck {
 		checkNote = "update_check is off in " + config.FileName
 	}
-	checker := release.NewChecker(s.rel, o.Version, 0, checkNote == "", checkNote)
+	checker := release.NewChecker(s.rel, o.Version, cfg.UpdateCheckInterval(), checkNote == "", checkNote)
 
 	// Listen before adopting servers, so a second ESM on the same root
 	// stops here.
