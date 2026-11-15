@@ -247,6 +247,36 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/box/release-check:
+    post:
+      tags: [box]
+      summary: Look for a newer ESM release now
+      description: |
+        Looks up the newest release on GitHub (https) now, waits for the
+        answer and returns the same release status that `GET /api/v1/box`
+        carries in `release`; later calls of `GET /api/v1/box` show it too.
+        It changes nothing, so every role that may read the box may call
+        it; a browser session sends the CSRF token as for every POST.
+
+        One look runs at a time: while one runs (the service's own, or
+        another call's), the call waits for it instead of starting another.
+        When the last look ended less than 30 seconds before, its result is
+        returned at once without asking GitHub, with `reused` set and a
+        `note` that says so. A look that gets no answer within 15 seconds
+        ends, and the status says what failed. With `update_check: false`
+        in esm.json nothing is looked up and the status is the one that
+        says so (`enabled` false). Every call writes an audit entry
+        `box.release_check`.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: The release status after the look.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/box/self-update:
     post:
       tags: [box]
@@ -1227,16 +1257,27 @@ components:
       type: object
       description: |
         The last look for a newer ESM release. The service looks at most
-        every 6 hours, and only while someone asks for the box; with
-        `update_check: false` in esm.json it never does.
+        every `update_check_every` (esm.json, default 5m, at least 1m), and
+        only while someone asks for the box: a `GET /api/v1/box` that finds
+        the last result that old or older starts a new look in the
+        background and still answers with the last result; the calls after
+        that look ended show its result. While a `GET /api/v1/box` (or a
+        screen of the page) came within the last `update_check_every`, the
+        service also looks again each time the result turns that old, so
+        such a call gets a result at most the interval plus one look old.
+        `POST /api/v1/box/release-check` looks at once. With
+        `update_check: false` in esm.json it never looks.
       properties:
         enabled: { type: boolean }
-        checked: { type: string, format: date-time }
+        checked: { type: string, format: date-time, description: When the last look started. }
         current: { type: string, description: This ESM's version. }
         latest: { type: string, description: The newest release's tag ("" when not known). }
         available: { type: boolean }
         url: { type: string, description: The newest release's page. }
-        note: { type: string, description: Why available cannot be known, or what failed. }
+        note: { type: string, description: Why available cannot be known, or what failed; for a reused result, that it was reused. }
+        reused:
+          type: boolean
+          description: Only in the answer to POST /box/release-check, when the last look ended less than 30 seconds before and its result was returned without asking GitHub again. Always false in GET /box.
     SelfUpdateRequest:
       type: object
       additionalProperties: false

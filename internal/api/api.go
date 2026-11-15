@@ -198,6 +198,10 @@ func init() {
 	// The check test-binds every free port of both ranges: admin only.
 	r("GET", p+"/box/doctor", required, admin, "box.doctor", (*Server).doctor)
 	r("GET", p+"/box/firewall", required, read, "box.firewall", (*Server).firewall)
+	// Looking for a newer ESM release by hand changes nothing: whoever may
+	// read the box (a cookie session still sends the CSRF token, as for
+	// every POST).
+	r("POST", p+"/box/release-check", required, read, "box.release_check", (*Server).releaseCheck)
 	// Replacing ESM's own binary: admin only, and only when asked.
 	r("POST", p+"/box/self-update", required, admin, "box.self_update", (*Server).selfUpdate)
 	r("GET", p+"/steam", required, read, "steam.list", (*Server).listSteam)

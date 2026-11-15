@@ -192,7 +192,8 @@ type Box struct {
 	// root, as the system reports them now.
 	Usage sysinfo.Box `json:"usage"`
 	// UpdateAvailable says that a newer ESM release is out; Release has
-	// the details of the last check (at most every 6 hours; off with
+	// the details of the last check (at most every update_check_every,
+	// default 5 minutes, or by hand with POST /box/release-check; off with
 	// update_check false). Nothing is updated without being asked.
 	UpdateAvailable bool           `json:"update_available"`
 	Release         release.Status `json:"release"`

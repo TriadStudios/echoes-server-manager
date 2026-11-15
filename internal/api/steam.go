@@ -31,6 +31,23 @@ type SelfUpdateResult struct {
 	Note       string `json:"note"`
 }
 
+// releaseCheck answers POST /box/release-check: it looks for a newer ESM
+// release now and answers with the release status that GET /box carries
+// (see release.Checker.CheckNow: a check that runs is waited for, a result
+// less than 30 seconds old is given again, the wait is bounded; with
+// update_check off nothing is looked up).
+func (s *Server) releaseCheck(w http.ResponseWriter, r *http.Request, c *call) error {
+	if err := decode(r, &struct{}{}); err != nil {
+		return err
+	}
+	c.target = "esm"
+	rs := release.Status{Current: s.o.Version, Note: "not checked"}
+	if s.o.Release != nil {
+		rs = s.o.Release.CheckNow(r.Context())
+	}
+	return writeJSON(w, http.StatusOK, rs)
+}
+
 func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) error {
 	var req SelfUpdateRequest
 	if err := decode(r, &req); err != nil {
