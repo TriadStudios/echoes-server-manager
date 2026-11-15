@@ -172,6 +172,7 @@ var notices = map[string]string{
 	"installed": "Build installed.",
 	"removed":   "Removed.",
 	"revoked":   "Token revoked.",
+	"password":  "Password changed. Your other sessions have ended; this one goes on.",
 }
 
 // render writes the screen template with v.
