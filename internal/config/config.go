@@ -52,7 +52,7 @@ const (
 	// MinUpdateCheckEvery the shortest update_check_every allowed (the
 	// release server is not asked more often).
 	DefaultUpdateCheckEvery = 5 * time.Minute
-	MinUpdateCheckEvery     = time.Minute
+	MinUpdateCheckEvery     = 2 * time.Minute
 	// DefaultRootName is the folder under the user's home used when neither
 	// --root nor ESM_ROOT is given. A service install would pass
 	// --root /opt/durinn instead.
@@ -349,7 +349,7 @@ func (c *Config) Validate() error {
 		return errors.New("config: backup_save_wait must not be negative")
 	}
 	if c.UpdateCheckEvery != nil && c.UpdateCheckEvery.D() < MinUpdateCheckEvery {
-		return errors.New("config: update_check_every must be at least 1m (to stop looking, set update_check to false)")
+		return errors.New("config: update_check_every must be at least 2m (to stop looking, set update_check to false)")
 	}
 	if c.SteamAppID != "" && !steamAppIDRe.MatchString(c.SteamAppID) {
 		return errors.New("config: steam_app_id must be the app id's digits (1 to 10 of them)")

@@ -248,7 +248,7 @@ func TestImportDir(t *testing.T) {
 // update_check_every sets how often the service looks for a newer ESM
 // release: 5 minutes when it is not set (and then it is not written to the
 // file, so an older ESM still reads it), a duration string or a number of
-// seconds otherwise, never below a minute.
+// seconds otherwise, never below 2 minutes.
 func TestUpdateCheckEvery(t *testing.T) {
 	st := openStore(t)
 	cfg, _, err := Load(st)
@@ -263,8 +263,8 @@ func TestUpdateCheckEvery(t *testing.T) {
 	}
 	for body, want := range map[string]time.Duration{
 		`{"update_check_every":"10m"}`:                       10 * time.Minute,
-		`{"update_check_every":"1m"}`:                        time.Minute,
-		`{"update_check_every":90}`:                          90 * time.Second,
+		`{"update_check_every":"2m"}`:                        2 * time.Minute,
+		`{"update_check_every":150}`:                         150 * time.Second,
 		`{"update_check_every":"2h","update_check":false}`:   2 * time.Hour,
 		`{"update_check":true,"update_check_every":"1h30m"}`: 90 * time.Minute,
 	} {
@@ -285,6 +285,9 @@ func TestUpdateCheckEvery(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"update_check_every":"59s"}`,
+		`{"update_check_every":"1m"}`,
+		`{"update_check_every":"1m59s"}`,
+		`{"update_check_every":119}`,
 		`{"update_check_every":"0"}`,
 		`{"update_check_every":0}`,
 		`{"update_check_every":"-5m"}`,
@@ -302,16 +305,16 @@ func TestUpdateCheckEvery(t *testing.T) {
 		if strings.HasPrefix(body, `{"update_check_every":"often"`) {
 			continue
 		}
-		if !strings.Contains(err.Error(), "config: update_check_every must be at least 1m") {
+		if !strings.Contains(err.Error(), "config: update_check_every must be at least 2m") {
 			t.Errorf("%s: %v", body, err)
 		}
 	}
 	// Peek, which the command line uses, reads it the same way.
 	root := filepath.Join(t.TempDir(), "root")
 	os.MkdirAll(root, 0o700)
-	os.WriteFile(filepath.Join(root, FileName), []byte(`{"update_check_every":"30s"}`), 0o600)
+	os.WriteFile(filepath.Join(root, FileName), []byte(`{"update_check_every":"90s"}`), 0o600)
 	if _, _, err := Peek(root); err == nil || !strings.Contains(err.Error(), "update_check_every") {
-		t.Fatalf("peek of 30s: %v", err)
+		t.Fatalf("peek of 90s: %v", err)
 	}
 	os.WriteFile(filepath.Join(root, FileName), []byte(`{"update_check_every":"15m"}`), 0o600)
 	if cfg, _, err := Peek(root); err != nil || cfg.UpdateCheckInterval() != 15*time.Minute {
