@@ -7,41 +7,51 @@
 <section class="stack" aria-labelledby="installed-h">
 <div class="spread">
 <h2 class="label" id="installed-h">Installed</h2>
-{{if and $v.Admin $d.Builds}}<button type="button" class="btn danger" data-act="prune" data-confirm="Remove every build that no server runs or keeps for a rollback?">Remove unused builds</button>{{end}}
+{{if and $v.Admin $d.Builds}}<div class="actions">
+{{if not $d.Unused}}<span class="note">No build is unused.</span>{{end}}
+<button type="button" class="btn danger" data-act="prune"{{if $d.Unused}} data-confirm="Remove the {{plural $d.Unused "build"}} that no server runs or keeps for a rollback? This frees {{size $d.Freed}}."{{else}} disabled{{end}}>Remove unused builds{{if $d.Unused}} (frees {{size $d.Freed}}){{end}}</button>
+</div>{{end}}
 </div>
 {{if $d.Builds}}<div class="panel flush scroll">
 <table class="list">
-<caption class="sr">Installed builds</caption>
+<caption class="sr">Installed builds, newest first</caption>
 <thead><tr>
 <th scope="col">Version</th>
 <th scope="col">Channel</th>
-<th scope="col">Commit</th>
+<th scope="col">Status</th>
 <th scope="col">Installed</th>
 <th scope="col">Size</th>
-<th scope="col">Used by</th>
 {{if $v.Admin}}<th scope="col">Action</th>{{end}}
 </tr></thead>
 <tbody>
-{{range $d.Builds}}<tr>
-<th scope="row" class="mono">{{.Version}}</th>
+{{range $d.Builds}}<tr{{if eq .Status "unused"}} class="unused"{{end}}>
+<th scope="row" class="mono"><span{{if .Commit}} title="Commit {{.Commit}}"{{end}}>{{.Version}}</span>{{if .Commit}}<span class="sr"> (commit {{.Commit}})</span>{{end}}{{if .Newest}} <span class="badge changed {{.Channel}}">Newest{{if eq .Channel "test"}} test{{end}}</span>{{end}}</th>
 <td><span class="badge {{.Channel}}">{{.Channel}}</span></td>
-<td class="mono dim">{{if .Commit}}{{.Commit}}{{else}}none{{end}}</td>
-<td><time datetime="{{iso .Installed}}">{{when .Installed}}</time></td>
-<td class="mono">{{size .SizeBytes}}</td>
-<td>{{if .Current}}{{join .Current ", "}}{{end}}{{if and .Current .Kept}}; {{end}}{{if .Kept}}<span class="dim">kept for a rollback by {{join .Kept ", "}}</span>{{end}}{{if not .UsedBy}}<span class="dim">nothing</span>{{end}}</td>
+<td>{{if .Current}}<div class="tagrow"><span class="pill ok"><span class="dot" aria-hidden="true"></span>Running on</span>{{range .Current}} <span class="srv">{{.}}</span>{{end}}</div>{{end}}{{if .Kept}}<div class="tagrow"><span class="pill info"><span class="dot" aria-hidden="true"></span>Kept for rollback</span>{{range .Kept}} <span class="srv">{{.}}</span>{{end}}</div>{{end}}{{if eq .Status "unused"}}<span class="pill muted"><span class="dot" aria-hidden="true"></span>Unused</span>{{end}}</td>
+<td class="nowrap"><time datetime="{{iso .Installed}}">{{when .Installed}}</time></td>
+<td class="mono nowrap">{{size .SizeBytes}}</td>
 {{if $v.Admin}}<td>{{if .UsedBy}}<span class="dim">in use</span>{{else}}<button type="button" class="btn danger" data-act="remove-build" data-id="{{.Version}}" data-confirm="Remove build {{.Version}}?">Remove</button>{{end}}</td>{{end}}
 </tr>{{end}}
 </tbody>
 </table>
 </div>{{else}}<p class="panel empty">No builds installed yet.</p>{{end}}
-<p class="note">A build a server has run is kept for a rollback (the newest few per server). Every file of every build was checked against its manifest when it was installed. Updating a server to another build is done from the server's Overview.</p>
+<p class="note">Newest is the build of its channel that was installed last; point at a version to see its commit. A build a server has run is kept for a rollback (the newest few per server). Every file of every build was checked against its manifest when it was installed. Updating a server to another build is done from the server's Overview.</p>
 </section>
 
-<section class="stack" aria-labelledby="install-h">
+<section class="panel" aria-labelledby="install-h">
 <h2 class="label" id="install-h">Install a build</h2>
-<p class="note">A build is a program that runs with ESM's own rights: it can read everything ESM keeps. Install only builds you trust.{{if not $v.Admin}} Installing builds needs the admin role.{{end}}</p>
-<div class="grid">
-<form class="panel stack" data-form="install" aria-labelledby="folder-h">
+<p class="alert warn"><strong class="tag">Warning</strong> A build is a program that runs with ESM's own rights: it can read everything ESM keeps. Install only builds you trust.</p>
+{{if not $v.Admin}}<p class="note">Installing builds needs the admin role.</p>{{end}}
+<fieldset class="bare tabset">
+<legend class="sr">Where the build comes from</legend>
+<input type="radio" name="from" id="from-folder" class="tabin t-folder" checked>
+<label for="from-folder" class="tablabel">From a folder</label>
+<input type="radio" name="from" id="from-archive" class="tabin t-archive">
+<label for="from-archive" class="tablabel">From an archive or web address</label>
+<input type="radio" name="from" id="from-steam" class="tabin t-steam">
+<label for="from-steam" class="tablabel">From Steam</label>
+
+<form class="tabbody b-folder" data-form="install" aria-labelledby="folder-h">
 <h3 class="sub" id="folder-h">From a folder in the import folder</h3>
 <fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Folder</legend>
@@ -50,7 +60,8 @@
 <p class="note">ESM reads local builds only from its import folder: imports in ESM's folder, unless build_import_dir in esm.json names another. The folder needs a manifest.json that lists every file with its SHA-256.</p>
 {{if $v.Admin}}<button type="submit" class="btn primary">Check and install</button>{{end}}
 </form>
-<form class="panel stack" data-form="install" aria-labelledby="archive-h">
+
+<form class="tabbody b-archive" data-form="install" aria-labelledby="archive-h">
 <h3 class="sub" id="archive-h">From an archive or a web address</h3>
 <fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Archive</legend>
@@ -62,19 +73,42 @@
 </fieldset>
 {{if $v.Admin}}<button type="submit" class="btn primary">Download and install</button>{{end}}
 </form>
-<div class="panel stack off" aria-labelledby="steam-h">
+
+<section class="tabbody b-steam" aria-labelledby="steam-h">
 <h3 class="sub" id="steam-h">From Steam</h3>
-<p class="note">Install and update with SteamCMD. Available once the dedicated server is released on Steam.</p>
-<button type="button" class="btn" disabled>Not available yet</button>
+{{if $d.SourcesWhy}}<p class="alert error"><strong class="tag">Error</strong> The Steam sources could not be read: {{$d.SourcesWhy}}</p>
+{{else if $d.Sources}}<div class="scroll">
+<table class="list">
+<caption class="sr">Steam sources</caption>
+<thead><tr>
+<th scope="col">Source</th>
+<th scope="col">Branch</th>
+<th scope="col">Channel</th>
+<th scope="col">Last check</th>
+<th scope="col">Newest build id</th>
+{{if $v.Admin}}<th scope="col">Action</th>{{end}}
+</tr></thead>
+<tbody>
+{{range $d.Sources}}<tr>
+<th scope="row" class="mono">{{.Name}}</th>
+<td>{{if .Branch}}<span class="mono">{{.Branch}}</span>{{else}}<span class="dim">default branch</span>{{end}}</td>
+<td><span class="badge {{.Channel}}">{{.Channel}}</span></td>
+<td>{{if .Checked.IsZero}}<span class="dim">never</span>{{else}}<time datetime="{{iso .Checked}}">{{when .Checked}}</time>{{end}}{{if .Error}} <span class="warnword">failed</span>{{end}}{{if .Running}} <span class="pill wait"><span class="dot" aria-hidden="true"></span>Checking now</span>{{end}}<br><span class="dim small">{{if noevery .CheckEvery}}checks are off{{else}}checks {{every .CheckEvery}}{{end}}</span></td>
+<td class="mono nowrap">{{if .BuildID}}{{.BuildID}}{{else}}<span class="dim">none yet</span>{{end}}</td>
+{{if $v.Admin}}<td><form data-form="install"><input type="hidden" name="source" value="steam:{{.Name}}"><button type="submit" class="btn">Check and install</button></form></td>{{end}}
+</tr>{{end}}
+</tbody>
+</table>
 </div>
-</div>
+{{range $d.Sources}}{{if .Error}}<p class="alert error"><strong class="tag">Error</strong> The last check of <span class="mono">{{.Name}}</span> failed: {{.Error}}</p>{{end}}{{end}}
+<p class="note">Sources are set under steam_sources in esm.json. ESM checks each one on its own at its check interval and installs a new build; "Check and install" does that now, like <span class="mono">esm build install steam:&lt;source&gt;</span> on the box, and <span class="mono">esm steam list</span> shows the same table there.</p>
+{{else}}<p class="note">No Steam source is set. Describe one under steam_sources in esm.json (see "Builds from Steam" in the README); ESM then checks it on its own, and <span class="mono">esm build install steam:&lt;source&gt;</span> installs from it by hand.</p>{{end}}
+</section>
+</fieldset>
 </section>
 
-<section class="panel" aria-labelledby="steamfiles-h">
-<div class="spread">
-<h2 class="label" id="steamfiles-h">Steam runtime files</h2>
-<span class="pill" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="word">Not checked</span></span>
-</div>
-<p class="note">Files a server may need to log in to Steam. ESM does not check them yet, so it cannot say whether they are present.</p>
-</section>
+<details class="more panel off">
+<summary><span class="hint"><strong>Steam runtime files:</strong> not checked yet</span></summary>
+<div class="more-body"><p>Files a server may need to log in to Steam. ESM does not check them yet, so it cannot say whether they are present.</p></div>
+</details>
 {{end}}

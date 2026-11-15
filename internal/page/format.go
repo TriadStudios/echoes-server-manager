@@ -26,6 +26,7 @@ var funcs = template.FuncMap{
 	"warning":  func(code string, stored []string) string { return sentence(instances.WarningWords(code, stored)) },
 	"why":      backupWhy,
 	"updstate": updateStatus,
+	"noevery":  func(d config.Duration) bool { return d.D() <= 0 },
 	"players":  playersOf,
 	"memory":   memoryOf,
 	"memstep":  memoryStep,

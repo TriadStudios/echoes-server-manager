@@ -460,17 +460,6 @@ func (p *Page) schedule(v *view) {
 
 // --- builds, clusters, box, audit ---
 
-type buildRow struct {
-	api.BuildView
-	Current []string // instances running it now
-	Kept    []string // instances keeping it for a rollback
-}
-
-type buildsData struct {
-	Builds []buildRow
-	Total  int64
-}
-
 func (p *Page) builds(v *view) {
 	v.Title, v.Nav, v.Screen, v.Events = "Builds", "builds", "builds", "types=build"
 	var bl api.BuildList
@@ -483,20 +472,14 @@ func (p *Page) builds(v *view) {
 		p.fail(v.w, v.r, statusOf(err), err.Error())
 		return
 	}
-	d := buildsData{}
-	for _, b := range bl.Builds {
-		row := buildRow{BuildView: b}
-		for _, s := range il.Instances {
-			switch {
-			case s.Build == b.Version:
-				row.Current = append(row.Current, s.Name)
-			case slices.Contains(b.UsedBy, s.Name):
-				row.Kept = append(row.Kept, s.Name)
-			}
-		}
-		d.Builds = append(d.Builds, row)
-		d.Total += b.SizeBytes
+	d := buildRows(bl.Builds, il.Instances)
+	// The Steam sources, as "esm steam list" reads them. The builds are
+	// shown without them when they cannot be read.
+	var sl api.SteamList
+	if err := v.c.get("/api/v1/steam", &sl); err != nil {
+		d.SourcesWhy = err.Error()
 	}
+	d.Sources = sl.Sources
 	v.Data = d
 	p.render(v, "builds", http.StatusOK)
 }
