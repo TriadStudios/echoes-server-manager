@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -308,45 +310,60 @@ func removeLock(path string, mine []byte) {
 	}
 }
 
-// Checker keeps the result of the last check for a newer release. It
-// checks only while the box is in use, that is, while Status was called
-// within the last check interval: Status checks again, in the background,
-// when the result is that old, and a watcher does the same between calls
-// of Status for as long as the box stays in use, then ends. So a call of
-// Status within an interval of the one before gets a result at most an
-// interval plus one check old. CheckNow checks at once and waits for the
-// result. One check runs at a time, and each is bounded by CheckTimeout.
+// Checker keeps the result of the last look for a newer release. It looks
+// only while the box is in use: Status looks again, in the background,
+// when the result is an interval old, and a watcher does the same between
+// calls of Status for as long as one came since the last look started;
+// then it ends. So a call of Status within an interval of the one before
+// gets a result at most an interval plus one look old, and after the last
+// call at most one more look is made. CheckNow looks at once and waits
+// for the result. One look runs at a time, and each is bounded by
+// CheckTimeout.
+//
+// A look asks with the ETag of the last answer, so an unchanged release
+// list is answered 304 Not Modified and keeps the release it had. When the
+// release server refuses a look with 403 or 429 (its rate limit), nothing
+// is looked up before the time it names (see retryTime), and CheckNow
+// gives the last result meanwhile.
 type Checker struct {
 	client  *Client
 	current string
 	every   time.Duration
 	enabled bool
 	note    string
-	// timeout bounds a check, reuse is how long CheckNow gives the last
+	// timeout bounds a look, reuse is how long CheckNow gives the last
 	// result again instead of asking anew (CheckTimeout and ReuseWithin;
 	// the tests make them shorter).
 	timeout, reuse time.Duration
+	// now and after are the clock (time.Now and time.After; the tests step
+	// a clock of their own).
+	now   func() time.Time
+	after func(time.Duration) <-chan time.Time
 
 	mu       sync.Mutex
 	status   Status
-	finished time.Time     // when the last check ended
-	running  chan struct{} // closed when the check that runs ends; nil when none runs
+	started  time.Time     // when the last look started
+	finished time.Time     // when the last look ended
+	running  chan struct{} // closed when the look that runs ends; nil when none runs
+	waiting  int           // callers of CheckNow that wait for the look that runs
 	looked   time.Time     // when Status was last called
 	watching bool          // the watcher runs
+	known    knownRelease  // the last release the release server named
+	hold     time.Time     // no look before this (the release server asked to wait)
 }
 
 // DefaultCheckEvery is how often the service looks for a newer release at
 // most, unless update_check_every says otherwise.
 const DefaultCheckEvery = 5 * time.Minute
 
-// CheckTimeout bounds one look for the newest release (a check in the
+// CheckTimeout bounds one look for the newest release (a look in the
 // background, and a check by hand that waits for its result).
 const CheckTimeout = 15 * time.Second
 
-// ReuseWithin is how long the result of a check is given again to a check
+// ReuseWithin is how long the result of a look is given again to a check
 // by hand without asking the release server anew: a burst of clicks makes
 // one request.
-const ReuseWithin = 30 * time.Second
+const ReuseWithin = 60 * time.Second
 
 // NewChecker returns a checker that looks at most every every (default
 // DefaultCheckEvery). With enabled false it never looks anything up, and
@@ -356,24 +373,23 @@ func NewChecker(c *Client, current string, every time.Duration, enabled bool, no
 		every = DefaultCheckEvery
 	}
 	return &Checker{client: c, current: current, every: every, enabled: enabled, note: note,
-		timeout: CheckTimeout, reuse: ReuseWithin}
+		timeout: CheckTimeout, reuse: ReuseWithin, now: time.Now, after: time.After}
 }
 
 // off is the status of a checker that never looks anything up.
 func (k *Checker) off() Status { return Status{Current: k.current, Note: k.note} }
 
-// Status returns the last result. When there is none, or it is older than
-// the check interval, a check starts in the background (the result shows
-// in a later call). Until no call of Status has come for an interval, the
-// watcher checks again whenever the result turns an interval old.
+// Status returns the last result. When there is none, or it is an
+// interval old, a look starts in the background (the result shows in a
+// later call). The watcher then looks again whenever the result turns an
+// interval old, for as long as Status is called between two looks.
 func (k *Checker) Status() Status {
 	if !k.enabled {
 		return k.off()
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.looked = time.Now()
-	st := k.status
+	k.looked = k.now()
 	if k.running == nil && k.dueLocked() {
 		k.startLocked()
 	}
@@ -381,72 +397,107 @@ func (k *Checker) Status() Status {
 		k.watching = true
 		go k.watch()
 	}
+	return k.viewLocked()
+}
+
+// viewLocked is the status to hand out. k.mu is held.
+func (k *Checker) viewLocked() Status {
+	st := k.status
 	if st.Checked.IsZero() {
 		st = Status{Enabled: true, Current: k.current, Note: "not checked yet"}
+	}
+	if !k.now().Before(st.RetryAfter) {
+		st.RetryAfter = time.Time{}
 	}
 	return st
 }
 
-// dueLocked reports whether there is no result yet or it is an interval
-// old. k.mu is held.
-func (k *Checker) dueLocked() bool {
-	return k.status.Checked.IsZero() || time.Since(k.status.Checked) >= k.every
+// nextLocked is when the next look is due: an interval after the last one
+// started, and not before the release server's wait ends. k.mu is held.
+func (k *Checker) nextLocked() time.Time {
+	if k.started.IsZero() {
+		return k.hold
+	}
+	next := k.started.Add(k.every)
+	if k.hold.After(next) {
+		next = k.hold
+	}
+	return next
 }
 
+// dueLocked reports whether a look is due. k.mu is held.
+func (k *Checker) dueLocked() bool { return !k.now().Before(k.nextLocked()) }
+
 // watch keeps the result fresh while the box is in use: it waits for the
-// check that runs, or until the result turns an interval old, and then
-// checks again. It ends when, at that point, Status has not been called for
-// an interval.
+// look that runs, or until the next look is due. Then it looks again if
+// Status was called since the last look started, and ends otherwise. So it
+// ends at most one look after the last call of Status, and how late it
+// wakes up never ends it while Status is called.
 func (k *Checker) watch() {
 	for {
 		k.mu.Lock()
-		if time.Since(k.looked) > k.every {
+		done := k.running
+		var wake <-chan time.Time
+		switch {
+		case done != nil:
+		case !k.dueLocked():
+			wake = k.after(k.nextLocked().Sub(k.now()))
+		case k.looked.After(k.started):
+			done = k.startLocked()
+		default:
 			k.watching = false
 			k.mu.Unlock()
 			return
 		}
-		done := k.running
-		if done == nil && k.dueLocked() {
-			done = k.startLocked()
-		}
-		wait := time.Until(k.status.Checked.Add(k.every))
 		k.mu.Unlock()
 		if done != nil {
 			<-done
-			continue
+		} else {
+			<-wake
 		}
-		time.Sleep(wait)
 	}
 }
 
 // CheckNow looks for a newer release now and returns the result. When a
-// check runs already, it waits for that one instead of starting another;
-// when the last check ended less than ReuseWithin ago, it returns that
-// result without asking the release server, with Reused set. It returns
-// within CheckTimeout, or when ctx ends (then with the last result). With
-// the checker off it looks nothing up and returns the off status.
+// look runs already, it waits for that one instead of starting another.
+// It gives the last result again without asking the release server, with
+// Reused set and a note that says why, when the last look ended less than
+// ReuseWithin ago, or while the release server has asked to wait
+// (RetryAfter). It returns within CheckTimeout, or when ctx ends (then with
+// the last result). With the checker off it looks nothing up and returns
+// the off status.
 func (k *Checker) CheckNow(ctx context.Context) Status {
 	if !k.enabled {
 		return k.off()
 	}
 	k.mu.Lock()
-	if k.running == nil && !k.finished.IsZero() && time.Since(k.finished) < k.reuse {
-		st := k.status
-		age := time.Since(k.finished).Round(time.Second)
-		k.mu.Unlock()
-		st.Reused = true
-		reused := fmt.Sprintf("the last look ended %s ago (less than %s), so its result is given again without asking the release server", age, k.reuse)
-		if st.Note == "" {
-			st.Note = reused
-		} else {
-			st.Note += "; " + reused
+	if k.running == nil {
+		now := k.now()
+		why := ""
+		switch {
+		case now.Before(k.hold):
+			why = "the release server asked to wait until " + k.hold.UTC().Format(time.RFC3339) + ", so it was not asked again"
+		case !k.finished.IsZero() && now.Sub(k.finished) < k.reuse:
+			why = fmt.Sprintf("the last look ended %d seconds ago, less than %d, so its result is given again without asking the release server",
+				int(now.Sub(k.finished).Seconds()), int(k.reuse.Seconds()))
 		}
-		return st
+		if why != "" {
+			st := k.viewLocked()
+			k.mu.Unlock()
+			st.Reused = true
+			if st.Note == "" {
+				st.Note = why
+			} else if !strings.Contains(st.Note, "asked to wait") {
+				st.Note += "; " + why
+			}
+			return st
+		}
 	}
 	done := k.running
 	if done == nil {
 		done = k.startLocked()
 	}
+	k.waiting++
 	k.mu.Unlock()
 	select {
 	case <-done:
@@ -454,27 +505,86 @@ func (k *Checker) CheckNow(ctx context.Context) Status {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.status.Checked.IsZero() {
-		return Status{Enabled: true, Current: k.current, Note: "not checked yet"}
-	}
-	return k.status
+	k.waiting--
+	return k.viewLocked()
 }
 
-// startLocked starts a check in the background, bounded by k.timeout, and
+// startLocked starts a look in the background, bounded by k.timeout, and
 // returns the channel that is closed when it ends. k.mu is held.
 func (k *Checker) startLocked() chan struct{} {
 	done := make(chan struct{})
 	k.running = done
+	k.started = k.now()
+	started, known := k.started, k.known
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), k.timeout)
-		res := k.client.Check(ctx, k.current)
+		r := k.look(ctx, started, known)
 		cancel()
 		k.mu.Lock()
-		k.status, k.finished, k.running = res, time.Now(), nil
+		k.status, k.known, k.hold = r.status, r.known, r.hold
+		k.finished, k.running = k.now(), nil
 		k.mu.Unlock()
 		close(done)
 	}()
 	return done
+}
+
+// knownRelease is the last release the release server named.
+type knownRelease struct {
+	rel  Release
+	etag string    // the ETag of that answer ("" when it had none)
+	at   time.Time // when the look that named or confirmed it started
+}
+
+// lookResult is what one look leaves.
+type lookResult struct {
+	status Status
+	known  knownRelease
+	hold   time.Time // no look before this; zero for no wait
+}
+
+// look asks for the release list once, with If-None-Match for the ETag of
+// the known release, if there is one.
+func (k *Checker) look(ctx context.Context, started time.Time, known knownRelease) lookResult {
+	failed := func(note string) lookResult {
+		return lookResult{status: Status{Enabled: true, Current: k.current, Checked: started.UTC(), Note: note}, known: known}
+	}
+	etag := known.etag
+	if known.rel.Tag == "" {
+		etag = ""
+	}
+	a, err := k.client.getList(ctx, etag)
+	switch {
+	case err != nil:
+		return failed("look up the newest release: " + err.Error())
+	case a.status == http.StatusNotModified && etag != "":
+		// Unchanged since the answer that named the known release.
+		known.at = started
+		return lookResult{status: statusOf(known.rel, k.current, started), known: known}
+	case a.status == http.StatusOK:
+		r, err := parseRelease(a.body)
+		if err != nil {
+			return lookResult{status: Status{Enabled: true, Current: k.current, Checked: started.UTC(), Note: err.Error()}}
+		}
+		return lookResult{status: statusOf(r, k.current, started), known: knownRelease{rel: r, etag: a.header.Get("ETag"), at: started}}
+	case rateLimited(a.status):
+		until := retryTime(a.header, k.now())
+		st := Status{Enabled: true, Current: k.current, Checked: started.UTC()}
+		note := "the release server asked to wait until " + until.Format(time.RFC3339) + " (" + a.what + "); ESM does not ask it again before then"
+		if known.rel.Tag != "" {
+			st = statusOf(known.rel, k.current, started)
+			note += "; the newest release shown was looked up at " + known.at.UTC().Format(time.RFC3339)
+			if st.Note != "" {
+				note += "; " + st.Note
+			}
+		}
+		st.Note, st.RetryAfter = note, until
+		return lookResult{status: st, known: known, hold: until}
+	case a.status == http.StatusNotModified:
+		return lookResult{status: Status{Enabled: true, Current: k.current, Checked: started.UTC(),
+			Note: "look up the newest release: " + a.what + ", but ESM had asked for no change"}}
+	}
+	return failed("look up the newest release: " + a.what)
 }
 
 // Client is the checker's client.

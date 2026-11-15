@@ -358,15 +358,18 @@ func httpsOnly(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// get fetches an https URL into w, at most limit bytes.
-func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) error {
+// request sends a GET for an https URL, with header added.
+func (c *Client) request(ctx context.Context, raw string, header http.Header) (*url.URL, *http.Response, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return fmt.Errorf("refused URL %q: only https URLs without user names are fetched", raw)
+		return nil, nil, fmt.Errorf("refused URL %q: only https URLs without user names are fetched", raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return err
+		return nil, nil, err
+	}
+	for k, v := range header {
+		req.Header[k] = v
 	}
 	ua := c.UserAgent
 	if ua == "" {
@@ -375,12 +378,13 @@ func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) 
 	req.Header.Set("User-Agent", ua)
 	resp, err := c.http().Do(req)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s answered %s", u.Host, resp.Status)
-	}
+	return u, resp, nil
+}
+
+// copyBody copies a reply's body into w, at most limit bytes.
+func copyBody(u *url.URL, resp *http.Response, limit int64, w io.Writer) error {
 	if resp.ContentLength > limit {
 		return fmt.Errorf("%s is larger than %d bytes", u.Path, limit)
 	}
@@ -394,6 +398,19 @@ func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) 
 	return nil
 }
 
+// get fetches an https URL into w, at most limit bytes.
+func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) error {
+	u, resp, err := c.request(ctx, raw, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s answered %s", u.Host, resp.Status)
+	}
+	return copyBody(u, resp, limit, w)
+}
+
 func (c *Client) getSmall(ctx context.Context, raw string, limit int64) ([]byte, error) {
 	var b bytes.Buffer
 	if err := c.get(ctx, raw, limit, &b); err != nil {
@@ -402,14 +419,40 @@ func (c *Client) getSmall(ctx context.Context, raw string, limit int64) ([]byte,
 	return b.Bytes(), nil
 }
 
-// Latest looks up the newest release.
-func (c *Client) Latest(ctx context.Context) (Release, error) {
-	ctx, cancel := context.WithTimeout(ctx, APITimeout)
-	defer cancel()
-	b, err := c.getSmall(ctx, c.api(), maxAPIBytes)
-	if err != nil {
-		return Release{}, fmt.Errorf("look up the newest release: %w", err)
+// listAnswer is the answer to one request for the release list.
+type listAnswer struct {
+	status int
+	header http.Header
+	body   []byte // only with 200
+	what   string // "<host> answered <status>"
+}
+
+// getList asks for the release list. With etag set the request carries
+// If-None-Match, so that an unchanged list is answered 304 Not Modified.
+// Every HTTP status is an answer; err is for a request that got none.
+func (c *Client) getList(ctx context.Context, etag string) (listAnswer, error) {
+	var h http.Header
+	if etag != "" {
+		h = http.Header{"If-None-Match": {etag}}
 	}
+	u, resp, err := c.request(ctx, c.api(), h)
+	if err != nil {
+		return listAnswer{}, err
+	}
+	defer resp.Body.Close()
+	a := listAnswer{status: resp.StatusCode, header: resp.Header, what: u.Host + " answered " + resp.Status}
+	if resp.StatusCode == http.StatusOK {
+		var b bytes.Buffer
+		if err := copyBody(u, resp, maxAPIBytes, &b); err != nil {
+			return listAnswer{}, err
+		}
+		a.body = b.Bytes()
+	}
+	return a, nil
+}
+
+// parseRelease reads the release list's answer.
+func parseRelease(b []byte) (Release, error) {
 	var r Release
 	if err := json.Unmarshal(b, &r); err != nil {
 		return Release{}, fmt.Errorf("look up the newest release: the answer is not a release: %w", err)
@@ -418,6 +461,69 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 		return Release{}, fmt.Errorf("the newest release has the tag %q, which is not a version like v1.2.3", r.Tag)
 	}
 	return r, nil
+}
+
+// Latest looks up the newest release.
+func (c *Client) Latest(ctx context.Context) (Release, error) {
+	ctx, cancel := context.WithTimeout(ctx, APITimeout)
+	defer cancel()
+	a, err := c.getList(ctx, "")
+	if err != nil {
+		return Release{}, fmt.Errorf("look up the newest release: %w", err)
+	}
+	if a.status != http.StatusOK {
+		return Release{}, fmt.Errorf("look up the newest release: %s", a.what)
+	}
+	return parseRelease(a.body)
+}
+
+// Waits after the release server refused a lookup with 403 or 429 (GitHub's
+// answers when it is asked too often): no lookup before the time its
+// Retry-After or X-RateLimit-Reset names, but at least MinRateLimitWait and
+// at most MaxRateLimitWait after the answer; DefaultRateLimitWait when it
+// names none.
+const (
+	MinRateLimitWait     = time.Minute
+	DefaultRateLimitWait = 15 * time.Minute
+	MaxRateLimitWait     = time.Hour
+)
+
+// rateLimited reports whether a status is the release server's refusal of
+// a lookup for being asked too often.
+func rateLimited(status int) bool {
+	return status == http.StatusForbidden || status == http.StatusTooManyRequests
+}
+
+// retryTime is when the release server may be asked again after a refusal
+// with header, answered at now: the later of Retry-After (seconds, or an
+// HTTP date) and X-RateLimit-Reset (Unix seconds; used when
+// X-RateLimit-Remaining is 0 or missing), held between MinRateLimitWait and
+// MaxRateLimitWait after now.
+func retryTime(header http.Header, now time.Time) time.Time {
+	var until time.Time
+	if v := strings.TrimSpace(header.Get("Retry-After")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			until = now.Add(time.Duration(min(n, int64(MaxRateLimitWait/time.Second))) * time.Second)
+		} else if t, err := http.ParseTime(v); err == nil {
+			until = t
+		}
+	}
+	if rem := strings.TrimSpace(header.Get("X-RateLimit-Remaining")); rem == "" || rem == "0" {
+		if n, err := strconv.ParseInt(strings.TrimSpace(header.Get("X-RateLimit-Reset")), 10, 64); err == nil && n > 0 && n < 1<<40 {
+			if t := time.Unix(n, 0); t.After(until) {
+				until = t
+			}
+		}
+	}
+	switch {
+	case until.IsZero():
+		until = now.Add(DefaultRateLimitWait)
+	case until.Before(now.Add(MinRateLimitWait)):
+		until = now.Add(MinRateLimitWait)
+	case until.After(now.Add(MaxRateLimitWait)):
+		until = now.Add(MaxRateLimitWait)
+	}
+	return until.UTC()
 }
 
 // Status is the result of a check for a newer release.
@@ -435,24 +541,21 @@ type Status struct {
 	// URL is the newest release's page.
 	URL string `json:"url"`
 	// Note says why Available cannot be known, or what failed, and for a
-	// reused result that it was reused.
+	// reused result why it was reused.
 	Note string `json:"note"`
 	// Reused is set only in the answer to a check by hand
-	// (Checker.CheckNow) that gave the last result again, because that
-	// check ended less than ReuseWithin before, without asking the release
-	// server.
+	// (Checker.CheckNow) that gave the last result again without asking the
+	// release server: because the last look ended less than ReuseWithin
+	// before, or because the release server asked to wait (RetryAfter).
 	Reused bool `json:"reused"`
+	// RetryAfter is set while the release server has asked ESM to wait
+	// (it refused a lookup with 403 or 429): no lookup is made before it.
+	RetryAfter time.Time `json:"retry_after,omitzero"`
 }
 
-// Check looks up the newest release and compares it with current.
-func (c *Client) Check(ctx context.Context, current string) Status {
-	st := Status{Enabled: true, Current: current, Checked: time.Now().UTC()}
-	r, err := c.Latest(ctx)
-	if err != nil {
-		st.Note = err.Error()
-		return st
-	}
-	st.Latest, st.URL = r.Tag, r.URL
+// statusOf compares the release r, looked up at checked, with current.
+func statusOf(r Release, current string, checked time.Time) Status {
+	st := Status{Enabled: true, Current: current, Checked: checked.UTC(), Latest: r.Tag, URL: r.URL}
 	newer, ok := Newer(r.Tag, current)
 	switch {
 	case !ok:
@@ -461,4 +564,14 @@ func (c *Client) Check(ctx context.Context, current string) Status {
 		st.Available = true
 	}
 	return st
+}
+
+// Check looks up the newest release and compares it with current.
+func (c *Client) Check(ctx context.Context, current string) Status {
+	checked := time.Now()
+	r, err := c.Latest(ctx)
+	if err != nil {
+		return Status{Enabled: true, Current: current, Checked: checked.UTC(), Note: err.Error()}
+	}
+	return statusOf(r, current, checked)
 }
