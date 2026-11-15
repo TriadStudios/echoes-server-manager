@@ -1559,6 +1559,16 @@ by hand:
   (`/static/esm.js`), no framework, no build step, nothing loaded from
   another origin. No inline script or style, no `style` or event handler
   attributes: the Content-Security-Policy above holds for every page.
+- **One look.** Every screen is made of the same few parts of the
+  stylesheet: one spacing scale, panels with their heading inside (a
+  section of several panels or a table has it above), buttons of three
+  kinds (the main action of a screen, form or card; a plain one; and one
+  that stops, removes or replaces something), fields with a one-line hint
+  and, where there is more to say, a native `<details>` ("More") that needs
+  no script, tables that scroll sideways inside their box, and notices that
+  say in a word what they are (note, warning, error) as well as by colour.
+  On a phone the menu is above the content, everything is one column, and
+  every control stays at least 44 px tall.
 - **A client of the API, nothing more.** A screen gets its data by calling
   the API inside the process, as the browser's user (the same cookie or
   token, so the same roles and the same refusals), and decodes the same
@@ -1601,8 +1611,11 @@ by hand:
   setting of the [catalog](#game-settings), by group, made from
   `GET /api/v1/game-settings`: a choice for a `bool` or an `enum` (with
   "Game default" first), a number field with the range, a date field, a
-  text field, each with its help and default. An empty field is a setting
-  not set. The world rules carry the notice that only a new world takes
+  text field, each with its help and default: the help's first sentence
+  under the field, the rest with the range, the default and the switch
+  behind "More". At most two fields share a row, one on a phone, and each
+  group is a panel of its own, with links to the groups above them. An
+  empty field is a setting not set. The world rules carry the notice that only a new world takes
   them. A value set in another spelling than the field writes (`true` for
   `True`) is kept as it is, and a stored value the catalog does not accept
   is shown as text with the reason, so saving never rewrites it. (A game

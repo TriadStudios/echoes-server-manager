@@ -514,8 +514,9 @@ settings. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
 whether players can reach the box from outside), the page says so. A
 server's settings screen has a field for every game setting ESM knows by
-name (see [Game settings](#game-settings)), grouped, each with its help,
-range and default; an empty field leaves the setting to the game. Reading works without JavaScript; changes need it. What each role
+name (see [Game settings](#game-settings)), grouped, each with a one-line
+help and, under "More", the rest of it with its range and default; an
+empty field leaves the setting to the game. Reading works without JavaScript; changes need it. What each role
 may do is the same as in the API.
 
 ## Command line tour
