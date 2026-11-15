@@ -1,7 +1,6 @@
 package page
 
 import (
-	"errors"
 	"maps"
 	"net/http"
 	"net/url"
@@ -630,8 +629,7 @@ func (p *Page) setup(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
 	}
-	var ae *apiError
-	if !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
+	if !notLoggedIn(err) {
 		p.fail(w, r, statusOf(err), err.Error())
 		return
 	}

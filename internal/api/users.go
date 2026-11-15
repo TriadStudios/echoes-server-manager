@@ -76,7 +76,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, c *call)
 	if req.CurrentPassword == "" {
 		return fault.Invalidf("current_password: the current password is required")
 	}
-	ended, err := s.o.Auth.ChangePassword(auth.LimitAddress(r, s.behindProxy()), c.session.Username,
+	ended, err := s.o.Auth.ChangePassword(auth.LimitAddress(r, s.listenerOf(r).behindProxy), c.session.Username,
 		req.CurrentPassword, req.NewPassword, c.session.ID)
 	if err != nil {
 		if errors.Is(err, auth.ErrWrongPassword) {

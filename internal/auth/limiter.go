@@ -193,6 +193,16 @@ func (l *Limiter) Fail(keys ...string) {
 	}
 }
 
+// Failures is how many failures key has inside the window now (at most
+// the limiter's max, see Fail).
+func (l *Limiter) Failures(key string) int {
+	k := hashed([]string{key})[0]
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.prune(k, now))
+}
+
 // Reset forgets the failures of every key.
 func (l *Limiter) Reset(keys ...string) {
 	keys = hashed(keys)

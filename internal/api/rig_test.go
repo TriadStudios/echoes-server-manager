@@ -51,7 +51,7 @@ func newRig(t *testing.T, o Options) *rig {
 }
 
 // do sends a request to the TCP handler. The request comes from
-// 192.0.2.1:1234 unless remote says otherwise.
+// 192.0.2.1:1234 unless remote says otherwise, for the Host host says.
 func (r *rig) do(method, target, body string, header map[string]string) *httptest.ResponseRecorder {
 	r.t.Helper()
 	var rd io.Reader
@@ -60,11 +60,14 @@ func (r *rig) do(method, target, body string, header map[string]string) *httptes
 	}
 	req := httptest.NewRequest(method, target, rd)
 	for k, v := range header {
-		if k == "remote" {
+		switch k {
+		case "remote":
 			req.RemoteAddr = v
-			continue
+		case "host":
+			req.Host = v
+		default:
+			req.Header.Set(k, v)
 		}
-		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	r.s.Handler().ServeHTTP(rec, req)

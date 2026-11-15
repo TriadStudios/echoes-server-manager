@@ -6,10 +6,14 @@
 // the session cookie of a logged-in user (with X-CSRF-Token on every
 // change), or by arriving on the unix socket (admin). One call, setting a
 // login's password without the current one, is answered on the socket
-// only. Tokens are never read from URLs. Every call that changes something
+// only. Tokens are never read from URLs. The API listener, a second TCP
+// listener for clients on other machines (APIListenerHandler), takes API
+// tokens only unless its page is on. Every call that changes something
 // (or tries to) writes an audit entry, and so does every call refused for
 // lack of a role (403); a read refused for a missing login (401) does not.
-// Errors always have the shape
+// Over TCP, failed authentications are limited per client address, and
+// what is recorded of callers without a valid login is bounded (see
+// AuthFailMax). Errors always have the shape
 // {"error": {"code": "...", "message": "..."}}.
 package api
 
@@ -106,6 +110,12 @@ type Options struct {
 	// hosts or gets 421 (see hostSet); the unix socket is not checked.
 	Listen      string
 	PublicHosts []string
+	// APIListener, when set, is the API listener, which APIListenerHandler
+	// serves; GET /box shows it.
+	APIListener *APIListenerInfo
+	// Now is the clock of the limits on callers without a valid login
+	// (default time.Now; see AuthFailMax).
+	Now func() time.Time
 	// Steam installs builds from Steam sources (optional).
 	Steam *steam.Manager
 	// Release says whether a newer ESM release is out (optional), and
@@ -125,7 +135,8 @@ type Server struct {
 	mux        *http.ServeMux
 	paths      *http.ServeMux      // every API path once, for 405 answers
 	allow      map[string][]string // path pattern -> methods
-	hosts      *hostSet            // nil: no Host check
+	main       *listener           // the main TCP listener
+	lim        *limits             // of callers without a valid login
 	doctorBusy atomic.Bool         // a health check is running
 	// logDownloads holds a token for each log download that runs.
 	logDownloads chan struct{}
@@ -152,6 +163,9 @@ type route struct {
 	role         auth.Role
 	action       string // audit action
 	h            handler
+	// login marks the calls of logging in and out (setup, login, logout),
+	// which a listener that takes API tokens only does not answer.
+	login bool
 }
 
 // Route describes a registered API endpoint.
@@ -179,6 +193,9 @@ func Routes() []Route {
 
 var routes []route
 
+// loginActions are the routes of logging in and out (see route.login).
+var loginActions = map[string]bool{"setup.status": true, "setup": true, "login": true, "logout": true}
+
 func init() {
 	const (
 		read  = auth.RoleRead
@@ -186,7 +203,8 @@ func init() {
 		admin = auth.RoleAdmin
 	)
 	r := func(method, path string, ac access, role auth.Role, action string, h handler) {
-		routes = append(routes, route{method, path, ac, role, action, h})
+		routes = append(routes, route{method: method, path: path, access: ac, role: role, action: action, h: h,
+			login: loginActions[action]})
 	}
 	const p = "/api/v1"
 	r("GET", p+"/setup", public, "", "setup.status", (*Server).setupStatus)
@@ -268,7 +286,10 @@ func New(o Options) *Server {
 		o.FailDelay = DefaultFailDelay
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
-		hosts: newHostSet(o.Listen, o.PublicHosts), logDownloads: make(chan struct{}, maxLogDownloads)}
+		lim: newLimits(o.Now), logDownloads: make(chan struct{}, maxLogDownloads)}
+	s.main = &listener{hosts: newHostSet(o.Listen, o.PublicHosts), tls: o.TLS, https: o.HTTPS,
+		behindProxy: o.Config != nil && o.Config.BehindTLSProxy,
+		hostHint:    "use localhost, or add the name to public_hosts in esm.json"}
 	for _, rt := range routes {
 		s.mux.Handle(rt.method+" "+rt.path, s.wrap(rt))
 		if _, ok := s.allow[rt.path]; !ok {
@@ -284,6 +305,12 @@ func New(o Options) *Server {
 		page = o.Page(s.apiOnly())
 	}
 	s.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.listenerOf(r).tokensOnly {
+			web.SetSecurityHeaders(w.Header())
+			writeError(w, http.StatusNotFound, "not_found",
+				`the API listener serves no web page: it takes API tokens only, unless "page": true is set in api_listener in esm.json`)
+			return
+		}
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
 			page.ServeHTTP(w, r)
 			return
@@ -407,6 +434,12 @@ type call struct {
 	session *auth.Session
 	target  string
 	errMsg  string
+	// authed says that the caller showed a valid login: the socket, a
+	// valid token, a session that is open (even when the call then fails
+	// its CSRF or Origin check), or a login or setup that just worked.
+	authed bool
+	// quiet keeps the call out of the audit log (see authFailed).
+	quiet bool
 }
 
 // apiError is an error with an explicit HTTP status and code.
@@ -467,14 +500,14 @@ func (s *Server) wrap(rt route) http.Handler {
 			err = rt.h(s, sw, r, c)
 		}
 		if err != nil {
-			s.fail(sw, err, c)
+			s.fail(sw, r, err, c)
 		}
 		status := sw.status
 		if status == 0 {
 			status = http.StatusOK
 		}
 		if !auth.SafeMethod(r.Method) || status == http.StatusForbidden {
-			s.auditCall(rt, c, status)
+			s.auditCall(r, rt, c, status)
 		}
 		s.log.Debug("request", "method", r.Method, "path", r.URL.Path, "status", status, "ms", time.Since(start).Milliseconds())
 	})
@@ -482,28 +515,48 @@ func (s *Server) wrap(rt route) http.Handler {
 
 // authenticate fills c with the caller and checks the route's role.
 func (s *Server) authenticate(r *http.Request, rt route, c *call) error {
+	if rt.login && s.listenerOf(r).tokensOnly {
+		return errStatus(http.StatusForbidden, TokensOnly,
+			`the API listener takes API tokens only (Authorization: Bearer <token>): login, setup and logout are answered there only with "page": true in api_listener in esm.json`)
+	}
 	if rt.access == public {
 		return nil
 	}
-	if rt.access == local && r.Context().Value(socketKey) != true {
-		// Who tried is recorded in the audit entry, but no login or token
-		// opens this call over TCP.
-		_ = s.identify(r, c)
-		return errStatus(http.StatusForbidden, "socket_only",
-			"this call is answered only on the box, over ESM's unix socket (esm user passwd); no login or token makes it over the network")
-	}
-	err := s.identify(r, c)
 	if rt.access == optional {
+		err := s.identify(r, c)
 		if errors.Is(err, auth.ErrCSRF) || errors.Is(err, auth.ErrOrigin) {
 			return err
 		}
 		return nil
 	}
+	// The call needs a login. Over TCP, an address with too many failed
+	// authentications gets 429 for every call without a valid one (see
+	// authFailed). The failure limit is looked at only once the credentials
+	// are found not valid: a valid token or session goes on as always, and
+	// never waits for the limit's lock.
+	socket := r.Context().Value(socketKey) == true
+	err := s.identify(r, c)
+	// Who tried a socket-only call is recorded in the audit entry, but no
+	// login or token opens it over TCP.
+	socketOnly := errStatus(http.StatusForbidden, "socket_only",
+		"this call is answered only on the box, over ESM's unix socket (esm user passwd); no login or token makes it over the network")
+	if !socket && !c.authed {
+		key := clientKey(r)
+		limited := s.lim.fails.Check(key)
+		answer := err
+		switch {
+		case rt.access == local:
+			answer = socketOnly
+		case answer == nil:
+			answer = errStatus(http.StatusUnauthorized, "unauthorized", "log in, or send Authorization: Bearer <token>")
+		}
+		return s.authFailed(r, c, key, limited, answer, !auth.SafeMethod(r.Method) || rt.access == local)
+	}
+	if rt.access == local && !socket {
+		return socketOnly
+	}
 	if err != nil {
 		return err
-	}
-	if c.role == "" {
-		return errStatus(http.StatusUnauthorized, "unauthorized", "log in, or send Authorization: Bearer <token>")
 	}
 	if !c.role.Allows(rt.role) {
 		return errStatus(http.StatusForbidden, "forbidden", "this needs the %s role; you have %s", rt.role, c.role)
@@ -517,6 +570,7 @@ func (s *Server) identify(r *http.Request, c *call) error {
 	if r.Context().Value(socketKey) == true {
 		c.actor = audit.Actor{Kind: audit.ActorSocket, ID: "socket", Role: string(auth.RoleAdmin)}
 		c.role = auth.RoleAdmin
+		c.authed = true
 		return nil
 	}
 	if r.Header.Get("Authorization") != "" {
@@ -530,18 +584,25 @@ func (s *Server) identify(r *http.Request, c *call) error {
 		}
 		c.actor = audit.Actor{Kind: audit.ActorToken, ID: t.ID, Role: string(t.Role)}
 		c.role = t.Role
+		c.authed = true
 		return nil
 	}
 	ck, err := r.Cookie(auth.SessionCookieName)
 	if err != nil || ck.Value == "" {
 		return nil
 	}
+	l := s.listenerOf(r)
+	if l.tokensOnly {
+		return errStatus(http.StatusUnauthorized, TokensOnly,
+			`the API listener takes API tokens only: send Authorization: Bearer <token>; a login's session is taken there only with "page": true in api_listener in esm.json`)
+	}
 	sess, err := s.o.Auth.Session(ck.Value)
 	if err != nil {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
-	if err := auth.CheckCookieRequest(r, sess, auth.Scheme(s.o.HTTPS)); err != nil {
+	c.authed = true
+	if err := auth.CheckCookieRequest(r, sess, auth.Scheme(l.https)); err != nil {
 		return err
 	}
 	c.role = sess.Role
@@ -549,8 +610,14 @@ func (s *Server) identify(r *http.Request, c *call) error {
 	return nil
 }
 
-func (s *Server) auditCall(rt route, c *call, status int) {
-	if s.o.Audit == nil {
+// auditCall writes the audit entry of a call. Calls without a valid login
+// are recorded within the limits of authFailed and anonAudit only, so that
+// they cannot fill the disk.
+func (s *Server) auditCall(r *http.Request, rt route, c *call, status int) {
+	if s.o.Audit == nil || c.quiet {
+		return
+	}
+	if !c.authed && r.Context().Value(socketKey) != true && !s.anonAudit(r, clientKey(r)) {
 		return
 	}
 	e := audit.Entry{Actor: c.actor, Action: rt.action, Target: c.target, OK: status < 400, Error: c.errMsg}
@@ -559,12 +626,17 @@ func (s *Server) auditCall(rt route, c *call, status int) {
 	}
 }
 
-// fail writes err as the standard error response.
-func (s *Server) fail(w http.ResponseWriter, err error, c *call) {
+// fail writes err as the standard error response. On the API listener a
+// 401 or 429 also ends the connection (Connection: close), so that one
+// connection cannot go on trying.
+func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error, c *call) {
 	status, code, msg := classify(err)
 	var rl *auth.RateLimitError
 	if errors.As(err, &rl) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(rl.RetryAfter.Seconds())+1))
+	}
+	if (status == http.StatusUnauthorized || status == http.StatusTooManyRequests) && s.listenerOf(r) != s.main {
+		w.Header().Set("Connection", "close")
 	}
 	msg = audit.Scrub(msg)
 	if status == http.StatusInternalServerError {

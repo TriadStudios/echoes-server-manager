@@ -121,6 +121,10 @@ type Config struct {
 	// so a page of another site cannot reach ESM by pointing its own name
 	// at this box.
 	PublicHosts []string `json:"public_hosts,omitempty"`
+	// APIListener is a second listener for the API alone, TLS only, for
+	// clients on other machines (see APIListener). Nil, and not written to
+	// the file, means off.
+	APIListener *APIListener `json:"api_listener,omitempty"`
 	// BuildImportDir is the folder a local build source (a folder or an
 	// archive) must be in. Empty means <root>/imports; a relative path is
 	// taken from the root.
@@ -309,6 +313,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: public_hosts: %w", err)
 		}
 	}
+	if c.APIListener != nil {
+		if err := c.APIListener.Validate(c.Listen); err != nil {
+			return fmt.Errorf("config: api_listener: %w", err)
+		}
+	}
 	g, err := ParsePortRange(c.GamePorts)
 	if err != nil {
 		return fmt.Errorf("config: game_ports: %w", err)
@@ -389,7 +398,7 @@ func checkPublicHost(h string) error {
 		return bad
 	}
 	if host, port, err := net.SplitHostPort(h); err == nil {
-		if n, err := strconv.Atoi(port); host == "" || err != nil || n < 1 || n > 65535 {
+		if n, ok := ParsePort(port); host == "" || !ok || n < 1 {
 			return bad
 		}
 	} else if strings.Contains(strings.Trim(h, "[]"), ":") && net.ParseIP(strings.Trim(h, "[]")) == nil {
@@ -425,11 +434,21 @@ func SplitListen(listen string) (host string, port int, err error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid address %q: %w", listen, err)
 	}
-	n, err := strconv.Atoi(p)
-	if err != nil || n < 0 || n > 65535 {
+	n, ok := ParsePort(p)
+	if !ok {
 		return "", 0, fmt.Errorf("invalid port in %q", listen)
 	}
 	return h, n, nil
+}
+
+// ParsePort reads a port: 0 to 65535 in decimal digits only (no sign, no
+// spaces, at most five digits).
+func ParsePort(p string) (int, bool) {
+	if p == "" || len(p) > 5 || strings.Trim(p, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(p)
+	return n, err == nil && n <= 65535
 }
 
 // IsLoopback reports whether host is "localhost" or a loopback IP

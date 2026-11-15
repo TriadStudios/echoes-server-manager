@@ -67,6 +67,12 @@ type site struct {
 // first.
 func newSite(t *testing.T, tune ...func(*service.Options)) *site {
 	t.Helper()
+	return newSiteConfig(t, nil, tune...)
+}
+
+// newSiteConfig is newSite with these fields of esm.json added.
+func newSiteConfig(t *testing.T, extra map[string]any, tune ...func(*service.Options)) *site {
+	t.Helper()
 	root, err := os.MkdirTemp("", "esmp")
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +86,9 @@ func newSite(t *testing.T, tune ...func(*service.Options)) *site {
 		"stop_timeout":     "5s",
 		"ready_timeout":    "10s",
 		"backup_save_wait": "3s",
+	}
+	for k, v := range extra {
+		cfg[k] = v
 	}
 	b, _ := json.Marshal(cfg)
 	if err := os.WriteFile(root+string(os.PathSeparator)+"esm.json", b, 0o600); err != nil {
@@ -666,6 +675,19 @@ func TestScriptAndStylesheet(t *testing.T) {
 		if !strings.Contains(js, need) {
 			t.Errorf("esm.js lacks %q", need)
 		}
+	}
+	// Whether the login is gone is decided in sessionEnded alone, for the
+	// calls and for the event stream's look at the session (a 401, or the
+	// 429 of an address limited for failed authentications), so that an
+	// open tab goes to the login instead of opening the stream again for
+	// ever (TestSessionEndedInTheScript runs it).
+	for _, need := range []string{"if (sessionEnded(path, resp.status)) {", "if (sessionEnded('/api/v1/session', r.status)) { toLogin(); return; }"} {
+		if strings.Count(js, need) != 1 {
+			t.Errorf("esm.js does not have %q once", need)
+		}
+	}
+	if strings.Contains(js, "status === 401 &&") || strings.Contains(js, "r.status === 401)") {
+		t.Error("esm.js decides on a 401 outside sessionEnded")
 	}
 	_, css := s.get("/static/esm.css", "")
 	for _, bad := range []string{"@import", "url(", "http://", "https://"} {

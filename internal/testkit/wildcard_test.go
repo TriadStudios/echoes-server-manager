@@ -46,6 +46,18 @@ var wildcardAllowed = []struct{ file, line, why string }{
 	{"internal/testkit/sockets_test.go", `net.ParseIP("::")`, "socket table parsing; nothing is bound"},
 	{"internal/testkit/sockets_test.go", `"tcp 0.0.0.0:8081"`, "socket table parsing; nothing is bound"},
 	{"internal/api/host_test.go", `const allInterfaces = "0.0.0.0:8740"`, "Host header check; nothing is bound"},
+	{"internal/config/apilistener.go", `set listen to 0.0.0.0:<port> or [::]:<port>`,
+		"the error that tells how to ask for every address; nothing is bound"},
+	{"internal/config/apilistener_test.go", `Listen: ":8743"`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `Listen: "0.0.0.0:8743"`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `Listen: "[::]:8743"`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `Listen: "0.0.0.0:8740"`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `"0.0.0.0:8740", "main listener"`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `HostNames: []string{"0.0.0.0"}`, "api_listener rule checks; nothing is bound"},
+	{"internal/config/apilistener_test.go", `{"api_listener":{"listen":"0.0.0.0:8743"}}`, "api_listener rule checks; nothing is bound"},
+	{"internal/api/apilistener_test.go", `"panel.example.org:8743", "0.0.0.0:8743",`, "Host header check; nothing is bound"},
+	{"internal/api/apilistener_test.go", `Listen: "0.0.0.0:8743", AllAddresses: true`, "Host header check; nothing is bound"},
+	{"internal/api/apilistener_test.go", `"0.0.0.0:8743": false`, "Host header check; nothing is bound"},
 }
 
 // moduleRoot finds the folder holding go.mod above the working folder.

@@ -73,7 +73,8 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request, c *call) er
 }
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
-	if err := auth.CheckLoginRequest(r, auth.Scheme(s.o.HTTPS)); err != nil {
+	l := s.listenerOf(r)
+	if err := auth.CheckLoginRequest(r, auth.Scheme(l.https)); err != nil {
 		return err
 	}
 	var req SetupRequest
@@ -84,7 +85,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 	name := s.o.Auth.AuditName(req.Username)
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: name}
 	c.target = name
-	u, err := s.o.Auth.Setup(auth.LimitAddress(r, s.behindProxy()), req.Code, req.Username, req.Password)
+	u, err := s.o.Auth.Setup(auth.LimitAddress(r, l.behindProxy), req.Code, req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, auth.ErrBadSetupCode) {
 			s.failPause(r.Context())
@@ -92,12 +93,10 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: u.Username, Role: string(u.Role)}
+	c.authed = true // recorded whatever the limits of callers without a login
 	c.target = u.Username
 	return writeJSON(w, http.StatusCreated, UserInfo{Username: u.Username, Role: string(u.Role)})
 }
-
-// behindProxy reports whether behind_tls_proxy is set.
-func (s *Server) behindProxy() bool { return s.o.Config != nil && s.o.Config.BehindTLSProxy }
 
 // failPause holds the answer to a failed login or setup code for
 // FailDelay, or until the client goes away. No lock is held meanwhile.
@@ -114,7 +113,8 @@ func (s *Server) failPause(ctx context.Context) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
-	if err := auth.CheckLoginRequest(r, auth.Scheme(s.o.HTTPS)); err != nil {
+	l := s.listenerOf(r)
+	if err := auth.CheckLoginRequest(r, auth.Scheme(l.https)); err != nil {
 		return err
 	}
 	var req LoginRequest
@@ -125,8 +125,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: s.o.Auth.AuditName(req.Username)}
 	// Behind a proxy or a tunnel all clients share one address: the limit
 	// then counts per user name only (see auth.LimitAddress), and every
-	// failure is answered late.
-	sess, err := s.o.Auth.Login(auth.LimitAddress(r, s.behindProxy()), req.Username, req.Password)
+	// failure is answered late. The API listener is never behind a proxy.
+	sess, err := s.o.Auth.Login(auth.LimitAddress(r, l.behindProxy), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, auth.ErrBadCredentials) {
 			s.failPause(r.Context())
@@ -134,9 +134,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
+	c.authed = true // recorded whatever the limits of callers without a login
 	// The session id goes only into the HttpOnly cookie, never into a
 	// body; the CSRF token is a separate random value.
-	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), s.o.HTTPS))
+	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), l.https))
 	return writeJSON(w, http.StatusOK, LoginResult{Username: sess.Username, Role: string(sess.Role), CSRFToken: sess.CSRF})
 }
 
@@ -144,7 +145,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, c *call) error {
 	if ck, err := r.Cookie(auth.SessionCookieName); err == nil && ck.Value != "" {
 		s.o.Auth.Logout(ck.Value)
 	}
-	http.SetCookie(w, auth.ClearSessionCookie(s.o.HTTPS))
+	http.SetCookie(w, auth.ClearSessionCookie(s.listenerOf(r).https))
 	return writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
 }
 
@@ -171,12 +172,15 @@ type Box struct {
 	TLS            bool   `json:"tls"`
 	// BehindTLSProxy echoes the behind_tls_proxy setting: browsers reach
 	// ESM through a TLS proxy, so the session cookie is Secure.
-	BehindTLSProxy bool      `json:"behind_tls_proxy"`
-	Started        time.Time `json:"started"`
-	UptimeSeconds  int64     `json:"uptime_seconds"`
-	Instances      int       `json:"instances"`
-	Running        int       `json:"running"`
-	Builds         int       `json:"builds"`
+	BehindTLSProxy bool `json:"behind_tls_proxy"`
+	// APIListener is the API listener, with the certificate it serves and
+	// its fingerprints; null when api_listener is not set.
+	APIListener   *APIListenerInfo `json:"api_listener"`
+	Started       time.Time        `json:"started"`
+	UptimeSeconds int64            `json:"uptime_seconds"`
+	Instances     int              `json:"instances"`
+	Running       int              `json:"running"`
+	Builds        int              `json:"builds"`
 	// DefaultSecretDelivery is how a new instance hands its server the
 	// passwords unless it says otherwise.
 	DefaultSecretDelivery string `json:"default_secret_delivery"`
@@ -236,8 +240,8 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		Version: s.o.Version, Root: cfg.Root, OS: runtime.GOOS,
 		Supervisor: s.o.Supervisor.Kind(), LimitsEnforced: s.o.Supervisor.LimitsEnforced(),
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,
-		BehindTLSProxy: cfg.BehindTLSProxy,
-		Started:        s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
+		BehindTLSProxy: cfg.BehindTLSProxy, APIListener: s.o.APIListener,
+		Started: s.o.Started.UTC(), UptimeSeconds: int64(time.Since(s.o.Started).Seconds()),
 		Instances: len(list), Running: running, Builds: len(bl),
 		DefaultSecretDelivery: gameserver.SecretDelivery, SecretsOnCommandLine: unsafe,
 		Hostname: hostname, TimeZone: timeZone(time.Now()), Usage: sysinfo.ReadBox(cfg.Root),
