@@ -139,7 +139,7 @@ are refused, so typos are reported.
 | Field              | Meaning |
 |--------------------|---------|
 | `name`             | `^[a-z][a-z0-9-]{0,31}$`, fixed. It is in the folders ESM puts on the server command line, so a new name may not hold a name the engine searches that line for (see [Game settings](#game-settings)). |
-| `display_name`     | Name shown to players (the server name). |
+| `display_name`     | Name shown to players (the server name); empty means the instance name. Passed twice with the same value: as `-ServerName=` and as `-SteamServerName=`, the name in Steam's server list (see below). A change reaches a running server at its next start. |
 | `cluster`          | Optional label. |
 | `channel`          | `live` or `test`; must match the build. |
 | `build`            | Current build. Changed only by an update. |
@@ -160,8 +160,9 @@ are refused, so typos are reported.
 | `previous_builds`  | Builds this instance ran before, newest first. |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
-names, passwords and tokens, the secrets file, `-UserDir`, `-abslog` and so
-on), may not be `-MULTIHOME` (see [The real server](#the-real-server)) or an
+names, `-SteamServerName` among them, passwords and tokens, the secrets
+file, `-UserDir`, `-abslog` and so on), may not be `-MULTIHOME` (see
+[The real server](#the-real-server)) or an
 override of the engine's configuration files (`-ini:<File>:[Section]:Key=Value`,
 `-iniFile=` and `-CustomConfig=`, which could change the ports, the
 networking or the server's folders behind ESM's back), may not be
@@ -201,10 +202,24 @@ secret away.)
 
 The command line, in this order: the map, `-unattended`, `-Port=`,
 `-QueryPort=`, `-ServerName=` (the display name, or the instance name),
-`-WorldName=`, `-MaxPlayers=`, `-ListInBrowser=`, `-UserDir=<instance>/data`,
+`-SteamServerName=` (the same name), `-WorldName=`, `-MaxPlayers=`,
+`-ListInBrowser=`, `-UserDir=<instance>/data`,
 `-abslog=<instance>/logs/server.log`, then the rules (`-Key=Value`, sorted by
 key), the secrets file switch (or, in the compatibility mode, the password
 and token switches), and the extra arguments.
+
+The server name is passed twice because the game reads the name Steam's
+server list shows from `-SteamServerName=`, not from `-ServerName=`: a
+server started with `-ServerName=` alone is listed without a name. Both
+are built the same way, each one argument (`-SteamServerName=Alpha EU`
+right after `-ServerName=Alpha EU`), from the same value, which follows
+the rules for values in [Game settings](#game-settings) once and so for
+both; an empty name passes neither. The name counts twice in the length
+of the line. A change of `display_name` reaches a running server at its
+next start (`restart_required`), like every other setting. That a real
+server takes `-SteamServerName=`, and how it reads a name with a space
+there, is not confirmed on a real host yet (see
+[The real server](#the-real-server)).
 
 Ports: a new instance gets the first game/query port pair from the ranges
 that no other instance uses and that can be bound right now (UDP and TCP).
@@ -387,8 +402,9 @@ letter (`a--b`).
 **The length of the line.** ESM counts the command line of an instance
 the way the engine does: a space before every argument, the two quotes
 around what holds a space, two for a character beyond U+FFFF, with
-everything on it (ESM's own switches, the folders, the map, the rules,
-the extra arguments and, with command-line delivery, the secrets). A
+everything on it (ESM's own switches, the server name twice, the folders,
+the map, the rules, the extra arguments and, with command-line delivery,
+the secrets). A
 create, a change or a new secret that would make it longer than 12000 is
 refused with 422 `command_line_too_long`, which has the two numbers and
 nothing of a value. 12000 is well under the engine's 16383 because what
@@ -415,7 +431,9 @@ instance when ESM's root holds one) and never a value; the supervisor is
 not asked. Any other stored value that breaks the rules, and with
 command-line delivery a stored password or token that does, is passed as
 it is; so is a stored rule key or extra argument that ESM now refuses
-(`-CmdLineFile=`, an override of the configuration files), and the
+(`-CmdLineFile=`, an override of the configuration files) or that names
+`-SteamServerName`, which ESM sets itself from this version on (it is
+passed after ESM's own, so the server reads the server name), and the
 instance then takes no other change until it is removed. The instance
 carries the warning `unsafe_stored_settings`, and its
 `unsafe_stored_settings` field names the settings: `name`,
@@ -1432,7 +1450,8 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
 - The command line: the map first, then exactly `-unattended -Port=
   -QueryPort= -ServerName= -WorldName= -MaxPlayers= -ListInBrowser=
   -UserDir= -abslog=`, with the build folder as working folder. Every game
-  setting also works as `-Key=Value`.
+  setting also works as `-Key=Value`. (ESM now passes `-SteamServerName=`
+  besides, which is not confirmed yet; see below.)
 - **Never `-MULTIHOME`.** With it the server advertises its bind address
   where its Steam identity belongs; players see it in the server list but
   cannot join. ESM never passes it, refuses it as a rule or extra argument,
@@ -1470,6 +1489,11 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
   query port other than the default.
 - Whether a loose per-server config file next to the build is read; ESM
   passes every setting on the command line instead.
+- `-SteamServerName=` on a real host. ESM passes the server name there
+  too, because the game takes the name in Steam's server list from it
+  and not from `-ServerName=`; the first real server ran without it. That
+  the server takes it, and how it reads a name with a space there, is not
+  seen yet: ESM passes it exactly as it passes `-ServerName=`.
 - The password and token switches on a real host (`-Password=`,
   `-AdminPassword=`, `-AnnouncementsToken=`, `-ProblemReportToken=`; the
   test server ran with neither password).

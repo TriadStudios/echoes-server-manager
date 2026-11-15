@@ -419,6 +419,14 @@ game settings, with its type, range, default and a line of help. See them
 with `esm game-settings`, `GET /api/v1/game-settings` or on a server's
 settings page.
 
+The server name (`display_name`, or the instance's name when it is empty)
+goes to the server twice, with the same value: as `-ServerName=` and as
+`-SteamServerName=`, the name in Steam's server list, which the game reads
+from that switch and not from `-ServerName=`. Both are passed the same way
+and follow the rules below once, and neither can be set by a rule or an
+extra argument. A new name reaches a running server at its next start.
+`-SteamServerName=` is not confirmed on a real host yet.
+
 An instance keeps its game settings in `rules` (`--set Key=Value` at
 create, `rules` in the API, the fields of the settings page). A setting
 that is not set is not passed, and the server uses its own default. A
@@ -472,17 +480,21 @@ same rules when it is set or changed:
 
 The name of an instance is in the folders ESM puts on the command line,
 so a new instance's name may not hold one of those names either. And the
-whole command line of an instance, with everything on it, may have 12000
-characters after a change: the server's engine does not start with more
-than 16383, and what starts the server may add to the line. A change that
-would make it longer is refused (`command_line_too_long`).
+whole command line of an instance, with everything on it (the server
+name counts twice), may have 12000 characters after a change: the
+server's engine does not start with more than 16383, and what starts the
+server may add to the line. A change that would make it longer is
+refused (`command_line_too_long`).
 
 A value stored by an earlier version is kept until it is changed. An
 empty one (a rule, or an extra argument that ends in `=`) is left off the
 command line when the server starts, and the service log says so; any
 other that breaks the rules is passed as it is, and the instance carries
 the warning `unsafe_stored_settings`, which names the settings (never
-their values) to change. One exception: with an en dash anywhere on its
+their values) to change. The warning also names a rule or an extra
+argument stored earlier that names `-SteamServerName`: it is passed after
+ESM's own, which the server reads, and the instance takes no other change
+until it is removed. One exception: with an en dash anywhere on its
 command line the server's engine stops at once, so ESM does not start a
 server whose line would hold one (409 `command_line_unsafe`, which names
 the setting, a password or token by its field, and never a value). An
