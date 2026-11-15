@@ -34,7 +34,7 @@
 {{range $b.Groups}}<tbody>
 <tr class="grp"><th scope="rowgroup" colspan="{{if $v.Operator}}6{{else}}5{{end}}">{{.Name}}</th></tr>
 {{range .Rows}}<tr{{if .GoesNext}} class="goes"{{end}}>
-<th scope="row" class="mono"><time datetime="{{iso .Created}}">{{when .Created}}</time>{{if .Newest}} <span class="badge changed">Newest</span>{{end}}{{if .GoesNext}} <span class="badge" title="The list holds as many backups as the policy keeps, so the next backup made removes this one, the oldest.">Goes next</span>{{end}}</th>
+<th scope="row" class="mono"><time datetime="{{iso .Created}}">{{when .Created}}</time>{{if .Newest}} <span class="badge changed">Newest</span>{{end}}{{if .GoesNext}} <span class="badge" title="The policy keeps the newest {{plural $b.Keep "backup"}}, so the next backup made removes this one.">Goes next</span>{{end}}</th>
 <td><span class="pill {{whytone .Reason}}">{{why .Reason}}</span></td>
 <td class="mono dim nowrap">{{.Build}}</td>
 <td class="mono nowrap">{{size .SizeBytes}}</td>

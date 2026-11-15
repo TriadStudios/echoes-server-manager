@@ -1668,8 +1668,10 @@ by hand:
     bar, and their size together. The list is grouped by day (Today,
     Yesterday, Older: calendar days in the box's own time zone, which the
     schedules use), with the reason as a coloured tag, the newest marked,
-    and, when the list holds as many backups as the policy keeps, the
-    oldest dimmed and marked *Goes next*, since the next backup removes it.
+    and the backups that the next backup made would remove dimmed and
+    marked *Goes next*: the policy keeps the newest `keep`, the new one
+    among them, so that is the oldest when the list holds as many backups
+    as the policy keeps, and more when it holds more.
     A world save ESM did not see is a warning mark with its explanation. The
     Restore notice is a note, since the confirmation says it again, and the
     policy form is folded behind a line that says it ("every 6 hours, keep

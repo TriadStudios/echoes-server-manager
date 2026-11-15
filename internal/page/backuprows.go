@@ -11,8 +11,11 @@ type backupRow struct {
 	instances.Backup
 	// Newest marks the last backup made.
 	Newest bool
-	// GoesNext marks the oldest backup when the list holds as many as the
-	// policy keeps: the next backup made removes it.
+	// GoesNext marks a backup that the next backup made removes: pruning
+	// keeps the newest keep backups, the new one among them, so it removes
+	// the backups from the (keep-1)th of this list on. That is the oldest
+	// one when the list holds as many as the policy keeps, and more when
+	// it holds more.
 	GoesNext bool
 }
 
@@ -47,15 +50,15 @@ func makeBackups(list []instances.Backup, keep int, now time.Time, loc *time.Loc
 		d.Last = &list[0]
 	}
 	today := dayOf(now, loc)
-	yesterday := today.AddDate(0, 0, -1)
+	yesterday := dayBefore(now, loc)
 	for i, b := range list {
 		d.Total += b.SizeBytes
-		row := backupRow{Backup: b, Newest: i == 0, GoesNext: i == len(list)-1 && i > 0 && len(list) >= keep}
+		row := backupRow{Backup: b, Newest: i == 0, GoesNext: i >= keep-1}
 		name := "Older"
 		switch day := dayOf(b.Created, loc); {
-		case !day.Before(today):
+		case day >= today:
 			name = "Today"
-		case day.Equal(yesterday):
+		case day == yesterday:
 			name = "Yesterday"
 		}
 		if n := len(d.Groups); n > 0 && d.Groups[n-1].Name == name {
@@ -67,8 +70,18 @@ func makeBackups(list []instances.Backup, keep int, now time.Time, loc *time.Loc
 	return d
 }
 
-// dayOf is the start of t's calendar day in loc.
-func dayOf(t time.Time, loc *time.Location) time.Time {
+// dayOf names the calendar day of t in loc by its date, as a number that
+// is greater for a later day (20260310). Days are compared by date, never
+// by their first moment: a day that skips midnight in a change of summer
+// time has no midnight to compare.
+func dayOf(t time.Time, loc *time.Location) int {
 	y, m, d := t.In(loc).Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, loc)
+	return y*10000 + int(m)*100 + d
+}
+
+// dayBefore is the calendar day before the one of t in loc.
+func dayBefore(t time.Time, loc *time.Location) int {
+	y, m, d := t.In(loc).Date()
+	// At noon, which no change of summer time falls on.
+	return dayOf(time.Date(y, m, d-1, 12, 0, 0, 0, loc), loc)
 }

@@ -39,27 +39,96 @@ func TestUpdateStatus(t *testing.T) {
 	}
 }
 
-// The pill and the card's words come from the status, and what the API
-// returned is escaped.
-func TestUpdatePillTemplate(t *testing.T) {
+// renderScreen makes a whole screen of the page, as a role sees it, from the
+// data a handler would give it.
+func renderScreen(t *testing.T, screen, role string, data any) string {
+	t.Helper()
 	p := NewWithLogger(nil, slog.New(slog.DiscardHandler)).(*Page)
-	v := instances.View{Instance: instances.Instance{Name: "a", AutoUpdate: instances.AutoUpdateRestart,
-		UpdateMaxWait: config.Duration(6 * time.Hour)}, UpdateAvailable: true,
-		Update: instances.UpdateInfo{Source: "main", Target: "steam-main-<2>", Pending: true, Waiting: "3 players are online", Overdue: true}}
+	v := &view{Title: "x", Nav: "servers", Screen: screen, Session: api.SessionInfo{ID: "me", Role: role, CSRFToken: "t"}, Data: data}
 	var b bytes.Buffer
-	if err := p.tmpl["dashboard"].ExecuteTemplate(&b, "update-pill", v); err != nil {
+	if err := p.tmpl[screen].ExecuteTemplate(&b, "layout", v); err != nil {
 		t.Fatal(err)
 	}
-	if want := `<span class="pill wait"><span class="dot" aria-hidden="true"></span>Waiting</span>`; b.String() != want {
-		t.Errorf("pill:\n%s\nwant\n%s", b.String(), want)
+	return b.String()
+}
+
+// renderOverview makes the Overview of s, with the update form that the
+// installed builds give it.
+func renderOverview(t *testing.T, role string, s instances.View, all []api.BuildView) string {
+	t.Helper()
+	return renderScreen(t, "overview", role, &serverData{S: s, Tab: "overview", More: overviewData{Update: updateChoices(s, all)}})
+}
+
+// The Update card of the Overview says what waits and why, how long it has
+// waited, what failed, and what the unproven build goes back to; and it
+// escapes what the API returned.
+func TestUpdateCardOnTheOverview(t *testing.T) {
+	inst := instances.Instance{Name: "a", Channel: "live", Build: "steam-main-1", AutoUpdate: instances.AutoUpdateRestart,
+		UpdateMaxWait: config.Duration(6 * time.Hour)}
+	for _, c := range []struct {
+		name  string
+		v     instances.View
+		wants []string
+		not   []string
+	}{
+		{"waiting for players, too long", instances.View{Instance: inst, UpdateAvailable: true,
+			Update: instances.UpdateInfo{Source: "main", Target: "steam-main-<2>", Pending: true, Waiting: "3 players are online", Overdue: true}},
+			[]string{`class="pill wait"`, ">Waiting</span>", "Waiting: 3 players are online.", "Waiting longer than 6h0m0s",
+				`<span class="mono newest">steam-main-&lt;2&gt;</span>`},
+			[]string{"update by hand", "It is put in place at the next check.", `<strong class="tag">Error</strong>`}},
+		{"to be put in place at the next check", instances.View{Instance: inst, UpdateAvailable: true,
+			Update: instances.UpdateInfo{Source: "main", Target: "steam-main-2", Pending: true}},
+			[]string{`class="pill avail"`, "Update available", "It is put in place at the next check."},
+			[]string{"Waiting longer", "update by hand"}},
+		{"failed", instances.View{Instance: inst, UpdateAvailable: true,
+			Update: instances.UpdateInfo{Source: "main", Target: "steam-main-2", Waiting: "the automatic update to steam-main-2 failed", LastError: "update failed <b>"}},
+			[]string{`class="pill fail"`, "Update failed", "The last automatic update failed: update failed &lt;b&gt;"},
+			[]string{"<b>"}},
+		{"install mode, by hand", instances.View{Instance: instances.Instance{Name: "a", Channel: "live", Build: "steam-main-1", AutoUpdate: instances.AutoUpdateInstall,
+			UpdateMaxWait: config.Duration(6 * time.Hour)}, UpdateAvailable: true, Update: instances.UpdateInfo{Source: "main", Target: "steam-main-2"}},
+			[]string{`class="pill avail"`, "auto_update is install: update by hand."},
+			[]string{"Waiting:"}},
+		// A build switched in while the server was stopped is checked at the
+		// next start; the card says so and names the build to go back to.
+		{"a new build not checked yet", instances.View{Instance: instances.Instance{Name: "a", Channel: "live", Build: "steam-main-2", AutoUpdate: instances.AutoUpdateRestart},
+			Status: instances.Status{State: instances.Stopped, UpdateUnverified: true, UpdateRollbackBuild: "steam-main-1"}},
+			[]string{`class="pill info"`, "New build, checked at next start", "nothing was started", `goes back to <span class="mono">steam-main-1</span>`},
+			[]string{"Update available"}},
+		{"up to date", instances.View{Instance: inst},
+			[]string{`class="pill ok"`, "Up to date"},
+			[]string{"Waiting", "goes back to", "The last automatic update failed"}},
+	} {
+		for _, role := range []string{"admin", "read"} {
+			out := renderOverview(t, role, c.v, nil)
+			for _, want := range c.wants {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s, %s: the Overview lacks %q", c.name, role, want)
+				}
+			}
+			for _, not := range c.not {
+				if strings.Contains(out, not) {
+					t.Errorf("%s, %s: the Overview has %q", c.name, role, not)
+				}
+			}
+		}
 	}
-	b.Reset()
-	v = instances.View{Status: instances.Status{UpdateUnverified: true}}
-	if err := p.tmpl["overview"].ExecuteTemplate(&b, "update-pill", v); err != nil {
-		t.Fatal(err)
+}
+
+// A server's card on the Dashboard has the status as a pill and the build
+// it waits for, escaped; a server with nothing to update says so.
+func TestUpdatePillOnTheDashboard(t *testing.T) {
+	waiting := instances.View{Instance: instances.Instance{Name: "a", Channel: "live", Build: "steam-main-1", AutoUpdate: instances.AutoUpdateRestart},
+		UpdateAvailable: true, Update: instances.UpdateInfo{Source: "main", Target: "steam-main-<2>", Pending: true, Waiting: "3 players are online", Overdue: true}}
+	current := instances.View{Instance: instances.Instance{Name: "b", Channel: "live", Build: "steam-main-2"}}
+	out := renderScreen(t, "dashboard", "read", dashData{Servers: []instances.View{waiting, current}})
+	for _, want := range []string{`<span class="pill wait"><span class="dot" aria-hidden="true"></span>Waiting</span><span class="mono small">steam-main-&lt;2&gt;</span>`,
+		`<span class="pill ok"><span class="dot" aria-hidden="true"></span>Up to date</span></dd>`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the Dashboard lacks %q", want)
+		}
 	}
-	if !strings.Contains(b.String(), `class="pill info"`) || !strings.Contains(b.String(), "New build, checked at next start") {
-		t.Errorf("pill of an unproven build:\n%s", b.String())
+	if strings.Contains(out, "3 players are online") {
+		t.Error("the Dashboard repeats the reason that the Overview gives")
 	}
 }
 
