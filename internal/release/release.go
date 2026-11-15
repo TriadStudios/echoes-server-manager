@@ -434,8 +434,14 @@ type Status struct {
 	Available bool `json:"available"`
 	// URL is the newest release's page.
 	URL string `json:"url"`
-	// Note says why Available cannot be known, or what failed.
+	// Note says why Available cannot be known, or what failed, and for a
+	// reused result that it was reused.
 	Note string `json:"note"`
+	// Reused is set only in the answer to a check by hand
+	// (Checker.CheckNow) that gave the last result again, because that
+	// check ended less than ReuseWithin before, without asking the release
+	// server.
+	Reused bool `json:"reused"`
 }
 
 // Check looks up the newest release and compares it with current.
