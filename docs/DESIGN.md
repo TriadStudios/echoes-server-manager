@@ -1604,7 +1604,8 @@ by hand:
 - **Honest gaps.** The page shows only what the API returns and says where
   ESM cannot know something yet: CPU use per server, memory on Windows, the
   player list (only the count from the status file), presets of game
-  settings, the Steam runtime files,
+  settings, the Steam runtime files, the steps of an update under way and
+  the result of the last update with a way back (ESM records neither),
   whether players can reach the box from outside, and a budget for all
   game servers together.
 - **Game settings.** A server's settings screen has a field for every
@@ -1627,6 +1628,53 @@ by hand:
   (`saveRules`: a game setting left empty is left out, every other rule
   goes as it is unless it is removed), which the page tests run with node
   where node is installed.
+- **Updates, builds and backups.** What these screens show is made from
+  what the API returns, with a few values worked out from it in
+  `internal/page` (no endpoint, answer or action was added for them).
+  - A server's *Update* card on its Overview has its current build, the
+    newer build when the Steam source it follows has one, and one status
+    in a pill, the first of these that holds: *Update failed* (the last
+    automatic update, `update.last_error`), *Waiting* (a newer build waits
+    for the players to leave, or for a pause after an update by hand:
+    `update.waiting`), *Update available* (`update_available`), *New
+    build, checked at next start* (`status.update_unverified`: an automatic
+    update switched the build of a stopped server), or *Up to date*. The
+    Dashboard shows the same pill for every server. The update form lists
+    the builds of the server's channel newest first, with the build the
+    server runs marked and not to be chosen, and starts on the newest build
+    (the Steam source's own newest when the server follows one) unless the
+    server runs it; then nothing is chosen. "N builds behind" is said only
+    for a build made by a Steam source, where the build id says which build
+    is newer: the page counts the installed builds of that source with a
+    greater id. For any other build there is no order but the order of
+    installing, so nothing is said.
+  - *Builds* come newest first (installed last first); each channel's
+    newest build carries a *Newest* badge. A build is *Running on* the
+    servers that run it, *Kept for rollback* for the servers that only keep
+    it (`used_by`), or *Unused* (its row dimmed); the commit is in the
+    tooltip of the version. "Remove unused builds" says what it frees: the
+    sizes of the builds that no server runs or keeps, which is what the
+    prune removes. Installing is three tabs (a folder, an archive or web
+    address, Steam) made of plain radio buttons and their labels, so they
+    need no script, under the warning to install only builds one trusts.
+    The Steam tab lists the sources from `GET /api/v1/steam`, as
+    `esm steam list` does: name, branch, channel, when SteamCMD last ran,
+    the newest build id and, for an admin, the same install that
+    `esm build install steam:<name>` makes. The Steam runtime files are
+    folded at the bottom.
+  - *Backups* start with a strip: the last backup and how long ago, the
+    next scheduled one (only when the scheduler has planned it:
+    `scheduled.backup`), how many are kept of the policy's `keep` with a
+    bar, and their size together. The list is grouped by day (Today,
+    Yesterday, Older: calendar days in the box's own time zone, which the
+    schedules use), with the reason as a coloured tag, the newest marked,
+    and, when the list holds as many backups as the policy keeps, the
+    oldest dimmed and marked *Goes next*, since the next backup removes it.
+    A world save ESM did not see is a warning mark with its explanation. The
+    Restore notice is a note, since the confirmation says it again, and the
+    policy form is folded behind a line that says it ("every 6 hours, keep
+    the newest 10"). *Back up now* is in the head of the screen, for
+    operators.
 - **Health check on demand.** The Box screen runs the health check
   (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
   every free port of the ranges; other roles are told it needs the admin
