@@ -15,7 +15,7 @@ import (
 )
 
 // listedName asks the server of an instance on its query port for the
-// name it answers with: the name Steam's server list shows, which the
+// name it answers with: the name for Steam's server list, which the
 // fake server takes from -SteamServerName, as the game does.
 func listedName(t *testing.T, m *Manager, name string) string {
 	t.Helper()
@@ -35,7 +35,7 @@ func listedName(t *testing.T, m *Manager, name string) string {
 }
 
 // The server name reaches the server as the name of its session
-// (-ServerName) and as the name Steam's server list shows
+// (-ServerName) and as the name for Steam's server list
 // (-SteamServerName), a name with spaces whole. A new name reaches a
 // running server at its next start, not before, and the change says that
 // a restart is needed. Without a display name the server is listed under
@@ -271,5 +271,134 @@ func TestServerNameCountsTwiceOnTheLine(t *testing.T) {
 		if err := set(map[string]string{}, name); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// The game cuts a Steam server name of 64 characters or more to 63, so a
+// display name set from now on has at most 63 bytes of UTF-8, which is at
+// most 63 characters however they are counted: 63 ASCII characters are
+// taken and 64 are not, at a create and at a change, and the same goes for
+// names of characters of two and four bytes. The refusal names the limit
+// and never the name. Without a display name the server gets the
+// instance's name, which is never longer than 32 ASCII characters.
+func TestServerNameIsHeldTo63Bytes(t *testing.T) {
+	r := newRig(t, nil)
+	r.install(testkit.BuildOptions{Version: "1.0"})
+	sup := &recordSup{}
+	m := r.newManager(sup)
+	defer m.Close()
+	if gameserver.MaxServerNameBytes != 63 {
+		t.Fatalf("the most a server name may have: %d bytes", gameserver.MaxServerNameBytes)
+	}
+	if _, err := m.Create(CreateRequest{Name: "alpha", Settings: Settings{BindIP: ptr("127.0.0.1")}}); err != nil {
+		t.Fatal(err)
+	}
+	two, four := "é", "\U0001F642" // two and four bytes of UTF-8
+	for _, c := range []struct {
+		name string
+		ok   bool
+	}{
+		{strings.Repeat("Zq7", 21), true},           // 63 bytes
+		{strings.Repeat("Zq7", 21) + "x", false},    // 64
+		{strings.Repeat(two, 31) + "x", true},       // 63 bytes, 32 characters
+		{strings.Repeat(two, 32), false},            // 64 bytes, 32 characters
+		{strings.Repeat(four, 15) + "xyz", true},    // 63 bytes, 18 characters
+		{strings.Repeat(four, 16), false},           // 64 bytes, 16 characters
+		{strings.Repeat("Zq7 ", 16) + "Zq7", false}, // 67
+	} {
+		if (len(c.name) <= 63) != c.ok {
+			t.Fatalf("%d bytes: the case is wrong", len(c.name))
+		}
+		_, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(c.name)}})
+		_, cerr := m.Create(CreateRequest{Name: "beta", Settings: Settings{BindIP: ptr("127.0.0.1"), DisplayName: ptr(c.name)}})
+		for what, err := range map[string]error{"a change": err, "a create": cerr} {
+			switch {
+			case c.ok && err != nil:
+				t.Errorf("%d bytes at %s: %v", len(c.name), what, err)
+			case !c.ok && !fault.Is(err, fault.Invalid):
+				t.Errorf("%d bytes at %s: %v, want refused", len(c.name), what, err)
+			case !c.ok && (!strings.Contains(err.Error(), "63 bytes") || strings.Contains(err.Error(), c.name) || strings.Contains(err.Error(), "Zq7")):
+				t.Errorf("%d bytes at %s: the refusal does not name the limit, or repeats the name: %v", len(c.name), what, err)
+			}
+		}
+		if cerr == nil {
+			if err := m.Delete(context.Background(), "beta", true); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if c.ok {
+			m.Start(context.Background(), "alpha", false)
+			spec, _, _ := sup.last(t)
+			if !slices.Contains(spec.Args, gameserver.SteamServerNameSwitch+"="+c.name) {
+				t.Errorf("%d bytes: the Steam server name is not passed whole: %q", len(c.name), spec.Args)
+			}
+		}
+	}
+
+	// The longest name of an instance, which the server gets without a
+	// display name.
+	longest := "a" + strings.Repeat("b-9", 10) + "z"
+	if len(longest) != 32 || !ValidName(longest) || ValidName(longest+"x") || len(longest) > gameserver.MaxServerNameBytes {
+		t.Fatalf("the longest name of an instance: %q (%d bytes, valid %v)", longest, len(longest), ValidName(longest))
+	}
+	if _, err := m.Create(CreateRequest{Name: longest, Settings: Settings{BindIP: ptr("127.0.0.1"), DisplayName: ptr("")}}); err != nil {
+		t.Fatal(err)
+	}
+	m.Start(context.Background(), longest, false)
+	spec, _, _ := sup.last(t)
+	if !slices.Contains(spec.Args, gameserver.SteamServerNameSwitch+"="+longest) {
+		t.Errorf("without a display name the Steam server name is not the instance's name: %q", spec.Args)
+	}
+}
+
+// An earlier version took a display name of 64 bytes. Such an instance
+// keeps loading and starting with its name passed as stored, which the
+// game cuts to 63 in Steam's server list, and it carries the warning
+// unsafe_stored_settings naming display_name, whose words say so. Other
+// changes are taken; a name of at most 63 bytes clears the warning.
+func TestStoredDisplayNameLongerThanSteamTakes(t *testing.T) {
+	for _, stored := range []string{strings.Repeat("Zq7", 21) + "x", strings.Repeat("é", 32)} {
+		r := newRig(t, nil)
+		r.install(testkit.BuildOptions{Version: "1.0"})
+		r.create("alpha", nil)
+		var in Instance
+		if err := r.st.ReadJSON(instFile("alpha"), &in); err != nil {
+			t.Fatal(err)
+		}
+		in.DisplayName = stored
+		if err := r.st.WriteJSON(instFile("alpha"), in, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sup := &recordSup{}
+		m := r.newManager(sup)
+
+		v, err := m.Get("alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(v.Warnings, WarnUnsafeStoredSettings) || !slices.Equal(storedUnsafe(t, v), []string{"display_name"}) {
+			t.Errorf("%d bytes: warnings %q, settings named %q", len(stored), v.Warnings, storedUnsafe(t, v))
+		}
+		if words := WarningWords(WarnUnsafeStoredSettings, v.UnsafeStoredSettings); !strings.Contains(words, "cuts it to 63") ||
+			!strings.Contains(words, "display_name") || strings.Contains(words, stored) {
+			t.Errorf("the warning in words: %q", words)
+		}
+		m.Start(context.Background(), "alpha", false)
+		spec, _, _ := sup.last(t)
+		if !slices.Contains(spec.Args, gameserver.ServerNameSwitch+"="+stored) || !slices.Contains(spec.Args, gameserver.SteamServerNameSwitch+"="+stored) {
+			t.Errorf("%d bytes: the stored name is not passed as stored: %q", len(stored), spec.Args)
+		}
+		if v, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{Autostart: ptr(true), DisplayName: ptr(stored)}}); err != nil ||
+			!slices.Contains(v.Warnings, WarnUnsafeStoredSettings) {
+			t.Errorf("%d bytes: a change of something else, the name sent back as stored: %v, warnings %q", len(stored), err, v.Warnings)
+		}
+		if _, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(stored + "x")}}); !fault.Is(err, fault.Invalid) {
+			t.Errorf("%d bytes: a longer name: %v", len(stored), err)
+		}
+		fixed, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(stored[:len(stored)-2])}})
+		if err != nil || slices.Contains(fixed.Warnings, WarnUnsafeStoredSettings) || len(storedUnsafe(t, fixed)) != 0 {
+			t.Errorf("%d bytes: a name of %d bytes: %v, warnings %q, settings named %q", len(stored), len(stored)-2, err, fixed.Warnings, storedUnsafe(t, fixed))
+		}
+		m.Close()
 	}
 }

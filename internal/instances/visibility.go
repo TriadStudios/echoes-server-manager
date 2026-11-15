@@ -68,8 +68,9 @@ const (
 	// server uses its limit.
 	WarnMaxPlayersAboveGame = "max_players_above_game_limit"
 	// WarnUnsafeStoredSettings: settings stored by an earlier version break
-	// the rules for values on the server command line, or name a switch ESM
-	// sets itself (see Instance.storedUnsafe); the view names them in
+	// the rules for values on the server command line, name a switch ESM
+	// sets itself, or are a display name longer than a server name may be
+	// (see Instance.storedUnsafe); the view names them in
 	// UnsafeStoredSettings. One with an en dash keeps the server from
 	// starting (see enDashIn).
 	WarnUnsafeStoredSettings = "unsafe_stored_settings"
@@ -93,7 +94,8 @@ func WarningText(code string) string {
 		return fmt.Sprintf("max_players is above %d, the most the game server takes; the server uses %d, and a change of max_players must be at most %d",
 			gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit, gameserver.MaxPlayersLimit)
 	case WarnUnsafeStoredSettings:
-		return "settings stored by an earlier version of ESM break the rules for values on the server command line, or name a switch ESM sets itself now (-SteamServerName), so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored, but with an en dash (U+2013) on its command line the server's engine does not start, and ESM does not start it then; change or remove them, or, for the name of an instance, make the instance anew under another name"
+		return fmt.Sprintf("settings stored by an earlier version of ESM break the rules for values on the server command line, or name a switch ESM sets itself now (-SteamServerName), so the server may read them otherwise than ESM shows: an empty one is left out when the server starts, any other is passed as it is stored, but with an en dash (U+2013) on its command line the server's engine does not start, and ESM does not start it then; a display name of more than %d bytes is passed as stored, and the game cuts it to %d characters in Steam's server list; change or remove them, or, for the name of an instance, make the instance anew under another name",
+			gameserver.MaxServerNameBytes, gameserver.MaxServerNameBytes)
 	case WarnCommandLineTooLong:
 		return fmt.Sprintf("the server command line of this instance is longer than %d characters, the most a change may lead to; the server's engine does not start with more than %d, and ESM, which keeps %d of them free for what a build's start script may add, does not start a server whose line is longer than %d: shorten or remove rules or extra arguments",
 			gameserver.MaxLineLength, gameserver.EngineLineLimit, gameserver.StartRoom, gameserver.StartLineLimit)
