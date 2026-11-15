@@ -100,7 +100,8 @@ paths:
         `Content-Type: application/json` (else 415 `unsupported_media_type`),
         and an `Origin` header, when sent, must match the host (else 403
         `origin`); a request without Origin, as the command line and curl
-        send, is accepted.
+        send, is accepted. The password needs 12 characters or more and at
+        most 1024 bytes (else 422 `invalid`; the code stays valid).
       security: []
       requestBody:
         required: true
@@ -978,12 +979,12 @@ paths:
         reaches ESM over the network sets a password without the current
         one.
 
-        The password follows the rules of setup (422 `invalid`). Every
-        session of the login ends, and the failed logins counted against
-        its name are forgotten, so the new password logs in at once. A name
-        that is no login's is 404, and neither the answer nor the audit
-        entry repeats it (the entry says `(unknown)` or `(invalid)`, as for
-        a login). Every try writes an audit entry `user.password.reset`; no
+        The password follows the rules of setup: 12 characters or more, at
+        most 1024 bytes (else 422 `invalid`). Every session of the login
+        ends, and the failed logins counted against its name are forgotten,
+        so the new password logs in at once. A name that is no login's is
+        404, and neither the answer nor the audit entry repeats it (the
+        entry says `(unknown)` or `(invalid)`, as for a login). Every try writes an audit entry `user.password.reset`; no
         password is written to the audit log or sent back.
       security: []
       parameters:

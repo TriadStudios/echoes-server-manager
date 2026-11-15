@@ -42,6 +42,7 @@ var (
 	ErrBadSetupCode   = errors.New("setup code is wrong or expired")
 	ErrSetupDone      = errors.New("setup is already done: an admin exists")
 	ErrWeakPassword   = errors.New("password must be at least 12 characters")
+	ErrLongPassword   = fmt.Errorf("password must be at most %d bytes", MaxPasswordLength)
 	ErrBadUsername    = errors.New("username must be 1-64 characters: letters, digits, '.', '_' or '-', starting with a letter or digit")
 	ErrUserExists     = errors.New("user already exists")
 	ErrBadRole        = errors.New("role must be read, operator or admin")
@@ -435,7 +436,7 @@ func CheckPassword(pw string) error {
 		return ErrWeakPassword
 	}
 	if len(pw) > MaxPasswordLength {
-		return fmt.Errorf("password must be at most %d bytes", MaxPasswordLength)
+		return ErrLongPassword
 	}
 	return nil
 }
@@ -864,7 +865,7 @@ func StatusCode(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrSetupDone), errors.Is(err, ErrUserExists):
 		return http.StatusConflict
-	case errors.Is(err, ErrWeakPassword), errors.Is(err, ErrBadUsername), errors.Is(err, ErrBadRole):
+	case errors.Is(err, ErrWeakPassword), errors.Is(err, ErrLongPassword), errors.Is(err, ErrBadUsername), errors.Is(err, ErrBadRole):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound

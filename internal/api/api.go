@@ -606,7 +606,7 @@ func classify(err error) (int, string, string) {
 		return http.StatusConflict, "setup_done", err.Error()
 	case errors.Is(err, auth.ErrUserExists):
 		return http.StatusConflict, "conflict", err.Error()
-	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrBadUsername), errors.Is(err, auth.ErrBadRole):
+	case errors.Is(err, auth.ErrWeakPassword), errors.Is(err, auth.ErrLongPassword), errors.Is(err, auth.ErrBadUsername), errors.Is(err, auth.ErrBadRole):
 		return http.StatusUnprocessableEntity, "invalid", err.Error()
 	case errors.Is(err, auth.ErrNotFound):
 		return http.StatusNotFound, "not_found", err.Error()

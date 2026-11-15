@@ -34,6 +34,9 @@ func TestChangePassword(t *testing.T) {
 		if _, err := m.ChangePassword("192.0.2.1", "admin", goodPassword, "short", keep.ID); !errors.Is(err, ErrWeakPassword) {
 			t.Fatalf("a weak new password: %v", err)
 		}
+		if _, err := m.ChangePassword("192.0.2.1", "admin", goodPassword, strings.Repeat("x", MaxPasswordLength+1), keep.ID); !errors.Is(err, ErrLongPassword) {
+			t.Fatalf("a new password over %d bytes: %v", MaxPasswordLength, err)
+		}
 	}
 	if err := m.Limiter().Check(userKey("admin"), "ip:192.0.2.1"); err != nil {
 		t.Fatalf("refused new passwords counted as failures: %v", err)
@@ -102,6 +105,9 @@ func TestResetPassword(t *testing.T) {
 	}
 	if _, _, err := m.ResetPassword("admin", "short"); !errors.Is(err, ErrWeakPassword) {
 		t.Fatalf("a weak password: %v", err)
+	}
+	if _, _, err := m.ResetPassword("admin", strings.Repeat("x", MaxPasswordLength+1)); !errors.Is(err, ErrLongPassword) {
+		t.Fatalf("a password over %d bytes: %v", MaxPasswordLength, err)
 	}
 	stale := m.Users()[0].Password
 	u, ended, err := m.ResetPassword("Admin", newPassword)

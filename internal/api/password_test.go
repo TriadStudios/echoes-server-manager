@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,6 +354,49 @@ func TestResetPasswordOnlyOnTheSocket(t *testing.T) {
 		t.Fatalf("the entry of the reset: %+v", e)
 	}
 	rg.noPasswords(firstPassword, secondPassword, weakPassword)
+}
+
+// A password over 1024 bytes is refused like a weak one, 422 invalid, on
+// the change, the reset and setup alike, not as a failure of ESM (500):
+// nothing is changed, nothing counts against the login limit, nothing is
+// logged as an error, and the answer does not repeat the password.
+func TestOverlongPasswordIsRefused(t *testing.T) {
+	long := strings.Repeat("Q", auth.MaxPasswordLength+1)
+	var logs bytes.Buffer
+	rg := newRig(t, Options{FailDelay: time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	refused := func(what string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusUnprocessableEntity || errCode(rec) != "invalid" ||
+			!strings.Contains(rec.Body.String(), "at most 1024 bytes") || strings.Contains(rec.Body.String(), "QQQQ") {
+			t.Fatalf("%s: %d %.300s", what, rec.Code, rec.Body)
+		}
+	}
+	code, err := rg.auth.EnsureSetupCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused("setup", rg.do("POST", "/api/v1/setup", jsonBody(SetupRequest{Code: code, Username: "admin", Password: long}), jsonHeader))
+	// The refusal used up neither the code nor an attempt.
+	rg.status(rg.do("POST", "/api/v1/setup", jsonBody(SetupRequest{Code: code, Username: "admin", Password: firstPassword}), jsonHeader), http.StatusCreated)
+	here, csrf, _ := rg.login("admin", firstPassword, rigRemote)
+	other, _, _ := rg.login("admin", firstPassword, rigRemote)
+	for range auth.DefaultRateMax + 1 {
+		refused("change", rg.change(here, csrf, rigRemote, firstPassword, long))
+		refused("reset", rg.socket("PUT", "/api/v1/users/admin/password", jsonBody(PasswordResetRequest{Password: long})))
+	}
+	if !rg.open(here) || !rg.open(other) {
+		t.Fatal("a refused password ended a session")
+	}
+	if _, _, st := rg.login("admin", firstPassword, rigRemote); st != http.StatusOK {
+		t.Fatalf("the password after the refusals: %d", st)
+	}
+	if strings.Contains(logs.String(), "request failed") || strings.Contains(logs.String(), "QQQQ") {
+		t.Fatalf("a refused password was logged as a failure:\n%.500s", logs.String())
+	}
+	if n := len(rg.entries("user.password.change")) + len(rg.entries("user.password.reset")); n != 2*(auth.DefaultRateMax+1) {
+		t.Fatalf("%d entries", n)
+	}
+	rg.noPasswords(long, "QQQQ", firstPassword)
 }
 
 // GET /users lists the logins for admins: name, role, last login and open
