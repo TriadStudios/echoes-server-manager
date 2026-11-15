@@ -224,6 +224,64 @@ network is refused for every login and token. It ends every session of the
 login, and the new password logs in at once, also after failed logins of
 that name. Every change and reset is in the audit log, never the password.
 
+### Reach the API from another machine
+
+A control panel, a bot or a website on another machine or in a container
+reaches the API through the **API listener**: a second listener, off by
+default, TLS only, for API tokens. Add it to `esm.json` and restart ESM
+(game servers keep running):
+
+```json
+"api_listener": {
+  "listen": "192.0.2.10:8743",
+  "host_names": ["esm.example.com"]
+}
+```
+
+- `listen` is one address of the box and a port; there is no default.
+  Every address (`0.0.0.0`, `[::]`) needs `"all_addresses": true` as well,
+  and then `host_names` must name what clients use.
+- `host_names` are the names (or addresses) clients use for it, with or
+  without a port. It answers to those and to its listen address, nothing
+  else (421).
+- Without `tls_cert` and `tls_key` (your own certificate and key, set
+  together; a relative path is taken from the root), ESM makes a
+  self-signed certificate once and keeps it in `<root>/secrets/`. It makes
+  a new one when the listener's names change or 30 days before the ten
+  years are up, and keeps the key, so the public key pin stays the same.
+- It takes API tokens only, each with its role
+  (`esm token create --role read --name panel`). A browser login, setup
+  and the web page are refused there unless you set `"page": true`; calls
+  that work only on the box (`esm user passwd`) stay refused.
+
+The certificate's two fingerprints are in the start log, on the Box
+screen, in `GET /api/v1/box`, and here:
+
+```sh
+esm tls
+# API listener on 192.0.2.10:8743 with TLS (API tokens only): certificate made by ESM, self-signed,
+# valid until 2036-11-12, file /opt/durinn/secrets/api-listener.crt; SHA-256 D7:70:0C:...:67:07;
+# public key pin sha256//TSL59PnSHoe+qcdInJbWNR7e6DLKMKCrVzfyzpGDrTk=
+```
+
+A client pins the public key. The pin alone checks the key; with a copy
+of the certificate file as the only certificate it trusts, the client
+checks the certificate and the host name too:
+
+```sh
+PIN='sha256//TSL59PnSHoe+qcdInJbWNR7e6DLKMKCrVzfyzpGDrTk='
+curl -k --pinnedpubkey "$PIN" -H "Authorization: Bearer $ESM_TOKEN" https://192.0.2.10:8743/api/v1/instances
+curl --cacert api-listener.crt --pinnedpubkey "$PIN" -H "Authorization: Bearer $ESM_TOKEN" https://esm.example.com:8743/api/v1/instances
+esm --url https://192.0.2.10:8743 --pin "$PIN" list
+```
+
+`GET /api/v1/instances` gives a panel every server in one call: state,
+build, ports, display name, and the player count in `live.players`, which
+is null (with the reason in `live.unknown`) while the game server does not
+report it. Login limits, request limits and the audit log are as on the
+main listener. See [The API listener](docs/DESIGN.md#the-api-listener) for
+the details.
+
 ### Linux: keep servers running
 
 ESM prefers systemd user units for game servers (memory and CPU limits are
@@ -434,7 +492,8 @@ The page is served on the same address as the API: by default
 `http://127.0.0.1:8740`, on the box itself. From another machine, use an
 SSH tunnel (`ssh -L 8740:127.0.0.1:8740 <esm-account>@<box>`, then open
 `http://127.0.0.1:8740`) or a reverse proxy with TLS (set
-`behind_tls_proxy`). The first visit asks for the setup code and creates
+`behind_tls_proxy`); the [API listener](#reach-the-api-from-another-machine)
+serves the page too with `"page": true`. The first visit asks for the setup code and creates
 the admin login; after that the page is the login. A forgotten password is
 set anew on the box with `esm user passwd` (see
 [Logins and passwords](#logins-and-passwords)).
@@ -475,6 +534,7 @@ esm version --check                          # is a newer ESM out?
 esm update-self                              # put it in place (signature checked)
 esm user list                                # the logins and their last login
 esm user passwd admin                        # a new password for a login (asked twice)
+esm tls                                      # the API listener and the pins of its certificate
 ```
 
 Every command prints one result line, or one JSON object with `--json`, and
