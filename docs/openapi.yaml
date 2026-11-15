@@ -46,6 +46,25 @@ info:
     address, or a `public_hosts` entry); any other gets 421
     `misdirected_request`. The unix socket is not checked.
 
+    The API listener (`api_listener` in esm.json, off unless set) is a
+    second TCP listener for clients on other machines, such as a control
+    panel, a bot or a website. It speaks TLS only (1.2 at least), with the
+    operator's certificate or one ESM made, self-signed; a client pins it
+    by the public key pin or the SHA-256 fingerprint in
+    `api_listener.certificate` of `GET /api/v1/box`. Its `Host` check takes
+    its `host_names` entries and its listen address (with or without a
+    port), nothing else (421 `misdirected_request`). Unless `page: true` is
+    set it takes API tokens only, each with its role: a request with the
+    session cookie and no bearer token gets 401 `tokens_only`; setup,
+    login and logout (`/setup`, `/login`, `/logout`) get 403
+    `tokens_only`; the web page is not served (404). With `page: true` the
+    page and its logins work there as on the main listener, always as
+    https (the cookie is Secure, an `Origin` must say https). The calls
+    answered only on the unix socket stay refused there (403
+    `socket_only`). The same limits apply as on the main listener; the
+    login limit there always counts per client address too, as its
+    clients reach it directly (`behind_tls_proxy` does not apply to it).
+
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
     arrive within 30 seconds (408 `request_timeout`); request headers are at
@@ -69,6 +88,9 @@ info:
     name: MIT
 servers:
   - url: http://127.0.0.1:8740
+    description: The main listener (listen in esm.json), loopback by default.
+  - url: https://192.0.2.10:8743
+    description: An API listener (api_listener in esm.json), for clients on other machines; the address is an example.
 security:
   - bearer: []
   - session: []
@@ -91,6 +113,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SetupStatus" }
+        "403": { $ref: "#/components/responses/Error" }
     post:
       tags: [logins]
       summary: Create the first admin with the one-time setup code
@@ -101,7 +124,9 @@ paths:
         and an `Origin` header, when sent, must match the host (else 403
         `origin`); a request without Origin, as the command line and curl
         send, is accepted. The password needs 12 characters or more and at
-        most 1024 bytes (else 422 `invalid`; the code stays valid).
+        most 1024 bytes (else 422 `invalid`; the code stays valid). On the
+        API listener without `page: true`, this and `GET /setup` get 403
+        `tokens_only`.
       security: []
       requestBody:
         required: true
@@ -129,7 +154,8 @@ paths:
         415 `unsupported_media_type`), and an `Origin` header, when sent,
         must match the host (else 403 `origin`); a request without Origin,
         as the command line and curl send, is accepted. A session lasts 12
-        hours from login, however much it is used.
+        hours from login, however much it is used. On the API listener
+        without `page: true`, login gets 403 `tokens_only`.
       security: []
       requestBody:
         required: true
@@ -141,8 +167,9 @@ paths:
           description: |
             Logged in. The `esm_session` cookie is HttpOnly, SameSite=Strict,
             Path=/, has Max-Age 43200 (the session's 12 hours), and is Secure
-            when ESM has TLS or `behind_tls_proxy` is set. The answer holds
-            the CSRF token, never the session id.
+            when ESM has TLS or `behind_tls_proxy` is set, and always on the
+            API listener. The answer holds the CSRF token, never the session
+            id.
           headers:
             Set-Cookie:
               schema: { type: string }
@@ -157,6 +184,8 @@ paths:
     post:
       tags: [logins]
       summary: End the session and clear the cookie
+      description: |
+        On the API listener without `page: true`, 403 `tokens_only`.
       security: []
       requestBody: { $ref: "#/components/requestBodies/Empty" }
       responses:
@@ -223,6 +252,11 @@ paths:
     get:
       tags: [box]
       summary: Facts about this box and the service
+      description: |
+        Also the API listener (`api_listener`, null when it is off) with
+        the certificate it serves: its SHA-256 fingerprint and its public
+        key pin, which a client of the API listener pins it by. Like the
+        rest of the box, for every role (nothing in it is secret).
       responses:
         "200":
           description: Box facts.
@@ -426,6 +460,13 @@ paths:
     get:
       tags: [instances]
       summary: List instances with their status
+      description: |
+        Each instance as `GET /api/v1/instances/{name}` gives it: its
+        settings (`display_name`, `build`, `ports` among them), `status`
+        (with `state`), and `live` with the player count, so one call is
+        enough for a panel that shows every server. `live.players` is null
+        whenever the game server does not report it (not running, not ready
+        yet, no status file), and `live.unknown` says why.
       responses:
         "200":
           description: Instances, sorted by name.
@@ -1105,7 +1146,11 @@ components:
                 wrong_password (403: the current password given to change
                 it is wrong), session_only (403: only a login's own browser
                 session changes its password, never a token), socket_only
-                (403: a call answered only on the unix socket),
+                (403: a call answered only on the unix socket), tokens_only
+                (on the API listener without page: 401 for a session
+                cookie without a bearer token, 403 for setup, login and
+                logout), misdirected_request (421: a Host that is not the
+                listener's),
                 hidden_unsafe_secrets (403: the read role asked for the output
                 of an instance with passwords on the command line),
                 looks_like_secret (422: a rule key or an extra argument names
@@ -1233,6 +1278,11 @@ components:
         behind_tls_proxy:
           type: boolean
           description: The behind_tls_proxy setting. Browsers reach ESM through a TLS proxy, so the session cookie is Secure.
+        api_listener:
+          description: The API listener (api_listener in esm.json); null when it is off.
+          oneOf:
+            - $ref: "#/components/schemas/APIListener"
+            - type: "null"
         started: { type: string, format: date-time }
         uptime_seconds: { type: integer }
         instances: { type: integer }
@@ -1254,6 +1304,53 @@ components:
           type: boolean
           description: A newer ESM release is out (see release). Nothing is updated without POST /box/self-update.
         release: { $ref: "#/components/schemas/ReleaseStatus" }
+    APIListener:
+      type: object
+      description: The API listener, TLS only, for clients on other machines.
+      properties:
+        listen: { type: string, description: "The address it is bound to, with its port.", examples: ["192.0.2.10:8743"] }
+        all_addresses: { type: boolean, description: It listens on every address of the box (all_addresses in esm.json). }
+        host_names:
+          type: array
+          description: The further names it answers to in Host (host for any port, or host:port), besides its listen address.
+          items: { type: string }
+          examples: [["esm.example.com"]]
+        page:
+          type: boolean
+          description: The web page, login and setup are served on it too. When false it takes API tokens only.
+        certificate: { $ref: "#/components/schemas/Certificate" }
+    Certificate:
+      type: object
+      description: |
+        The certificate the API listener serves. A client pins it by
+        spki_pin (curl --pinnedpubkey takes it as it is; it stays the same
+        while the key does, also when ESM makes the certificate again for
+        new host names) or by sha256, the certificate's own fingerprint,
+        which changes with every new certificate.
+      properties:
+        source:
+          type: string
+          enum: [made, operator]
+          description: made, by ESM, self-signed (ECDSA P-256, valid for ten years, kept in secrets/); or operator, the tls_cert and tls_key of api_listener.
+        file:
+          type: string
+          description: The certificate file. For one ESM made, a client may trust a copy of it as the only issuer (curl --cacert).
+        sha256:
+          type: string
+          description: SHA-256 of the certificate (DER) in upper-case hex pairs with colons, as openssl x509 -fingerprint -sha256 prints it.
+          examples: ["D7:70:0C:A6:A9:18:25:C9:4C:FD:51:50:6B:09:09:04:EF:46:AC:38:DC:D8:E4:C3:15:FB:EA:78:A4:A1:67:07"]
+        spki_pin:
+          type: string
+          description: sha256// and the standard base64 SHA-256 of the certificate's public key (its DER SubjectPublicKeyInfo).
+          examples: ["sha256//TSL59PnSHoe+qcdInJbWNR7e6DLKMKCrVzfyzpGDrTk="]
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        dns_names:
+          type: array
+          items: { type: string }
+        ip_addresses:
+          type: array
+          items: { type: string }
     ReleaseStatus:
       type: object
       description: |
@@ -1770,7 +1867,15 @@ components:
           type: string
           enum: ["", cgroup, process]
           description: cgroup is the server's systemd unit (the server and everything it started); process is the resident memory of the server process alone.
-        players: { type: [integer, "null"], description: Player count from the running server's status file. }
+        players:
+          type: [integer, "null"]
+          minimum: 0
+          description: |
+            The player count the running game server reports in its status
+            file. Known only when the server reports it: null while it is
+            not running, has not said it is ready, or has written no status
+            file (or one from an earlier run), with the reason in unknown.
+            A null is not 0 players.
         last_save: { type: [string, "null"], format: date-time, description: Last world save named in the status file. }
         steam_server_id:
           type: [string, "null"]
