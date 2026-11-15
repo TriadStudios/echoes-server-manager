@@ -1408,6 +1408,17 @@ would end up in the shell history and in the process list.
 requests, ends event streams, stops watching and scheduling, flushes the
 audit log, removes the socket, and leaves game servers running.
 
+On Windows the SIGINT is a Ctrl+C or Ctrl+Break in the console of
+`serve`. A process there can start with Ctrl+C turned off: one started
+with `start /b` or in a new process group, and one started by a process
+that has it off (a program run in the background from Git Bash is one).
+`serve` turns Ctrl+C back on for itself when it starts, as Go does on
+Linux for a SIGINT it was started with ignored. The trade-off: an ESM
+started in the background of a console now ends when Ctrl+C is pressed in
+that console, like one in the foreground. (`esm logs -f` does the same.)
+Game servers are not affected: they run without a console, in a process
+group of their own, so no Ctrl+C reaches them.
+
 ## Safety rules
 
 1. Never run as root.
