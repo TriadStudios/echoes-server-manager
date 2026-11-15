@@ -6,9 +6,14 @@
 //
 //	setup.json   hash and expiry of the one-time setup code
 //	users.json   users and password hashes
+//	logins.json  when each user last logged in
 //	tokens.json  API tokens (only their SHA-256 is stored)
 //
 // Sessions are kept in memory only.
+//
+// A user changes their own password with the current one (ChangePassword,
+// which ends the user's other sessions); the box owner sets one without it
+// (ResetPassword, which ends them all).
 package auth
 
 import (
@@ -47,6 +52,8 @@ var (
 	ErrCSRF           = errors.New("missing or wrong X-CSRF-Token header")
 	ErrOrigin         = errors.New("origin header does not match the host")
 	ErrNotJSON        = errors.New("the body must be JSON, sent with Content-Type: application/json")
+	// ErrWrongPassword is a wrong current password given to change it.
+	ErrWrongPassword = errors.New("the current password is wrong")
 )
 
 // RateLimitError is returned when a client or username has failed too often.
@@ -71,6 +78,7 @@ const (
 	secretsDir          = "secrets"
 	setupFile           = "secrets/setup.json"
 	usersFile           = "secrets/users.json"
+	loginsFile          = "secrets/logins.json"
 	tokensFile          = "secrets/tokens.json"
 	lastUsedPersistStep = time.Minute
 )
@@ -152,6 +160,26 @@ type usersDoc struct {
 	Users []User `json:"users"`
 }
 
+// loginsDoc is logins.json: when each user (by name) last logged in. It is a
+// file of its own, not a field of users.json, so that an older ESM, which
+// refuses a users.json with a field it does not know, still reads its
+// users after a login with this one.
+type loginsDoc struct {
+	LastLogin map[string]time.Time `json:"last_login"`
+}
+
+// Login is a user as the list of logins shows it: never the password hash.
+type Login struct {
+	Username string
+	Role     Role
+	Created  time.Time
+	// LastLogin is when the user last logged in (zero: never, or not since
+	// this ESM began to keep it).
+	LastLogin time.Time
+	// Sessions is how many sessions of the user are open now.
+	Sessions int
+}
+
 type tokensDoc struct {
 	Tokens []Token `json:"tokens"`
 }
@@ -166,6 +194,7 @@ type Manager struct {
 	tokens    []Token
 	persisted map[string]time.Time // token id -> last_used as written to disk
 	sessions  map[string]*Session  // sha256(session id) -> session
+	lastLogin map[string]time.Time // user name -> last login
 
 	limiter *Limiter
 }
@@ -196,10 +225,19 @@ func New(st *store.Store, opts Options) (*Manager, error) {
 	for _, t := range m.tokens {
 		m.persisted[t.ID] = t.LastUsed
 	}
+	// The last logins are for showing only: a file that cannot be read is
+	// started anew rather than keeping ESM from starting.
+	var ld loginsDoc
+	if err := st.ReadJSON(loginsFile, &ld); err == nil && ld.LastLogin != nil {
+		m.lastLogin = ld.LastLogin
+	} else {
+		m.lastLogin = map[string]time.Time{}
+	}
 	return m, nil
 }
 
-// Limiter returns the login rate limiter (shared by login and setup).
+// Limiter returns the login rate limiter (shared by login, setup and the
+// change of a password).
 func (m *Manager) Limiter() *Limiter { return m.limiter }
 
 func (m *Manager) now() time.Time { return m.opts.Now().UTC() }
@@ -442,7 +480,174 @@ func (m *Manager) Login(addr, username, password string) (*Session, error) {
 	}
 	release()
 	m.limiter.Reset(userKey(username))
-	return m.newSession(found.Username, found.Role)
+	s, err := m.newSession(found.Username, found.Role, found.Password)
+	if err != nil {
+		return nil, err
+	}
+	m.noteLogin(found.Username)
+	return s, nil
+}
+
+// noteLogin records a login of username now, in memory and in
+// logins.json. Only names of existing users are kept. A failure to write
+// the file does not fail the login: the time is kept in memory all the
+// same.
+func (m *Manager) noteLogin(username string) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := map[string]time.Time{}
+	for _, u := range m.users {
+		if t, ok := m.lastLogin[u.Username]; ok {
+			next[u.Username] = t
+		}
+	}
+	next[username] = now
+	_ = m.st.WriteJSON(loginsFile, loginsDoc{LastLogin: next}, 0o600)
+	m.lastLogin = next
+}
+
+// Logins lists the users as the list of logins shows them, in the order
+// they were made.
+func (m *Manager) Logins() []Login {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]Login, 0, len(m.users))
+	for _, u := range m.users {
+		l := Login{Username: u.Username, Role: u.Role, Created: u.Created, LastLogin: m.lastLogin[u.Username]}
+		for _, s := range m.sessions {
+			if s.Username == u.Username && now.Before(s.Expires) {
+				l.Sessions++
+			}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// userIndexLocked is the index of the user named name (any case), or -1.
+func (m *Manager) userIndexLocked(name string) int {
+	return slices.IndexFunc(m.users, func(u User) bool { return strings.EqualFold(u.Username, name) })
+}
+
+// ChangePassword gives the user username the password next, when current
+// is the user's password now, and ends every other session of the user:
+// all but the one whose id is keep ("" ends them all). It returns how many
+// sessions it ended.
+//
+// The new password must pass CheckPassword. That is checked first, so a
+// new password that is refused tests nothing and counts nothing. A wrong
+// current password (ErrWrongPassword) counts against the login rate limit
+// exactly like a failed login: against the user name and, unless addr is
+// "", the client address addr, with the same keys, so that this call is no
+// faster a way to guess a password than the login. While either key is at
+// the limit the attempt is refused with *RateLimitError before the
+// password is checked, and so is a login after failures here.
+func (m *Manager) ChangePassword(addr, username, current, next, keep string) (ended int, err error) {
+	if err := CheckPassword(next); err != nil {
+		return 0, err
+	}
+	keys := []string{userKey(username)}
+	if addr != "" {
+		keys = append(keys, "ip:"+addr)
+	}
+	release, err := m.limiter.Reserve(keys...)
+	if err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	i := m.userIndexLocked(username)
+	var was PasswordHash
+	if i >= 0 {
+		was = m.users[i].Password
+	}
+	m.mu.Unlock()
+	if i < 0 {
+		_ = VerifyPassword(dummyHash(m.opts.Iterations), current)
+		return 0, ErrWrongPassword // the reservation stays as the failure
+	}
+	if !VerifyPassword(was, current) {
+		return 0, ErrWrongPassword // the reservation stays as the failure
+	}
+	release()
+	m.limiter.Reset(userKey(username))
+	h, err := HashPassword(next, m.opts.Iterations)
+	if err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i = m.userIndexLocked(username)
+	if i < 0 || m.users[i].Password != was {
+		// Changed (or reset) meanwhile: current is no longer the password.
+		return 0, ErrWrongPassword
+	}
+	if err := m.setPasswordLocked(i, h); err != nil {
+		return 0, err
+	}
+	return m.endSessionsLocked(m.users[i].Username, keep), nil
+}
+
+// ResetPassword gives the user username (any case) the password next
+// without asking for the current one, and ends every session of the user.
+// It is for the box owner, who reaches it over the unix socket only (esm
+// user passwd): the way back in after a forgotten password. It also forgets
+// the failed logins counted against the user name, so the user can log in
+// with the new password at once. It returns the user and how many sessions
+// it ended; ErrNotFound when there is no such user.
+func (m *Manager) ResetPassword(username, next string) (User, int, error) {
+	if err := CheckPassword(next); err != nil {
+		return User{}, 0, err
+	}
+	h, err := HashPassword(next, m.opts.Iterations)
+	if err != nil {
+		return User{}, 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := m.userIndexLocked(username)
+	if i < 0 {
+		return User{}, 0, ErrNotFound
+	}
+	if err := m.setPasswordLocked(i, h); err != nil {
+		return User{}, 0, err
+	}
+	u := m.users[i]
+	m.limiter.Reset(userKey(u.Username))
+	return u, m.endSessionsLocked(u.Username, ""), nil
+}
+
+// setPasswordLocked stores h as the password of the user at index i.
+func (m *Manager) setPasswordLocked(i int, h PasswordHash) error {
+	users := slices.Clone(m.users)
+	users[i].Password = h
+	if err := m.st.WriteJSON(usersFile, usersDoc{Users: users}, 0o600); err != nil {
+		return err
+	}
+	m.users = users
+	return nil
+}
+
+// endSessionsLocked ends every session of the user username except the one
+// whose id is keep, and returns how many of them had not expired yet.
+func (m *Manager) endSessionsLocked(username, keep string) int {
+	keepKey := ""
+	if keep != "" {
+		keepKey = sha256Hex(keep)
+	}
+	now := m.now()
+	n := 0
+	for k, s := range m.sessions {
+		if k == keepKey || !strings.EqualFold(s.Username, username) {
+			continue
+		}
+		if now.Before(s.Expires) {
+			n++
+		}
+		delete(m.sessions, k)
+	}
+	return n
 }
 
 var (
@@ -457,7 +662,11 @@ func dummyHash(iter int) PasswordHash {
 	return dummy
 }
 
-func (m *Manager) newSession(username string, role Role) (*Session, error) {
+// newSession opens a session for the user whose password was checked
+// against verified. When the password changed while the check ran (a
+// change or a reset), no session is opened: it would outlive the change,
+// which ends the sessions made with the old password.
+func (m *Manager) newSession(username string, role Role, verified PasswordHash) (*Session, error) {
 	id, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -471,6 +680,10 @@ func (m *Manager) newSession(username string, role Role) (*Session, error) {
 		Expires: now.Add(m.opts.SessionLife), LastSeen: now}
 	m.PruneSessions()
 	m.mu.Lock()
+	if i := m.userIndexLocked(username); i < 0 || m.users[i].Password != verified {
+		m.mu.Unlock()
+		return nil, ErrBadCredentials
+	}
 	m.sessions[sha256Hex(id)] = s
 	m.mu.Unlock()
 	cp := *s
@@ -646,7 +859,8 @@ func StatusCode(err error) int {
 	case errors.Is(err, ErrBadCredentials), errors.Is(err, ErrBadSetupCode),
 		errors.Is(err, ErrBadToken), errors.Is(err, ErrNoSession):
 		return http.StatusUnauthorized
-	case errors.Is(err, ErrForbidden), errors.Is(err, ErrCSRF), errors.Is(err, ErrOrigin):
+	case errors.Is(err, ErrForbidden), errors.Is(err, ErrCSRF), errors.Is(err, ErrOrigin), errors.Is(err, ErrWrongPassword):
+		// A wrong current password is not 401: the caller is logged in.
 		return http.StatusForbidden
 	case errors.Is(err, ErrSetupDone), errors.Is(err, ErrUserExists):
 		return http.StatusConflict
