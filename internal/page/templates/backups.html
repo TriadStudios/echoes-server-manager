@@ -10,7 +10,7 @@
 {{range choices $s.Backup.Every}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
 </select></label>
 <label class="field"><span>Keep the newest</span><input type="number" name="keep" min="1" max="1000" value="{{$s.Backup.Keep}}"></label>
-{{if $v.Admin}}<button type="submit" class="btn quiet">Save policy</button>{{end}}
+{{if $v.Admin}}<button type="submit" class="btn primary">Save policy</button>{{end}}
 </div>
 </fieldset>
 <p class="note">Scheduled backups run only while the server runs ({{every $s.Backup.Every}} now). ESM also always backs up before every update and before a restore; that cannot be turned off. {{len $b.List}} of {{$s.Backup.Keep}} kept, {{size $b.Total}}. A backup of a running server waits for its next world save, up to a set time; the list says when it did not see one. To keep copies off this box, copy the backups folder of the ESM root (see <a href="/box">Box</a>).</p>
@@ -19,7 +19,7 @@
 
 <section class="stack" aria-labelledby="backups-h">
 <h2 class="label" id="backups-h">Backups</h2>
-{{if $b.Why}}<p class="alert">{{$b.Why}}</p>{{end}}
+{{if $b.Why}}<p class="alert error"><strong class="tag">Error</strong> {{$b.Why}}</p>{{end}}
 {{if $b.List}}<div class="panel flush scroll">
 <table class="list">
 <caption class="sr">Backups of {{$s.Name}}, newest first</caption>
@@ -39,13 +39,13 @@
 <td class="mono">{{size .SizeBytes}}</td>
 <td>{{if .SaveConfirmed}}confirmed{{else}}<span class="warnword">not seen</span>{{end}}</td>
 {{if $v.Operator}}<td><div class="actions">
-<button type="button" class="btn" data-act="restore" data-name="{{$s.Name}}" data-id="{{.ID}}" data-confirm="Restore the backup taken {{when .Created}}? The server stops, the current world is kept as a new backup, this one is put in place and the server starts again. Players lose everything since this backup.">Restore</button>
+<button type="button" class="btn danger" data-act="restore" data-name="{{$s.Name}}" data-id="{{.ID}}" data-confirm="Restore the backup taken {{when .Created}}? The server stops, the current world is kept as a new backup, this one is put in place and the server starts again. Players lose everything since this backup.">Restore</button>
 <a class="btn" href="/api/v1/instances/{{$s.Name}}/backups/{{.ID}}/download" download>Download</a>
 </div></td>{{end}}
 </tr>{{end}}
 </tbody>
 </table>
 </div>{{else if not $b.Why}}<p class="panel empty">No backups yet.</p>{{end}}
-<p class="warnword">Restore stops the server, keeps the current world as a new backup, puts the chosen one in place and starts the server again if it was running. Players lose everything since that backup.</p>
+<p class="alert warn"><strong class="tag">Warning</strong> Restore stops the server, keeps the current world as a new backup, puts the chosen one in place and starts the server again if it was running. Players lose everything since that backup.</p>
 </section>
 {{end}}

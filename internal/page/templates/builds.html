@@ -7,7 +7,7 @@
 <section class="stack" aria-labelledby="installed-h">
 <div class="spread">
 <h2 class="label" id="installed-h">Installed</h2>
-{{if and $v.Admin $d.Builds}}<button type="button" class="btn" data-act="prune" data-confirm="Remove every build that no server runs or keeps for a rollback?">Remove unused builds</button>{{end}}
+{{if and $v.Admin $d.Builds}}<button type="button" class="btn danger" data-act="prune" data-confirm="Remove every build that no server runs or keeps for a rollback?">Remove unused builds</button>{{end}}
 </div>
 {{if $d.Builds}}<div class="panel flush scroll">
 <table class="list">
@@ -29,7 +29,7 @@
 <td><time datetime="{{iso .Installed}}">{{when .Installed}}</time></td>
 <td class="mono">{{size .SizeBytes}}</td>
 <td>{{if .Current}}{{join .Current ", "}}{{end}}{{if and .Current .Kept}}; {{end}}{{if .Kept}}<span class="dim">kept for a rollback by {{join .Kept ", "}}</span>{{end}}{{if not .UsedBy}}<span class="dim">nothing</span>{{end}}</td>
-{{if $v.Admin}}<td>{{if .UsedBy}}<span class="dim">in use</span>{{else}}<button type="button" class="btn" data-act="remove-build" data-id="{{.Version}}" data-confirm="Remove build {{.Version}}?">Remove</button>{{end}}</td>{{end}}
+{{if $v.Admin}}<td>{{if .UsedBy}}<span class="dim">in use</span>{{else}}<button type="button" class="btn danger" data-act="remove-build" data-id="{{.Version}}" data-confirm="Remove build {{.Version}}?">Remove</button>{{end}}</td>{{end}}
 </tr>{{end}}
 </tbody>
 </table>
@@ -55,23 +55,26 @@
 <fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Archive</legend>
 <label class="field"><span>Archive in the import folder, or https address (.zip, .tar.gz)</span><input type="text" name="source" class="mono" required placeholder="https://..."></label>
-<label class="field"><span>SHA-256 of the archive (required for a web address)</span><input type="text" name="sha256" class="mono" pattern="[0-9a-fA-F]{64}" maxlength="64"></label>
+<div class="setting">
+<label class="field"><span>SHA-256 of the archive</span><input type="text" name="sha256" class="mono" pattern="[0-9a-fA-F]{64}" maxlength="64" aria-describedby="sha256-hint"></label>
+<p class="hint" id="sha256-hint">Required for a web address: 64 hexadecimal digits.</p>
+</div>
 </fieldset>
-{{if $v.Admin}}<button type="submit" class="btn quiet">Download and install</button>{{end}}
+{{if $v.Admin}}<button type="submit" class="btn primary">Download and install</button>{{end}}
 </form>
 <div class="panel stack off" aria-labelledby="steam-h">
 <h3 class="sub" id="steam-h">From Steam</h3>
-<p class="dim">Install and update with SteamCMD. Available once the dedicated server is released on Steam.</p>
+<p class="note">Install and update with SteamCMD. Available once the dedicated server is released on Steam.</p>
 <button type="button" class="btn" disabled>Not available yet</button>
 </div>
 </div>
 </section>
 
-<section class="panel spread" aria-labelledby="steamfiles-h">
-<div>
-<h2 class="sub" id="steamfiles-h">Steam runtime files</h2>
-<p class="note">Files a server may need to log in to Steam. ESM does not check them yet, so it cannot say whether they are present.</p>
-</div>
+<section class="panel" aria-labelledby="steamfiles-h">
+<div class="spread">
+<h2 class="label" id="steamfiles-h">Steam runtime files</h2>
 <span class="pill" data-state="unknown"><span class="dot" aria-hidden="true"></span><span class="word">Not checked</span></span>
+</div>
+<p class="note">Files a server may need to log in to Steam. ESM does not check them yet, so it cannot say whether they are present.</p>
 </section>
 {{end}}

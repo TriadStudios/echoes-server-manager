@@ -4,7 +4,7 @@
 <a href="/servers/{{$s.Name}}/log"{{if eq $l.Source "server"}} aria-current="page"{{end}}>Server log</a>
 <a href="/servers/{{$s.Name}}/log?source=console"{{if eq $l.Source "console"}} aria-current="page"{{end}}>Console output</a>
 </nav>
-{{if $l.Why}}<p class="alert">{{$l.Why}}</p>{{else}}
+{{if $l.Why}}<p class="alert info"><strong class="tag">Note</strong> {{$l.Why}}</p>{{else}}
 <form class="tools" id="log-tools" role="search">
 <label class="field grow"><span>Search the log</span><input type="search" id="log-search" placeholder="joined, save, error"></label>
 <label class="field"><span>Show</span>

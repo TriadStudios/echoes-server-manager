@@ -11,11 +11,11 @@
 <body data-screen="{{.Screen}}"{{if .Events}} data-events="{{.Events}}"{{end}}>
 <a class="skip" href="#main">Skip to the content</a>
 <header class="top">
-<a class="brand" href="/"><span class="mark">ESM</span><span class="sub">Echoes Server Manager</span></a>
-{{if not .Bare}}<div class="who">
+<a class="brand" href="/"><span class="mark">ESM</span><span class="tagline">Echoes Server Manager</span></a>
+{{if not .Bare}}<div class="account">
 {{if .Box.Hostname}}<span class="mono dim">box: {{.Box.Hostname}}</span>{{end}}
 <span class="dim">{{.Session.ID}} <span class="role">{{.Session.Role}}</span></span>
-<button type="button" class="btn ghost" data-act="logout">Log out</button>
+<button type="button" class="btn" data-act="logout">Log out</button>
 </div>{{end}}
 </header>
 <div class="frame{{if .Bare}} bare{{end}}">
@@ -28,7 +28,7 @@
 </nav>{{end}}
 <main id="main" class="content">
 <p id="flash" class="flash" role="status" aria-live="polite"{{if not .Notice}} hidden{{end}}>{{.Notice}}</p>
-<noscript><p class="alert">This page reads without JavaScript, but every change (start, stop, saving settings, logging in) needs it.</p></noscript>
+<noscript><p class="alert info"><strong class="tag">Note</strong> This page reads without JavaScript, but every change (start, stop, saving settings, logging in) needs it.</p></noscript>
 {{template "content" .}}
 </main>
 </div>
@@ -59,20 +59,20 @@
 <a href="/servers/{{$s.Name}}/backups"{{if eq .Data.Tab "backups"}} aria-current="page"{{end}}>Backups</a>
 <a href="/servers/{{$s.Name}}/schedule"{{if eq .Data.Tab "schedule"}} aria-current="page"{{end}}>Schedule</a>
 </nav>
-{{range $s.Warnings}}<p class="alert{{if eq . "secrets_on_command_line"}} danger{{end}}">{{warning . $s.UnsafeStoredSettings}}</p>{{end}}
+{{range $s.Warnings}}{{if eq . "secrets_on_command_line"}}<p class="alert error">{{warning . $s.UnsafeStoredSettings}}</p>{{else}}<p class="alert warn"><strong class="tag">Warning</strong> {{warning . $s.UnsafeStoredSettings}}</p>{{end}}{{end}}
 {{end}}
 
 {{define "update-note"}}{{if .Status.UpdateUnverified}}<p class="note"><span class="badge changed">New build</span> New build, checked at next start: <span class="mono">{{.Build}}</span> was put in place by an automatic update while the server was stopped, and nothing was started. The next start waits for it to get ready and goes back to <span class="mono">{{.Status.UpdateRollbackBuild}}</span> if it does not.</p>{{end}}
 {{if .UpdateAvailable}}<p class="note"><span class="badge changed">Update</span> Build <span class="mono">{{.Update.Target}}</span> is available.
 {{if .Update.Pending}}{{if .Update.Waiting}}Waiting: {{.Update.Waiting}}.{{else}}It is put in place at the next check.{{end}}{{else if .Update.Waiting}}{{.Update.Waiting}}.{{else}}auto_update is {{.AutoUpdate}}: update by hand.{{end}}
 {{if .Update.Overdue}}<span class="warnword">Waiting longer than {{.UpdateMaxWait}}.</span>{{end}}</p>{{end}}
-{{if .Update.LastError}}<p class="alert small">The last automatic update failed: {{.Update.LastError}}</p>{{end}}{{end}}
+{{if .Update.LastError}}<p class="alert error"><strong class="tag">Error</strong> The last automatic update failed: {{.Update.LastError}}</p>{{end}}{{end}}
 
 {{define "pill"}}<span class="pill" data-state="{{.Status.State}}" data-state-of="{{.Name}}"><span class="dot" aria-hidden="true"></span><span class="word">{{state .Status.State}}</span></span>{{end}}
 
 {{define "lifecycle"}}<button type="button" class="btn primary" data-act="start" data-name="{{.Name}}" data-when="idle"{{if not (idle .Status.State)}} hidden{{end}}>Start</button>
 <button type="button" class="btn primary" data-act="restart" data-name="{{.Name}}" data-when="active" data-confirm="Restart {{.Name}}? Players are disconnected while it restarts."{{if not (active .Status.State)}} hidden{{end}}>Restart</button>
-<button type="button" class="btn quiet" data-act="stop" data-name="{{.Name}}" data-when="active" data-confirm="Stop {{.Name}}? Players are disconnected."{{if not (active .Status.State)}} hidden{{end}}>Stop</button>{{end}}
+<button type="button" class="btn danger" data-act="stop" data-name="{{.Name}}" data-when="active" data-confirm="Stop {{.Name}}? Players are disconnected."{{if not (active .Status.State)}} hidden{{end}}>Stop</button>{{end}}
 
 {{define "activity"}}<div class="row">
 <span class="mono small dim when"><time datetime="{{iso .Time}}">{{when .Time}}</time></span>

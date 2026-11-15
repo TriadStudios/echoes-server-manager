@@ -1,6 +1,6 @@
 {{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$o := .Data.More}}
 {{template "tabs" .}}
-<div class="grid wide">
+<div class="grid cards">
 <section class="panel" aria-labelledby="details-h">
 <h2 class="label" id="details-h">Details</h2>
 <dl class="facts">
@@ -48,7 +48,7 @@
 </section>
 </div>
 
-<div class="grid wide">
+<div class="grid cards">
 <section class="panel" aria-labelledby="events-h">
 <h2 class="label" id="events-h">Recent events</h2>
 <div class="rows" data-events-of="{{$s.Name}}">
@@ -62,7 +62,7 @@
 <h2 class="label" id="log-h">Log (live)</h2>
 <a class="btn link" href="/servers/{{$s.Name}}/log">Open the full log</a>
 </div>
-{{if $o.LogWhy}}<p class="alert">{{$o.LogWhy}}</p>{{else}}<div class="logbox short" data-log-of="{{$s.Name}}" data-source="server" data-keep="20">
+{{if $o.LogWhy}}<p class="alert info"><strong class="tag">Note</strong> {{$o.LogWhy}}</p>{{else}}<div class="logbox short" data-log-of="{{$s.Name}}" data-source="server" data-keep="20">
 {{range $o.Log}}<div class="line{{if .Level}} {{.Level}}{{end}}">{{if .Level}}<span class="lvl">{{.Level}}</span>{{end}}{{.Text}}</div>{{else}}<div class="line dim" data-empty>No lines yet.</div>{{end}}
 </div>{{end}}
 </section>
@@ -76,16 +76,16 @@
 
 {{if $v.Operator}}<section class="panel" aria-labelledby="update-h">
 <h2 class="label" id="update-h">Update</h2>
-{{if $o.Updates}}<form class="inline" data-form="update" data-name="{{$s.Name}}">
+{{if $o.Updates}}<form class="tools" data-form="update" data-name="{{$s.Name}}">
 <label class="field"><span>Update to build</span>
 <select name="to" required>
 {{range $o.Updates}}<option value="{{.Version}}">{{.Version}} ({{.Channel}}{{if .Commit}}, {{.Commit}}{{end}})</option>{{end}}
 </select></label>
-<button type="submit" class="btn">Update</button>
+<button type="submit" class="btn primary">Update</button>
 </form>
 <p class="note">An update backs up the world first, stops the server, starts the new build and waits until it is ready. If it never gets ready, the old build is put back and started.</p>
 {{else}}<p class="note">No other {{$s.Channel}} build is installed. Install one under <a href="/builds">Builds</a>.</p>{{end}}
 </section>{{end}}
 
-<p class="warnword">Stop and Restart ask the server to stop and wait for it. Until it is confirmed that this server build saves the world when it is asked to stop, up to one autosave interval of progress can be lost. Back up first if players are on.</p>
+<p class="alert warn"><strong class="tag">Warning</strong> Stop and Restart ask the server to stop and wait for it. Until it is confirmed that this server build saves the world when it is asked to stop, up to one autosave interval of progress can be lost. Back up first if players are on.</p>
 {{end}}

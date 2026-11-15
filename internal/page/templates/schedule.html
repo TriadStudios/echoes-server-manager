@@ -5,10 +5,11 @@
 <fieldset class="bare"{{if not $v.Admin}} disabled{{end}}>
 <legend class="sr">Daily restart times</legend>
 <div class="tools">
-<label class="field grow"><span>Restart every day at (24-hour times, separated by commas; empty for none)</span>
-<input type="text" name="restart_at" class="mono" value="{{times $s.Schedule.RestartAt}}" placeholder="04:00, 16:00"></label>
-{{if $v.Admin}}<button type="submit" class="btn quiet">Save times</button>{{end}}
+<label class="field grow"><span>Restart every day at</span>
+<input type="text" name="restart_at" class="mono" value="{{times $s.Schedule.RestartAt}}" placeholder="04:00, 16:00" aria-describedby="restart-hint"></label>
+{{if $v.Admin}}<button type="submit" class="btn primary">Save times</button>{{end}}
 </div>
+<p class="hint" id="restart-hint">24-hour times, separated by commas; empty for none.</p>
 </fieldset>
 <dl class="facts">
 <div><dt>Times are in</dt><dd class="mono">the box's time zone, {{.Box.TimeZone}}</dd></div>
@@ -29,6 +30,6 @@
 
 <section class="panel stack" aria-labelledby="windows-h">
 <h2 class="label" id="windows-h">Update windows</h2>
-<p>ESM has no update windows yet: an update runs when an operator starts it, from the server's Overview.</p>
+<p class="note">ESM has no update windows yet: an update runs when an operator starts it, from the server's Overview.</p>
 </section>
 {{end}}
