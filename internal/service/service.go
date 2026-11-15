@@ -1,7 +1,8 @@
 // Package service wires ESM together and runs it: it opens the root, loads
 // the config, starts the supervisor, the build and instance managers, the
-// API and the web page, and listens on TCP and on the unix socket. Shutdown stops all of
-// that and leaves game servers running.
+// API and the web page, and listens on TCP and on the unix socket, and with
+// api_listener on the API listener too. Shutdown stops all of that and
+// leaves game servers running.
 package service
 
 import (
