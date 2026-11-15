@@ -5,8 +5,8 @@
 
    Every screen is made of the same few parts, in this order below:
    the frame (top bar, side menu, content), page heads, sections and
-   panels, notices, facts, state pills and badges, buttons, fields,
-   tables, rows, tabs and logs. Spacing comes from one scale (--space-*),
+   panels, notices, facts and tiles, state pills and badges, buttons,
+   fields, tables, rows, tabs and logs. Spacing comes from one scale (--space-*),
    and every control is at least --control tall. */
 
 :root {
@@ -90,6 +90,7 @@ a:hover { color: var(--gold-hover); }
 /* words that carry a state: the word says it, the colour repeats it */
 .good { color: var(--running); font-weight: 600; }
 .warnword { color: var(--warning); }
+.warnword[title] { cursor: help; }
 
 /* --- frame: top bar, side menu, content --- */
 
@@ -232,7 +233,7 @@ fieldset.bare { border: 0; padding: 0; display: flex; flex-direction: column; ga
 /* a fieldset's legend as the panel's heading, inside it, not on its border */
 fieldset.panel > legend { float: left; width: 100%; padding: 0; margin: 0; }
 
-.scroll { overflow-x: auto; }
+.scroll { overflow-x: auto; position: relative; }
 
 /* --- notices: a word says what kind, the colour repeats it --- */
 
@@ -269,6 +270,32 @@ fieldset.panel > legend { float: left; width: 100%; padding: 0; margin: 0; }
 .facts dt { color: var(--dim); font-size: var(--fs-tag); letter-spacing: 0.08em; text-transform: uppercase; }
 .facts dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .facts dd.mono { font-size: var(--fs-sm); }
+.facts .wide { grid-column: 1 / -1; }
+
+/* a strip of tiles: a key, a value and a line under it */
+.tiles { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: var(--space-3); }
+.tile {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) 14px;
+  background: var(--top);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.tile dt { color: var(--dim); font-size: var(--fs-tag); letter-spacing: 0.08em; text-transform: uppercase; }
+.tile dd { margin: 0; overflow-wrap: anywhere; }
+.tile .v { font-family: var(--head); font-size: 20px; line-height: 1.2; }
+
+/* one build, or the step from one to another */
+.flow { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) 10px; font-size: 18px; overflow-wrap: anywhere; }
+.flow .mono { font-size: 16px; }
+.flow .arrow { color: var(--dim); }
+.flow .newest { color: var(--gold); }
+
+/* a server's name as a small tag */
+.srv { display: inline-block; padding: 1px var(--space-2); border-radius: var(--radius-sm); background: var(--divider); font-family: var(--mono); font-size: var(--fs-xs); }
 
 /* --- state pills and badges: a word and a colour --- */
 
@@ -291,6 +318,14 @@ fieldset.panel > legend { float: left; width: 100%; padding: 0; margin: 0; }
 .pill[data-state="running"] { color: var(--running); border-color: var(--running); }
 .pill[data-state="starting"], .pill[data-state="stopping"], .pill[data-state="updating"], .pill[data-state="crashed"] { color: var(--warning); border-color: var(--warning); }
 .pill[data-state="failed"], .pill[data-state="deleted"] { color: var(--error); border-color: var(--error); }
+/* a pill that is not a server's state: ok, avail (something to act on),
+   wait, fail, info or muted */
+.pill.ok { color: var(--running); border-color: var(--running); }
+.pill.avail { color: var(--gold); border-color: var(--gold); }
+.pill.wait { color: var(--warning); border-color: var(--warning); }
+.pill.fail { color: var(--error); border-color: var(--error); }
+.pill.info { color: var(--info); border-color: var(--info); }
+.pill.muted { color: var(--dim); border-color: var(--input-line); }
 
 .badge {
   display: inline-block;
@@ -308,6 +343,7 @@ fieldset.panel > legend { float: left; width: 100%; padding: 0; margin: 0; }
 .badge.test { color: var(--info); border-color: var(--info); }
 .badge.bad { color: var(--error); border-color: var(--error); }
 .badge.changed { color: var(--ground); background: var(--gold); border-color: var(--gold); }
+.badge.changed.test { background: var(--info); border-color: var(--info); }
 
 /* bars in steps of 5 percent */
 .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
@@ -393,6 +429,11 @@ details.more > summary::after {
 }
 details.more[open] > summary::after { content: "Less"; }
 details.more > summary:hover::after { color: var(--gold-hover); }
+/* a form behind "Change" (or "Close"), on a panel of its own */
+details.more.edit > summary::after { content: "Change"; }
+details.more.edit[open] > summary::after { content: "Close"; }
+details.more.panel { display: block; }
+details.more.panel[open] > summary { margin-bottom: var(--space-3); }
 .more-body {
   display: flex;
   flex-direction: column;
@@ -417,6 +458,14 @@ table.list { width: 100%; min-width: 640px; border-collapse: collapse; text-alig
 .list tbody th { font-weight: 500; }
 .list tbody tr:last-child > * { border-bottom: 0; }
 .list td.mono, .list th.mono { font-size: var(--fs-sm); }
+.list .nowrap, .list .btn { white-space: nowrap; }
+/* a pill and the names it goes with, on a line of their own */
+.tagrow { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); }
+.tagrow + .tagrow { margin-top: var(--space-1); }
+/* a row nothing uses, or the backup that goes next, is dimmed */
+.list tr.unused > *, .list tr.goes > * { color: var(--dim); }
+/* a group of rows: its name over a row of its own */
+.list tbody th[scope="rowgroup"] { background: var(--top); color: var(--dim); font-family: var(--head); font-size: var(--fs-sm); font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; padding-block: 6px; }
 
 /* --- rows of events and health checks --- */
 
@@ -451,6 +500,27 @@ table.list { width: 100%; min-width: 640px; border-collapse: collapse; text-alig
 .tabs a:hover { color: var(--gold-hover); }
 .tabs a[aria-current="page"] { color: var(--gold); font-weight: 600; border-bottom-color: var(--gold); }
 .tabs.small a { padding: 0 var(--space-3); font-size: var(--fs-sm); }
+
+/* tabs inside a panel that need no script: a radio and its label for each,
+   and the body of the checked one is shown */
+fieldset.tabset { position: relative; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.tabin { position: absolute; width: 1px; height: 1px; min-height: 0; margin: 0; padding: 0; border: 0; opacity: 0; }
+.tablabel {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.tablabel:hover { border-color: var(--dim); }
+.tabin:checked + .tablabel { background: var(--gold); border-color: var(--gold); color: var(--ground); font-weight: 600; }
+.tabin:focus-visible + .tablabel { outline: 2px solid var(--gold); outline-offset: 2px; }
+.tabbody { display: none; flex: 0 0 100%; flex-direction: column; gap: var(--space-3); min-width: 0; margin-top: var(--space-2); }
+.t-folder:checked ~ .b-folder, .t-archive:checked ~ .b-archive, .t-steam:checked ~ .b-steam { display: flex; }
 
 /* --- logs and other machine text --- */
 
