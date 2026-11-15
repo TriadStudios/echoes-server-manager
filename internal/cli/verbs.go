@@ -216,6 +216,9 @@ func (e *env) status(args []string) error {
 		line := fmt.Sprintf("esm %s at %s: %s supervisor (%s), %s (%d running), %s, listening on %s",
 			b.Version, b.Root, b.Supervisor, limits, plural(b.Instances, "instance", "instances"), b.Running,
 			plural(b.Builds, "build", "builds"), b.Listen)
+		if b.APIListener != nil {
+			line += ", API listener on " + b.APIListener.Listen + " with TLS (esm tls shows its pins)"
+		}
 		if n := len(b.SecretsOnCommandLine); n > 0 {
 			line += fmt.Sprintf("; %s (%s)", unsafeNote, strings.Join(b.SecretsOnCommandLine, ", "))
 		}

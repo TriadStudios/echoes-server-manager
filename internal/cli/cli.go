@@ -67,6 +67,8 @@ Service:
   serve                         run the ESM service (game servers keep running when it stops)
   doctor [--bind IP]            check this box (read-only); --bind checks free ports
                                 on that address instead of all interfaces
+  tls                           show the API listener (api_listener) and its certificate's
+                                SHA-256 fingerprint and public key pin, for clients to pin
   version [--check]             print the version; --check looks up the newest release
   update-self [--force]         replace this esm binary with the newest release
                                 (signature and hash checked; the old one is kept
@@ -156,6 +158,8 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 		err = e.serve(rest)
 	case "doctor":
 		return e.doctor(rest)
+	case "tls":
+		err = e.tlsCmd(rest)
 	case "list":
 		err = e.list(rest)
 	case "status":
