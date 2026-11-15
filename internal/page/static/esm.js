@@ -137,13 +137,15 @@
       done('removed');
     },
     // release-check looks for a newer ESM release now (or gets the result
-    // of a look that ended less than 30 seconds ago), then shows the Box
-    // screen again with it, like done() but without ?check=1, so that a
-    // health check on the screen is not run again unasked.
+    // of a look that ended less than a minute ago, or of the release
+    // server's request to wait), then shows the Box screen again with it,
+    // like done() but without ?check=1, so that a health check on the
+    // screen is not run again unasked.
     'release-check': async function () {
       say('Looking for a newer ESM release...');
       var r = await call('POST', '/api/v1/box/release-check');
-      location.replace('/box?done=' + (r.reused ? 'release-recent' : 'release') + '#esm-h');
+      var code = r.retry_after ? 'release-wait' : (r.reused ? 'release-recent' : 'release');
+      location.replace('/box?done=' + code + '#esm-h');
     },
     'self-update': async function () {
       var r;
