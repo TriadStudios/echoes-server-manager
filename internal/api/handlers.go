@@ -93,6 +93,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: u.Username, Role: string(u.Role)}
+	c.authed = true // recorded whatever the limits of callers without a login
 	c.target = u.Username
 	return writeJSON(w, http.StatusCreated, UserInfo{Username: u.Username, Role: string(u.Role)})
 }
@@ -133,6 +134,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, c *call) error {
 		return err
 	}
 	c.actor = audit.Actor{Kind: audit.ActorUser, ID: sess.Username, Role: string(sess.Role)}
+	c.authed = true // recorded whatever the limits of callers without a login
 	// The session id goes only into the HttpOnly cookie, never into a
 	// body; the CSRF token is a separate random value.
 	http.SetCookie(w, auth.SessionCookie(sess.ID, sess.Life(), l.https))
