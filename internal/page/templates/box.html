@@ -29,9 +29,24 @@
 <div><dt>Listening on</dt><dd class="mono">{{$b.Listen}}{{if $b.TLS}} with TLS{{end}}</dd></div>
 <div><dt>Open to other machines directly</dt><dd>{{if loopback $b.Listen}}<span class="good">No</span>: this box only{{else}}<span class="warnword">Yes</span>{{if $b.TLS}}, over TLS{{end}}{{end}}</dd></div>
 <div><dt>Behind a TLS proxy</dt><dd>{{if $b.BehindTLSProxy}}yes: the login cookie is sent over TLS only{{else}}not set (behind_tls_proxy){{end}}</dd></div>
+<div><dt>API listener</dt><dd>{{with $b.APIListener}}<span class="mono">{{.Listen}}</span> with TLS, {{if .Page}}API tokens and the page{{else}}API tokens only{{end}}{{else}}off (api_listener){{end}}</dd></div>
 </dl>
 <p class="note">Whether a proxy in front of ESM asks for its own login, ESM cannot see. The listening address is set in esm.json; changing it needs a restart of ESM and, for anything but this box, a TLS certificate. Game servers keep running across that restart.</p>
 </section>
+
+{{with $b.APIListener}}<section class="panel stack" aria-labelledby="apilisten-h">
+<h2 class="label" id="apilisten-h">API listener</h2>
+<dl class="facts one">
+<div><dt>Listening on</dt><dd class="mono">{{.Listen}} with TLS{{if .AllAddresses}} (every address of the box){{end}}</dd></div>
+<div><dt>Takes</dt><dd>{{if .Page}}API tokens, and the page with its logins{{else}}API tokens only: no page, no logins{{end}}</dd></div>
+<div><dt>Host names</dt><dd class="mono">{{if .HostNames}}{{join .HostNames ", "}}{{else}}none: the listen address only{{end}}</dd></div>
+<div><dt>Certificate</dt><dd>{{if eq .Certificate.Source "made"}}made by ESM, self-signed{{else}}from tls_cert{{end}}, valid until <time datetime="{{iso .Certificate.NotAfter}}">{{when .Certificate.NotAfter}}</time></dd></div>
+<div><dt>Certificate file</dt><dd class="mono">{{.Certificate.File}}</dd></div>
+<div><dt>SHA-256 fingerprint</dt><dd class="mono">{{.Certificate.SHA256}}</dd></div>
+<div><dt>Public key pin</dt><dd class="mono">{{.Certificate.SPKIPin}}</dd></div>
+</dl>
+<p class="note">A client pins the listener by its public key, which stays the same when ESM makes the certificate again for new host names. With curl: <span class="mono">--pinnedpubkey</span> and the pin checks the key, and <span class="mono">--cacert</span> with a copy of the certificate file checks the certificate and the host name too (<span class="mono">-k</span> in its place leaves the key the only check). Every call sends an API token (<span class="mono">Authorization: Bearer</span>) and may do what the token's role allows. On the box, <span class="mono">esm tls</span> prints the same.</p>
+</section>{{end}}
 
 <section class="panel stack" aria-labelledby="ports-h">
 <h2 class="label" id="ports-h">Ports for game servers</h2>

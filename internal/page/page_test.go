@@ -67,6 +67,12 @@ type site struct {
 // first.
 func newSite(t *testing.T, tune ...func(*service.Options)) *site {
 	t.Helper()
+	return newSiteConfig(t, nil, tune...)
+}
+
+// newSiteConfig is newSite with these fields of esm.json added.
+func newSiteConfig(t *testing.T, extra map[string]any, tune ...func(*service.Options)) *site {
+	t.Helper()
 	root, err := os.MkdirTemp("", "esmp")
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +86,9 @@ func newSite(t *testing.T, tune ...func(*service.Options)) *site {
 		"stop_timeout":     "5s",
 		"ready_timeout":    "10s",
 		"backup_save_wait": "3s",
+	}
+	for k, v := range extra {
+		cfg[k] = v
 	}
 	b, _ := json.Marshal(cfg)
 	if err := os.WriteFile(root+string(os.PathSeparator)+"esm.json", b, 0o600); err != nil {
