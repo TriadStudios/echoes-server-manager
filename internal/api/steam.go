@@ -34,8 +34,9 @@ type SelfUpdateResult struct {
 // releaseCheck answers POST /box/release-check: it looks for a newer ESM
 // release now and answers with the release status that GET /box carries
 // (see release.Checker.CheckNow: a check that runs is waited for, a result
-// less than 30 seconds old is given again, the wait is bounded; with
-// update_check off nothing is looked up).
+// less than a minute old is given again, and so is the last one while the
+// release server has asked to wait; the wait is bounded; with update_check
+// off nothing is looked up).
 func (s *Server) releaseCheck(w http.ResponseWriter, r *http.Request, c *call) error {
 	if err := decode(r, &struct{}{}); err != nil {
 		return err

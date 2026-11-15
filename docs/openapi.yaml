@@ -260,9 +260,10 @@ paths:
 
         One look runs at a time: while one runs (the service's own, or
         another call's), the call waits for it instead of starting another.
-        When the last look ended less than 30 seconds before, its result is
+        When the last look ended less than 60 seconds before, its result is
         returned at once without asking GitHub, with `reused` set and a
-        `note` that says so. A look that gets no answer within 15 seconds
+        `note` that says so; the same while GitHub has asked ESM to wait
+        (see `retry_after`). A look that gets no answer within 15 seconds
         ends, and the status says what failed. With `update_check: false`
         in esm.json nothing is looked up and the status is the one that
         says so (`enabled` false). Every call writes an audit entry
@@ -1257,16 +1258,20 @@ components:
       type: object
       description: |
         The last look for a newer ESM release. The service looks at most
-        every `update_check_every` (esm.json, default 5m, at least 1m), and
+        every `update_check_every` (esm.json, default 5m, at least 2m), and
         only while someone asks for the box: a `GET /api/v1/box` that finds
         the last result that old or older starts a new look in the
         background and still answers with the last result; the calls after
-        that look ended show its result. While a `GET /api/v1/box` (or a
-        screen of the page) came within the last `update_check_every`, the
-        service also looks again each time the result turns that old, so
-        such a call gets a result at most the interval plus one look old.
-        `POST /api/v1/box/release-check` looks at once. With
-        `update_check: false` in esm.json it never looks.
+        that look ended show its result. As long as a `GET /api/v1/box` (or
+        a screen of the page) came since the last look started, the service
+        also looks again when the result turns that old, so a call within
+        an interval of the one before gets a result at most the interval
+        plus one look old; once none came, it stops looking.
+        `POST /api/v1/box/release-check` looks at once. Each look sends the
+        ETag of the last answer, and a 304 Not Modified keeps the release
+        known. When GitHub refuses a look with 403 or 429, nothing is
+        looked up before `retry_after`. With `update_check: false` in
+        esm.json it never looks.
       properties:
         enabled: { type: boolean }
         checked: { type: string, format: date-time, description: When the last look started. }
@@ -1274,10 +1279,14 @@ components:
         latest: { type: string, description: The newest release's tag ("" when not known). }
         available: { type: boolean }
         url: { type: string, description: The newest release's page. }
-        note: { type: string, description: Why available cannot be known, or what failed; for a reused result, that it was reused. }
+        note: { type: string, description: Why available cannot be known, or what failed (also that GitHub asked to wait, and until when); for a reused result, why it was reused. }
         reused:
           type: boolean
-          description: Only in the answer to POST /box/release-check, when the last look ended less than 30 seconds before and its result was returned without asking GitHub again. Always false in GET /box.
+          description: Only in the answer to POST /box/release-check, when its result was returned without asking GitHub again, because the last look ended less than 60 seconds before or because GitHub has asked ESM to wait. Always false in GET /box.
+        retry_after:
+          type: string
+          format: date-time
+          description: Present while GitHub has asked ESM to wait (it refused a look with 403 or 429); no look is made before this time. Taken from Retry-After or X-RateLimit-Reset, at least 1 minute and at most 1 hour after the refusal, 15 minutes when the answer names no time.
     SelfUpdateRequest:
       type: object
       additionalProperties: false

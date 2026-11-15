@@ -74,22 +74,33 @@ line; that is expected.)
 `esm version --check` says whether a newer release is out; the service
 looks too and shows it on the Box page and in `GET /api/v1/box`
 (`update_available`). It looks at most every 5 minutes, and only while
-the box is in use: while a page or a `GET /api/v1/box` came within the
-last 5 minutes, it looks again each time the result turns 5 minutes old,
-so what a page shows is at most 5 minutes plus one look old. After a
-longer pause the first page shows the old result, with when it was made,
-and starts a new look; the pages after that look ended show the new one.
-Set `"update_check_every"` in `esm.json` to look less or more often (a
-duration such as `"30m"`, at least `"1m"`), and `"update_check": false`
-to turn the looking off.
+the box is in use: as long as a page or a `GET /api/v1/box` came since
+the last look, it looks again when the result turns 5 minutes old, so a
+page that comes within 5 minutes of the one before shows a result at
+most 5 minutes plus one look old. Once no page has come since the last
+look, it stops looking. After such a pause the first page shows the old
+result, with when it was made, and starts a new look; the pages after
+that look ended show the new one. Set `"update_check_every"` in
+`esm.json` to look less or more often (a duration such as `"30m"`, at
+least `"2m"`), and `"update_check": false` to turn the looking off.
 
 To look at once, press **Check now** in the ESM version card of the Box
 page (every role may, as it changes nothing; the button is there while
 `update_check` is on), or call `POST /api/v1/box/release-check`, which
 waits for the answer, at most 15 seconds, and returns the same release
 status. One look runs at a time: a check while one runs waits for it,
-and one within 30 seconds of the last look gets that result again
+and one within 60 seconds of the last look gets that result again
 without asking GitHub.
+
+GitHub answers at most 60 such lookups an hour from one address without
+a login, and the self-update uses the same lookup, so ESM asks
+sparingly: each look sends the ETag of the last answer, so an unchanged
+release list comes back as a short 304 Not Modified. When GitHub refuses
+a look as asked too often (403 or 429), ESM asks nothing more until the
+time GitHub names (`Retry-After`, or `X-RateLimit-Reset`; at least a
+minute, at most an hour, 15 minutes when it names none). The Box page
+then says until when it waits, and Check now shows the last result
+meanwhile.
 
 ESM never updates itself on its own, also not when a look found a newer
 release. `esm update-self` (or the Box page's update button, admins only,
