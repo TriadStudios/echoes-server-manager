@@ -15,13 +15,19 @@ info:
       the login answer (or from `GET /api/v1/session`), a random value of
       its own. If an `Origin` header is sent, it must match the host. The
       session id is only ever in the cookie (HttpOnly), never in a body.
-    - The unix socket `<root>/esm.sock`, which acts as admin.
+    - The unix socket `<root>/esm.sock`, which acts as admin. One call is
+      answered only there: `PUT /api/v1/users/{name}/password`, which sets
+      a login's password without the current one.
 
-    Roles: `read` may make every GET call except `/tokens`, `/audit`,
-    `/box/doctor` and backup downloads; `operator` may also start, stop,
-    restart, update, back up, restore and download backups of instances;
-    `admin` may do everything, installing builds included (a build is a
-    program that runs with ESM's own rights).
+    A login changes its own password with the current one through its
+    browser session (`POST /api/v1/session/password`); a token cannot
+    change any password.
+
+    Roles: `read` may make every GET call except `/tokens`, `/users`,
+    `/audit`, `/box/doctor` and backup downloads; `operator` may also
+    start, stop, restart, update, back up, restore and download backups of
+    instances; `admin` may do everything, installing builds included (a
+    build is a program that runs with ESM's own rights).
 
     Server passwords, and the game's announcements and problem report
     tokens, are set with `PUT /api/v1/instances/{name}/secrets`
@@ -171,6 +177,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SessionInfo" }
         "401": { $ref: "#/components/responses/Error" }
+  /api/v1/session/password:
+    post:
+      tags: [logins]
+      summary: Change the password of this session's login, with the current one
+      description: |
+        What the page's password form on the Box screen sends. Only a
+        browser session changes a password, and only its own login's, with
+        `X-CSRF-Token` like every change (else 403 `csrf`). A bearer token
+        is not a login and cannot change any password, whatever its role
+        and whatever it sends (403 `session_only`); neither can the unix
+        socket, which sets one with `PUT /api/v1/users/{name}/password`.
+
+        The new password follows the rules of setup: 12 characters or more,
+        at most 1024 bytes (else 422 `invalid`). That is checked first, so
+        a refused new password tests nothing and counts nothing. A wrong
+        current password is 403 `wrong_password` (not 401: the session goes
+        on), answered after the same pause as a failed login, and counts
+        against the same limit as a failed login: 5 in 5 minutes per user
+        name, and per client address for a client that connects from an
+        address of its own. So failures here make logins wait, and failed
+        logins make this call wait (429), and it is no faster a way to
+        guess a password than the login. On success every other session of
+        the login ends; the one that made the change goes on.
+
+        Every try writes an audit entry `user.password.change` naming the
+        login; no password is written to the audit log or sent back.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordChangeRequest" }
+      responses:
+        "200":
+          description: Changed; `ended_sessions` is how many other sessions of the login ended.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/box:
     get:
       tags: [box]
@@ -902,6 +949,63 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuditList" }
         "403": { $ref: "#/components/responses/Error" }
+  /api/v1/users:
+    get:
+      tags: [logins]
+      summary: List the logins (admin)
+      description: |
+        Name, role, when it was made, when it last logged in and how many
+        of its sessions are open. Never a password or its hash. The last
+        login is kept in `<root>/secrets/logins.json`.
+      responses:
+        "200":
+          description: The logins, in the order they were made.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/users/{name}/password:
+    put:
+      tags: [logins]
+      summary: Set a login's password without the current one (unix socket only)
+      description: |
+        For the box owner, and the way back in after a forgotten password:
+        `esm user passwd <name>` on the box makes this call. It is answered
+        only on the unix socket, which only ESM's account can open. Over
+        TCP it is refused with 403 `socket_only` for every caller, an
+        admin's token and an admin's session included, so nothing that
+        reaches ESM over the network sets a password without the current
+        one.
+
+        The password follows the rules of setup (422 `invalid`). Every
+        session of the login ends, and the failed logins counted against
+        its name are forgotten, so the new password logs in at once. A name
+        that is no login's is 404, and neither the answer nor the audit
+        entry repeats it (the entry says `(unknown)` or `(invalid)`, as for
+        a login). Every try writes an audit entry `user.password.reset`; no
+        password is written to the audit log or sent back.
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Login name (any case).
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordResetRequest" }
+      responses:
+        "200":
+          description: Set; `ended_sessions` is how many sessions of the login ended.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordResult" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearer:
@@ -966,6 +1070,10 @@ components:
               description: |
                 Machine code, for example bad_request, invalid, unauthorized,
                 bad_credentials, bad_setup_code, csrf, origin, forbidden,
+                wrong_password (403: the current password given to change
+                it is wrong), session_only (403: only a login's own browser
+                session changes its password, never a token), socket_only
+                (403: a call answered only on the unix socket),
                 hidden_unsafe_secrets (403: the read role asked for the output
                 of an instance with passwords on the command line),
                 looks_like_secret (422: a rule key or an extra argument names
@@ -1048,6 +1156,36 @@ components:
         id: { type: string, description: User name, token id, or "socket". }
         role: { $ref: "#/components/schemas/Role" }
         csrf_token: { type: string, description: Only for cookie sessions. }
+    PasswordChangeRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string }
+        new_password: { type: string, minLength: 12 }
+    PasswordResetRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string, minLength: 12 }
+    PasswordResult:
+      type: object
+      properties:
+        username: { type: string }
+        ended_sessions: { type: integer, minimum: 0 }
+    User:
+      type: object
+      properties:
+        username: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        created: { type: string, format: date-time }
+        last_login: { type: string, format: date-time, description: Missing when the login has never logged in. }
+        sessions: { type: integer, minimum: 0, description: Sessions of the login open now. }
+    UserList:
+      type: object
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
     Box:
       type: object
       properties:
