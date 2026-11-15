@@ -3,6 +3,7 @@ package page_test
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,8 +42,9 @@ func nodeOrSkip(t *testing.T, what string) string {
 
 // The Box screen's update button waits for ESM to come back instead of
 // asking for a reload: it looks at GET /api/v1/box every 2 seconds for
-// 60 seconds, from a timer that ends with the page, and then reloads the
-// Box screen. These checks need no node.
+// 60 seconds, from a timer that ends with the page, and then loads the Box
+// screen again (TestWaitForRestartReloadsInTheScript runs that part with
+// node). These checks need no node.
 func TestSelfUpdateWaitsInTheScript(t *testing.T) {
 	b, err := os.ReadFile("static/esm.js")
 	if err != nil {
@@ -55,7 +57,6 @@ func TestSelfUpdateWaitsInTheScript(t *testing.T) {
 		"var WAIT_FOR = 60000;",
 		"fetch('/api/v1/box', {",
 		"window.addEventListener('pagehide', w.stop);",
-		"location.replace('/box#esm-h');",
 		"waiting for ESM to restart...",
 		"(esm serve); then reload this page.",
 	} {
@@ -247,5 +248,122 @@ func TestAwaitEsmInTheScript(t *testing.T) {
 		if got.Runs[n] != c.want {
 			t.Errorf("%s: %+v, want %+v", c.s.Name, got.Runs[n], c.want)
 		}
+	}
+}
+
+// waitDriver runs waitForRestart with stubs of the page: a location whose
+// replace is recorded, a clock and timers that make the 2 seconds between
+// looks take no time, and looks that answer as a scenario says (the last
+// answer goes on for ever).
+const waitDriver = `
+var realSetTimeout = global.setTimeout;
+var clock = 0;
+var Date = { now: function () { return clock; } };
+var setTimeout = function (fn, ms) { clock += ms; return realSetTimeout(fn, 0); };
+var said = [], replaced = [], looks = 0, answers = [];
+function say(text, bad) { said.push({ text: text, bad: !!bad }); }
+var window = { addEventListener: function () {}, removeEventListener: function () {} };
+var location = { href: '', replace: function (u) { replaced.push(u); } };
+async function lookAtBox() { looks++; return answers[Math.min(looks - 1, answers.length - 1)]; }
+(async function () {
+  var out = [];
+  for (var i = 0; i < ARGS.length; i++) {
+    clock = 0; said = []; replaced = []; looks = 0; answers = ARGS[i].answers;
+    location.href = ARGS[i].at;
+    await waitForRestart('v0.2.0');
+    out.push({ said: said, replaced: replaced, looks: looks });
+  }
+  process.stdout.write(JSON.stringify(out));
+})();
+`
+
+// fragmentOnly says whether going from the page at cur to target is a jump
+// within the document, which the browser does without loading anything: the
+// target has a fragment and is the same URL as cur otherwise.
+func fragmentOnly(cur, target *url.URL, raw string) bool {
+	if !strings.Contains(raw, "#") {
+		return false
+	}
+	a, b := *cur, *target
+	a.Fragment, a.RawFragment, b.Fragment, b.RawFragment = "", "", "", ""
+	return a.String() == b.String()
+}
+
+// When ESM is back the page must really load the Box screen again. The
+// address it goes to must not be a jump to a fragment of the address it is
+// at (the usual one is /box, from the menu), which a browser takes without
+// loading anything, and must not carry a notice or ask for the health
+// check again. When ESM does not come back it goes nowhere and says so.
+// The script does this in waitForRestart, run here with node and stubs of
+// the page; skipped without node, except on the CI machines.
+func TestWaitForRestartReloadsInTheScript(t *testing.T) {
+	prog := scriptBlock(t, "sessionEnded") + scriptBlock(t, "awaitEsm") + scriptBlock(t, "waitForRestart")
+	node := nodeOrSkip(t, "waitForRestart")
+	type answer struct {
+		Status int `json:"status"`
+	}
+	type sc struct {
+		At      string   `json:"at"`
+		Answers []answer `json:"answers"`
+	}
+	const host = "http://esm.test"
+	// ESM answers 401 (its login is gone) from the new process.
+	back := []answer{{200}, {502}, {401}}
+	var args []sc
+	pages := []string{"/box", "/box#esm-h", "/box?done=release#esm-h", "/box?done=release-recent", "/box?check=1#health-h", "/box?check=1"}
+	for _, p := range pages {
+		args = append(args, sc{At: host + p, Answers: back})
+	}
+	args = append(args, sc{At: host + "/box", Answers: []answer{{502}}})
+	arg, _ := json.Marshal(args)
+	cmd := exec.Command(node, "-")
+	cmd.Stdin = strings.NewReader(prog + "\nvar ARGS = " + string(arg) + ";\n" + waitDriver)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("node: %v\n%s", err, errOut.String())
+	}
+	var got []struct {
+		Said []struct {
+			Text string `json:"text"`
+			Bad  bool   `json:"bad"`
+		} `json:"said"`
+		Replaced []string `json:"replaced"`
+		Looks    int      `json:"looks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got) != len(args) {
+		t.Fatalf("node printed %q: %v", out.String(), err)
+	}
+	for n, p := range pages {
+		cur, _ := url.Parse(host + p)
+		g := got[n]
+		if len(g.Said) != 1 || g.Said[0].Text != "ESM v0.2.0 is in place; waiting for ESM to restart..." || g.Said[0].Bad {
+			t.Errorf("at %s: it says %+v", p, g.Said)
+		}
+		if g.Looks != 3 || len(g.Replaced) != 1 {
+			t.Errorf("at %s: %d looks, went to %q", p, g.Looks, g.Replaced)
+			continue
+		}
+		raw := g.Replaced[0]
+		target, err := cur.Parse(raw)
+		if err != nil {
+			t.Errorf("at %s: went to %q: %v", p, raw, err)
+			continue
+		}
+		if fragmentOnly(cur, target, raw) {
+			t.Errorf("at %s: went to %q, which is a jump within the page and loads nothing", p, raw)
+		}
+		if target.Host != cur.Host || target.Path != "/box" || target.RawQuery != "" {
+			t.Errorf("at %s: went to %q, want the plain Box screen", p, raw)
+		}
+	}
+	// ESM that does not come back: no reload, the fault is said plainly,
+	// with how to start ESM by hand, after the looks of a minute.
+	late := got[len(pages)]
+	if len(late.Replaced) != 0 || late.Looks != 30 || len(late.Said) != 2 {
+		t.Fatalf("ESM does not come back: %+v", late)
+	}
+	if s := late.Said[1]; !s.Bad || !strings.Contains(s.Text, "did not come back within a minute") || !strings.Contains(s.Text, "(esm serve)") {
+		t.Errorf("ESM does not come back: it says %+v", s)
 	}
 }

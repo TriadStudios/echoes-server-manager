@@ -155,10 +155,15 @@
     }
   }
 
-  // waitForRestart says what the page waits for, then reloads the Box
-  // screen once ESM answers with version to (or without the login: the
-  // reload then ends on the login page). After WAIT_FOR it says that ESM did
-  // not come back. It stops when the page goes away.
+  // waitForRestart: start
+  // waitForRestart says what the page waits for, then loads the Box screen
+  // again once ESM answers with version to (or without the login: it then
+  // ends on the login page). The address has no fragment, which a browser
+  // would take as a jump within the page, without loading anything, when it
+  // is the address the page is at (/box, from the menu); and no query, so
+  // no old notice shows and the health check (?check=1) is not run again.
+  // After WAIT_FOR it says that ESM did not come back. It stops when the
+  // page goes away.
   async function waitForRestart(to) {
     say('ESM ' + to + ' is in place; waiting for ESM to restart...');
     var w = awaitEsm(to, {
@@ -171,12 +176,13 @@
     var how = await w.done;
     window.removeEventListener('pagehide', w.stop);
     if (how === 'back') {
-      location.replace('/box#esm-h');
+      location.replace('/box');
     } else if (how === 'late') {
       say('ESM ' + to + ' is in place, but ESM did not come back within a minute. If its service manager does not start it, ' +
         'start ESM again on the box (esm serve); then reload this page.', true);
     }
   }
+  // waitForRestart: end
 
   // done reloads the page with a fixed notice the server shows.
   function done(code) {
