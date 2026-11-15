@@ -69,8 +69,10 @@ func TestFilesAndPipesAreNoTerminal(t *testing.T) {
 }
 
 // user passwd takes the login's name and nothing else, and never repeats
-// what else it was given (it may be the password); with --url it is
-// refused before anything is read or sent: it works on the box only.
+// what else it was given (it may be the password): not as an argument, not
+// as the name or the value of a flag, before the verb or after it, not as
+// a root it cannot reach. With --url it is refused before anything is read
+// or sent: it works on the box only.
 func TestUserPasswdTakesNoPasswordArgument(t *testing.T) {
 	const secret = "Typed-In-The-Wrong-Place-9"
 	for _, args := range [][]string{
@@ -81,6 +83,15 @@ func TestUserPasswdTakesNoPasswordArgument(t *testing.T) {
 		{"user", "passwd", "admin", "--new", secret},
 		{"user", "passwd"},
 		{"--url", "http://127.0.0.1:1", "--token", "esm_x", "user", "passwd", "admin"},
+		{"user", "passwd", "admin", "--json=" + secret},
+		{"--json", "user", "passwd", "admin", "--json=" + secret},
+		{"user", "passwd", "admin", "-" + secret},
+		{"user", "passwd", "admin", "--" + secret + "=x"},
+		{"user", "--json=" + secret, "passwd", "admin"},
+		{"--json=" + secret, "user", "passwd", "admin"},
+		{"-" + secret, "user", "passwd", "admin"},
+		{"user", "passwd", "admin", "--root=" + secret},
+		{"user", "passwd", "admin", "--root", secret},
 	} {
 		var out, errOut bytes.Buffer
 		stdin := strings.NewReader(secret + "\n")

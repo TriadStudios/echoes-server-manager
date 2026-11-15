@@ -133,6 +133,10 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 			fmt.Fprint(stdout, usage)
 			return 0
 		}
+		if namesPasswd(args, false) {
+			// The flag's text is not repeated: it may be the password.
+			return e.fail(errPasswdFlags)
+		}
 		return e.fail(usageErr("%v", err))
 	}
 	rest := top.Args()

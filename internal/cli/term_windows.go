@@ -12,6 +12,12 @@ var (
 	procSetConsoleMode = kernel32.NewProc("SetConsoleMode")
 )
 
+// stopSignals are the signals that would end the command while it asks for
+// a password: Ctrl-C and Ctrl-Break come as os.Interrupt, and closing the
+// console, logging off or shutting down as SIGTERM. The console's mode is
+// set back for each.
+var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+
 // enableEchoInput is ENABLE_ECHO_INPUT of a console's input mode.
 const enableEchoInput = 0x0004
 

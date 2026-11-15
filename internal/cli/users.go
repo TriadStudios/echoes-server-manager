@@ -7,17 +7,33 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 )
+
+// errPasswdFlags is the one answer to flags that user passwd cannot read:
+// the error of the flag package repeats a flag's name or value, which may
+// be the password typed in the wrong place.
+var errPasswdFlags = usageErr("user passwd was given a flag it does not take, or a value it cannot read; what was given is not repeated, since it may be the password. It takes one login name, and --root and --json")
+
+// namesPasswd reports whether args (of the whole command line, or of the
+// user verb) look like user passwd: "passwd" after "user", or "passwd" at
+// all when user is the verb already. It errs on the side of yes.
+func namesPasswd(args []string, verb bool) bool {
+	i := slices.Index(args, "passwd")
+	return i >= 0 && (verb || slices.Contains(args[:i], "user"))
+}
 
 // user is "esm user list" and "esm user passwd <name>".
 func (e *env) user(args []string) error {
 	fs := e.flags("user")
 	pos, err := parse(fs, args)
 	if err != nil {
+		if namesPasswd(args, true) {
+			return errPasswdFlags
+		}
 		return err
 	}
 	if len(pos) == 0 {
@@ -72,12 +88,12 @@ func (e *env) passwd(name string) error {
 	}
 	c, err := e.client()
 	if err != nil {
-		return err
+		return e.unrepeated(err)
 	}
 	// The login is looked up first, so that nothing is asked for in vain.
 	var list api.UserList
 	if err := c.do(e.ctx, "GET", "/api/v1/users", nil, &list); err != nil {
-		return err
+		return e.unrepeated(err)
 	}
 	login := ""
 	for _, u := range list.Users {
@@ -96,13 +112,25 @@ func (e *env) passwd(name string) error {
 	}
 	var out api.PasswordResult
 	if err := c.do(e.ctx, "PUT", "/api/v1/users/"+url.PathEscape(login)+"/password", api.PasswordResetRequest{Password: pw}, &out); err != nil {
-		return err
+		return e.unrepeated(err)
 	}
 	line := "set the password of " + out.Username + " (no session was open)"
 	if out.EndedSessions > 0 {
 		line = fmt.Sprintf("set the password of %s and ended its %s", out.Username, plural(out.EndedSessions, "session", "sessions"))
 	}
 	return e.result(out, line)
+}
+
+// unrepeated keeps user passwd from repeating text of its arguments in an
+// error. An answer of the service repeats none; but an error of reaching
+// it names the socket's path, which is made from --root when that was
+// given, so then it is said without the path.
+func (e *env) unrepeated(err error) error {
+	var re *remoteError
+	if err == nil || errors.As(err, &re) || e.g.root == "" {
+		return err
+	}
+	return errors.New("cannot reach the ESM service on the unix socket of the root given with --root (is esm serve running for it?); the path is not repeated, since an argument may be the password")
 }
 
 // newPassword reads a new password for login. On a terminal it asks twice
@@ -138,19 +166,25 @@ func (e *env) newPassword(login string) (string, error) {
 	return first, nil
 }
 
+// hideInput turns the echo of a terminal off (tests replace it).
+var hideInput = echoOff
+
 // askHidden writes prompt to stderr and reads a line from the terminal f
-// with its echo off. The echo is turned back on also when the reading is
-// interrupted (Ctrl-C).
+// with its echo off. The echo is turned back on also when a signal that
+// would end the command arrives while it reads (stopSignals: Ctrl-C, and on
+// Linux also Ctrl-\ and a hang-up). Those signals are caught before the
+// echo goes off, so that none of them can end the command in between with
+// the echo still off.
 func (e *env) askHidden(f *os.File, prompt string) (string, error) {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, stopSignals...)
+	defer signal.Stop(stop)
 	fmt.Fprint(e.errOut, prompt)
-	restore, err := echoOff(f)
+	restore, err := hideInput(f)
 	if err != nil {
 		fmt.Fprintln(e.errOut)
 		return "", err
 	}
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stop)
 	type answer struct {
 		line string
 		err  error

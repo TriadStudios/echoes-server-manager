@@ -8,6 +8,11 @@ import (
 	"unsafe"
 )
 
+// stopSignals are the signals that would end the command while it asks for
+// a password: Ctrl-C, Ctrl-\, a hang-up of the terminal, and a plain kill.
+// The echo is turned back on for each.
+var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP}
+
 func termios(fd uintptr, req uintptr, t *syscall.Termios) error {
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, req, uintptr(unsafe.Pointer(t))); e != 0 {
 		return e

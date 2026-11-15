@@ -5,7 +5,13 @@ package cli
 import (
 	"errors"
 	"os"
+	"syscall"
 )
+
+// stopSignals are the signals caught while a password is asked for. Here
+// the echo is never turned off (see echoOff), so they are only those that
+// every system has.
+var stopSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
 // isTerminal reports whether f may be a terminal: on this system, whether
 // it is a character device.

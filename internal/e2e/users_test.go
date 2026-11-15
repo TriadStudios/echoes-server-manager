@@ -99,17 +99,19 @@ func TestUserListAndPasswd(t *testing.T) {
 
 	// Refused, and nothing is changed: the password as an argument, as a
 	// flag, only in the environment, for a login that is not there, too
-	// weak, and from another machine.
+	// weak or too long, and from another machine.
 	for _, c := range []struct {
 		stdin string
 		args  []string
 		want  string
 	}{
 		{resetPw + "\n", []string{"user", "passwd", "admin", resetPw}, "never taken from the command line"},
-		{"", []string{"user", "passwd", "--password=" + resetPw, "admin"}, "not defined"},
+		{"", []string{"user", "passwd", "--password=" + resetPw, "admin"}, "a flag it does not take"},
+		{"", []string{"user", "passwd", "admin", "--json=" + resetPw}, "a flag it does not take"},
 		{"", []string{"user", "passwd", "admin"}, "standard input"},
 		{resetPw + "\n", []string{"user", "passwd", "No-Such-Login-7"}, "no login of that name"},
 		{"too short\n", []string{"user", "passwd", "admin"}, "at least 12 characters"},
+		{strings.Repeat("y", auth.MaxPasswordLength+1) + "\n", []string{"user", "passwd", "admin"}, "at most 1024 bytes"},
 		{resetPw + "\n", []string{"--url", h.base, "--token", h.admin, "user", "passwd", "admin"}, "only on the box"},
 	} {
 		code, out, errOut := h.runCLIIn(c.stdin, c.args...)
@@ -202,15 +204,19 @@ func TestUserListAndPasswd(t *testing.T) {
 	if len(changes) != 1 || changes[0].Actor.Kind != audit.ActorUser || changes[0].Actor.ID != "admin" || changes[0].Target != "admin" {
 		t.Fatalf("change entries: %+v", changes)
 	}
-	// The weak password on the socket, and the two over TCP (the command
-	// line asks for nothing, and sends nothing, for a login that is not
-	// there).
-	if len(refused) != 3 || refused[0].Actor.Kind != audit.ActorSocket || refused[0].Target != "admin" ||
-		refused[1].Actor.Kind != audit.ActorToken || refused[2].Actor.Kind != audit.ActorUser || refused[2].Target != "" {
+	// The weak and the too long password on the socket, and the two over
+	// TCP (the command line asks for nothing, and sends nothing, for a
+	// login that is not there).
+	if len(refused) != 4 || refused[0].Actor.Kind != audit.ActorSocket || refused[0].Target != "admin" ||
+		refused[1].Actor.Kind != audit.ActorSocket || !strings.Contains(refused[1].Error, "at most 1024 bytes") ||
+		refused[2].Actor.Kind != audit.ActorToken || refused[3].Actor.Kind != audit.ActorUser || refused[3].Target != "" {
 		t.Fatalf("refused resets: %+v", refused)
 	}
+	if strings.Contains(h.stderr.String(), "request failed") {
+		t.Errorf("a refused password was logged as a failure: %s", h.stderr.String())
+	}
 	for what, text := range map[string]string{"audit log": string(b), "service log": h.stderr.String()} {
-		for _, pw := range []string{setupPw, resetPw, changePw, "too short", "No-Such-Login-7"} {
+		for _, pw := range []string{setupPw, resetPw, changePw, "too short", "No-Such-Login-7", "yyyyyyyy"} {
 			if strings.Contains(text, pw) {
 				t.Errorf("the %s holds %q", what, pw)
 			}
