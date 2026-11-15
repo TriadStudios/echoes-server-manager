@@ -72,17 +72,34 @@ sha256sum --check --ignore-missing SHA256SUMS
 line; that is expected.)
 
 `esm version --check` says whether a newer release is out; the service
-looks too (at most every 6 hours, only while someone looks at the box) and
-shows it on the Box page and in `GET /api/v1/box` (`update_available`).
-Set `"update_check": false` in `esm.json` to turn that off.
+looks too and shows it on the Box page and in `GET /api/v1/box`
+(`update_available`). It looks at most every 5 minutes, and only while
+the box is in use: while a page or a `GET /api/v1/box` came within the
+last 5 minutes, it looks again each time the result turns 5 minutes old,
+so what a page shows is at most 5 minutes plus one look old. After a
+longer pause the first page shows the old result, with when it was made,
+and starts a new look; the pages after that look ended show the new one.
+Set `"update_check_every"` in `esm.json` to look less or more often (a
+duration such as `"30m"`, at least `"1m"`), and `"update_check": false`
+to turn the looking off.
 
-ESM never updates itself on its own. `esm update-self` (or the Box page's
-update button, admins only) downloads the newest release for this system,
-checks the signature with the built-in key and the binary's hash against
-the signed list, and only then puts the new binary in place; the old one
-stays next to it as `esm.previous` (to roll back, move it back). The page's
-button (`POST /api/v1/box/self-update`) then ends the service so that its
-service manager starts the new binary, and does that only when something
+To look at once, press **Check now** in the ESM version card of the Box
+page (every role may, as it changes nothing; the button is there while
+`update_check` is on), or call `POST /api/v1/box/release-check`, which
+waits for the answer, at most 15 seconds, and returns the same release
+status. One look runs at a time: a check while one runs waits for it,
+and one within 30 seconds of the last look gets that result again
+without asking GitHub.
+
+ESM never updates itself on its own, also not when a look found a newer
+release. `esm update-self` (or the Box page's update button, admins only,
+there once a look found a newer release) downloads the newest release
+for this system, checks the signature with the built-in key and the
+binary's hash against the signed list, and only then puts the new binary
+in place; the old one stays next to it as `esm.previous` (to roll back,
+move it back). The page's button (`POST /api/v1/box/self-update`) then
+ends the service so that its service manager starts the new binary, and
+does that only when something
 will: on Linux, when systemd runs ESM (the unit of `esm service install`).
 Otherwise, and on Windows, the update is refused and nothing changes,
 unless the caller sets `exit_anyway` (the page asks first); ESM then
