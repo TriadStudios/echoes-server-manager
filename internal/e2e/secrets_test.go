@@ -281,7 +281,7 @@ collect:
 // printed.
 func noLaunchLine(t *testing.T, what, text string) {
 	t.Helper()
-	for _, part := range []string{"-Port=", "-QueryPort=", "-ServerName=", "-WorldName=", gameserver.SecretsFileSwitch + "=",
+	for _, part := range []string{"-Port=", "-QueryPort=", "-ServerName=", gameserver.SteamServerNameSwitch + "=", "-WorldName=", gameserver.SecretsFileSwitch + "=",
 		gameserver.UserDirSwitch + "=", gameserver.LogFileSwitch + "=", gameserver.ServerPasswordSwitch, gameserver.AdminPasswordSwitch} {
 		if strings.Contains(text, part) {
 			t.Errorf("the %s has %q of a server command line:\n%s", what, part, text)

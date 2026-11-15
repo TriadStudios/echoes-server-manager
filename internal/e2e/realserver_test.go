@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -145,6 +146,55 @@ func TestReadyThroughQueryPort(t *testing.T) {
 	if n := len(logLines(t, h.serverLog("alpha"), gameserver.IsReadyLine)); n != 0 {
 		t.Fatalf("%d ready lines in the log", n)
 	}
+}
+
+// The display name reaches the server as the name Steam's server list
+// shows (-SteamServerName, which the fake answers the query port with) as
+// well as -ServerName, a name with spaces whole. A change of it while the
+// server runs says that it waits for the next start, and the restart
+// brings it.
+func TestSteamServerNameThroughTheAPI(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	const first, second = "Alpha EU - west", "Alpha EU, the second (PvE)"
+	h.must(http.StatusCreated, "POST", "/api/v1/instances", map[string]any{"name": "alpha", "bind_ip": "127.0.0.1",
+		"rules": fastRules(nil), "display_name": first}, nil)
+	listed := func() string {
+		t.Helper()
+		var v instances.View
+		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha", nil, &v)
+		var info gameserver.Info
+		testkit.Eventually(t, 5*time.Second, func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			var err error
+			info, err = gameserver.QueryInfo(ctx, "127.0.0.1", v.Ports.Query)
+			return err == nil
+		}, "the server does not answer its query port")
+		return info.Name
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
+	if got := listed(); got != first {
+		t.Fatalf("the server is listed as %q, want %q", got, first)
+	}
+	var ch api.InstanceChange
+	h.must(http.StatusOK, "PATCH", "/api/v1/instances/alpha", map[string]any{"display_name": second}, &ch)
+	if !ch.RestartRequired || !ch.Status.RestartRequired || ch.DisplayName != second {
+		t.Fatalf("a new display name while the server runs: %+v", ch)
+	}
+	if got := listed(); got != first {
+		t.Fatalf("before the next start the server is listed as %q", got)
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/restart?wait=true", struct{}{}, nil)
+	if got := listed(); got != second {
+		t.Fatalf("after the restart the server is listed as %q, want %q", got, second)
+	}
+	if cmd := logLines(t, h.serverLog("alpha"), hasPrefix("Command line: ")); len(cmd) != 1 ||
+		!strings.Contains(cmd[0], " -ServerName="+second+" -SteamServerName="+second+" ") {
+		t.Fatalf("the server's command line: %q", cmd)
+	}
+	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/stop", struct{}{}, nil)
 }
 
 // A build without a default map runs only instances that name their map.

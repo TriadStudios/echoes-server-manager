@@ -626,7 +626,11 @@ func (s switchNames) repeatedBefore(i int) bool {
 // ("extra_args.2", never by what it holds), and a secret by its field.
 // An empty rule, and an extra argument that ends in "=", is among them; it
 // is left off the command line (gameserver.Launch.Args). Of switches with
-// the same name, those after the first are named.
+// the same name, those after the first are named, and so is a rule or an
+// extra argument that names a switch ESM sets itself
+// (gameserver.IsReservedSwitch): -SteamServerName, which an earlier version
+// did not set, stored as a rule or an extra argument is passed after ESM's
+// own, and the server reads ESM's.
 func (in Instance) storedUnsafe(s Secrets) []string {
 	var out []string
 	unsafe := func(v string) bool {
@@ -634,11 +638,12 @@ func (in Instance) storedUnsafe(s Secrets) []string {
 		return bad
 	}
 	// A switch name that is not plain, that the engine would take for
-	// another switch, or that ESM refuses when it is set now.
+	// another switch, that ESM refuses when it is set now, or that ESM sets
+	// itself.
 	badName := func(name string) bool {
 		_, searched := gameserver.SearchedSwitch(name)
 		_, refused := gameserver.RefusedSwitch(name)
-		return !gameserver.PlainSwitchName(name) || searched || refused
+		return !gameserver.PlainSwitchName(name) || searched || refused || gameserver.IsReservedSwitch(name)
 	}
 	if _, found := gameserver.SearchedName(in.Name); found {
 		out = append(out, "name")
