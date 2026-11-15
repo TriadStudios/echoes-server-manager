@@ -420,8 +420,10 @@ SteamCMD.
    any build; the regular checks do the same without validation. ESM keeps
    the app's files in `<root>/steam-cache/main/` so later downloads are
    deltas, and runs SteamCMD with `HOME` set to a folder there.
-   `esm steam list` shows what each source last did; `esm doctor` checks
-   SteamCMD, the sources and the passwords.
+   `esm steam list` shows what each source last did (the Steam tab of the
+   Builds screen on the page shows the same, and an admin can check and
+   install from it); `esm doctor` checks SteamCMD, the sources and the
+   passwords.
 
 A new build is installed only when the disk that holds `builds/` has at
 least twice its size free; otherwise the install is refused
@@ -514,8 +516,19 @@ settings. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
 whether players can reach the box from outside), the page says so. A
 server's settings screen has a field for every game setting ESM knows by
-name (see [Game settings](#game-settings)), grouped, each with its help,
-range and default; an empty field leaves the setting to the game. Reading works without JavaScript; changes need it. What each role
+name (see [Game settings](#game-settings)), grouped, each with a one-line
+help and, under "More", the rest of it with its range and default; an
+empty field leaves the setting to the game. A server's Overview has an
+Update card (its build, the newer one when its Steam source has one, and
+one status: up to date, update available, waiting, failed, or a new build
+checked at the next start), and the Dashboard shows the same status for
+every server. The Builds screen lists the builds newest first, says plainly
+whether a server runs each one, keeps it for a rollback or nothing uses it
+(and how much space removing the unused ones frees), installs from a
+folder, an archive or a Steam source, and lists the Steam sources as
+`esm steam list` does. A server's Backups screen shows when the last
+backup was made, when the next is due, how many are kept and their size,
+and lists them by day with the reason as a tag. Reading works without JavaScript; changes need it. What each role
 may do is the same as in the API.
 
 ## Command line tour

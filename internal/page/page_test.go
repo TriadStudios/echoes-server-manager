@@ -342,7 +342,7 @@ func checkHTML(t *testing.T, what, body, csrf string, secrets ...string) {
 					unlabelled = append(unlabelled, control{tag, a["id"], a["name"]})
 				}
 			case "th":
-				if s := a["scope"]; s != "col" && s != "row" {
+				if s := a["scope"]; s != "col" && s != "row" && s != "rowgroup" {
 					t.Errorf("%s: <th> without scope", what)
 				}
 			case "button":
@@ -489,7 +489,7 @@ func TestEveryScreen(t *testing.T) {
 		t.Error("the audit log is for admins only")
 	}
 	dl := "/api/v1/instances/alpha/backups/" + backup.ID + "/download"
-	if !strings.Contains(op["/servers/alpha/backups"], dl) || strings.Contains(rd["/servers/alpha/backups"], dl) || !strings.Contains(rd["/servers/alpha/backups"], "Made by hand") {
+	if !strings.Contains(op["/servers/alpha/backups"], dl) || strings.Contains(rd["/servers/alpha/backups"], dl) || !strings.Contains(rd["/servers/alpha/backups"], "Manual") {
 		t.Error("backup downloads are for operators; read still sees the list")
 	}
 	if strings.Contains(op["/servers/alpha/settings"], `data-save="later"`) || !strings.Contains(admin["/servers/alpha/settings"], `data-save="later"`) ||
@@ -556,6 +556,82 @@ func TestEveryScreen(t *testing.T) {
 	if !strings.Contains(admin["/builds"], "Check and install") || strings.Contains(op["/builds"], "Check and install") ||
 		!strings.Contains(op["/builds"], "Installing builds needs the admin role") {
 		t.Error("installing builds is for admins only")
+	}
+
+	// Updates: a server has one status, and its card on the Overview has the
+	// form for an operator: the newest build chosen, the running one marked
+	// and not to be chosen.
+	for _, who := range []map[string]string{admin, op, rd} {
+		if !strings.Contains(who["/"], "Up to date</span>") || !strings.Contains(who["/servers/alpha"], "Up to date</span>") ||
+			strings.Contains(who["/"], "Newer build") || strings.Contains(who["/servers/alpha"], "Newer build") {
+			t.Error("a server on a build nothing newer is known of is up to date")
+		}
+	}
+	for _, want := range []string{`<option value="1.1" selected title="Commit fake-1.1">1.1 (live, newest)</option>`,
+		`<option value="1.0" disabled title="Commit fake-1.0">1.0 (live, running now)</option>`, `data-form="update" data-name="alpha"`} {
+		if !strings.Contains(admin["/servers/alpha"], want) || !strings.Contains(op["/servers/alpha"], want) {
+			t.Errorf("the update form lacks %q", want)
+		}
+	}
+	if strings.Contains(rd["/servers/alpha"], `data-form="update"`) {
+		t.Error("read is offered the update form")
+	}
+
+	// Builds: newest first, a plain status with the servers as tags, the
+	// commit in a tooltip, what removing the unused builds frees, the
+	// install as tabs behind a Warning, and the Steam runtime files folded
+	// at the bottom.
+	for _, who := range []map[string]string{admin, op, rd} {
+		b := who["/builds"]
+		if i, j := strings.Index(b, ">1.1<"), strings.Index(b, ">1.0<"); i < 0 || i > j {
+			t.Error("builds are not newest first")
+		}
+		for _, want := range []string{`<span class="badge changed live">Newest</span>`, `title="Commit fake-1.1"`,
+			`<span class="pill ok"><span class="dot" aria-hidden="true"></span>Running on</span> <span class="srv">alpha</span> <span class="srv">beta</span>`,
+			`<span class="pill muted"><span class="dot" aria-hidden="true"></span>Unused</span>`, `<tr class="unused">`,
+			`<strong class="tag">Warning</strong> A build is a program that runs with ESM's own rights`,
+			`id="from-folder"`, `id="from-archive"`, `id="from-steam"`, "No Steam source is set",
+			`<details class="more panel off">`, "Steam runtime files:"} {
+			if !strings.Contains(b, want) {
+				t.Errorf("builds lack %q", want)
+			}
+		}
+		for _, gone := range []string{"Not available yet", `<th scope="col">Commit`, `<th scope="col">Used by`, "Not checked"} {
+			if strings.Contains(b, gone) {
+				t.Errorf("builds still have %q", gone)
+			}
+		}
+		if i, j := strings.Index(b, `id="install-h"`), strings.Index(b, "Steam runtime files:"); i < 0 || j < i {
+			t.Error("the Steam runtime files are not below the install section")
+		}
+	}
+	if !strings.Contains(admin["/builds"], `data-act="prune"`) || !strings.Contains(admin["/builds"], "Remove unused builds (frees ") ||
+		!strings.Contains(admin["/builds"], `data-confirm="Remove the 1 build that no server runs or keeps for a rollback? This frees `) ||
+		strings.Contains(op["/builds"], `data-act="prune"`) || strings.Contains(rd["/builds"], `data-act="prune"`) {
+		t.Error("removing unused builds: admin only, and it says what it frees")
+	}
+
+	// Backups: a strip of facts, backups by day with their reason as a tag,
+	// the newest marked, the Restore warning as a note, the policy folded
+	// into one line. Back up now is in the head of the screen, for operators.
+	for _, who := range []map[string]string{admin, op, rd} {
+		b := who["/servers/alpha/backups"]
+		for _, want := range []string{"<dt>Last backup</dt>", "<dt>Kept</dt>", "1 of 10", "<dt>Total size</dt>", `<th scope="rowgroup" colspan=`, ">Today</th>",
+			`<span class="badge changed">Newest</span>`, `<span class="pill ok">Manual</span>`, `<strong class="tag">Note</strong> Restore stops the server`,
+			`<details class="more edit panel">`, "<strong>Policy:</strong> "} {
+			if !strings.Contains(b, want) {
+				t.Errorf("backups lack %q", want)
+			}
+		}
+		if strings.Contains(b, `<strong class="tag">Warning</strong> Restore`) || strings.Contains(b, `class="goes"`) {
+			t.Error("backups: the Restore warning is back, or a backup goes next with one of ten kept")
+		}
+	}
+	for who, want := range map[string]bool{"admin": true, "op": true, "rd": false} {
+		b := map[string]map[string]string{"admin": admin, "op": op, "rd": rd}[who]["/servers/alpha/backups"]
+		if got := strings.Contains(b, `class="btn primary" data-act="backup" data-name="alpha"`); got != want {
+			t.Errorf("%s: Back up now on the Backups screen: %v", who, got)
+		}
 	}
 
 	// Live updates: the event streams each screen opens.

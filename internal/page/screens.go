@@ -178,7 +178,7 @@ type logLine struct {
 }
 
 type overviewData struct {
-	Updates   []api.BuildView // builds the server can update to
+	Update    updateChoice // the builds the server can update to
 	Log       []logLine
 	LogWhy    string
 	Events    []audit.Entry
@@ -192,15 +192,9 @@ func (p *Page) overview(v *view) {
 	}
 	o := overviewData{}
 	o.Log, o.LogWhy = v.logLines(d, instances.SourceServer, 20)
-	if v.Operator() {
-		var bl api.BuildList
-		if err := v.c.get("/api/v1/builds", &bl); err == nil {
-			for _, b := range bl.Builds {
-				if b.Channel == d.S.Channel && b.Version != d.S.Build {
-					o.Updates = append(o.Updates, b)
-				}
-			}
-		}
+	var bl api.BuildList
+	if err := v.c.get("/api/v1/builds", &bl); err == nil {
+		o.Update = updateChoices(d.S, bl.Builds)
 	}
 	if v.Admin() {
 		var al api.AuditList
@@ -430,26 +424,18 @@ func (p *Page) players(v *view) {
 	p.render(v, "players", http.StatusOK)
 }
 
-type backupsData struct {
-	List  []instances.Backup
-	Total int64
-	Why   string
-}
-
 func (p *Page) backups(v *view) {
 	d, ok := p.server(v, "backups")
 	if !ok {
 		return
 	}
-	b := backupsData{}
 	var bl api.BackupList
+	why := ""
 	if err := v.c.get("/api/v1/instances/"+url.PathEscape(d.S.Name)+"/backups", &bl); err != nil {
-		b.Why = err.Error()
+		why = err.Error()
 	}
-	b.List = bl.Backups
-	for _, x := range b.List {
-		b.Total += x.SizeBytes
-	}
+	b := makeBackups(bl.Backups, d.S.Backup.Keep, time.Now(), time.Local)
+	b.Why = why
 	d.More = b
 	v.Events = "instance=" + url.QueryEscape(d.S.Name) + "&types=state"
 	p.render(v, "backups", http.StatusOK)
@@ -466,17 +452,6 @@ func (p *Page) schedule(v *view) {
 
 // --- builds, clusters, box, audit ---
 
-type buildRow struct {
-	api.BuildView
-	Current []string // instances running it now
-	Kept    []string // instances keeping it for a rollback
-}
-
-type buildsData struct {
-	Builds []buildRow
-	Total  int64
-}
-
 func (p *Page) builds(v *view) {
 	v.Title, v.Nav, v.Screen, v.Events = "Builds", "builds", "builds", "types=build"
 	var bl api.BuildList
@@ -489,20 +464,14 @@ func (p *Page) builds(v *view) {
 		p.fail(v.w, v.r, statusOf(err), err.Error())
 		return
 	}
-	d := buildsData{}
-	for _, b := range bl.Builds {
-		row := buildRow{BuildView: b}
-		for _, s := range il.Instances {
-			switch {
-			case s.Build == b.Version:
-				row.Current = append(row.Current, s.Name)
-			case slices.Contains(b.UsedBy, s.Name):
-				row.Kept = append(row.Kept, s.Name)
-			}
-		}
-		d.Builds = append(d.Builds, row)
-		d.Total += b.SizeBytes
+	d := buildRows(bl.Builds, il.Instances)
+	// The Steam sources, as "esm steam list" reads them. The builds are
+	// shown without them when they cannot be read.
+	var sl api.SteamList
+	if err := v.c.get("/api/v1/steam", &sl); err != nil {
+		d.SourcesWhy = err.Error()
 	}
+	d.Sources = sl.Sources
 	v.Data = d
 	p.render(v, "builds", http.StatusOK)
 }

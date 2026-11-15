@@ -4,7 +4,7 @@
 <p class="dim mono">{{if $b.Hostname}}{{$b.Hostname}}, {{end}}{{$b.OS}}, ESM {{$b.Version}}, up {{since $b.Started}}</p>
 </div>
 
-{{if $b.SecretsOnCommandLine}}<p class="alert danger">UNSAFE on a shared box: {{join $b.SecretsOnCommandLine ", "}} pass their passwords on the server command line, where every account on this box can read them from the process list, and the server writes them into its log.</p>{{end}}
+{{if $b.SecretsOnCommandLine}}<p class="alert error">UNSAFE on a shared box: {{join $b.SecretsOnCommandLine ", "}} pass their passwords on the server command line, where every account on this box can read them from the process list, and the server writes them into its log.</p>{{end}}
 
 <div class="grid cards">
 <section class="panel stack" aria-labelledby="esm-h">
@@ -17,9 +17,9 @@
 <div><dt>Newest release</dt><dd class="mono">{{if $b.Release.Latest}}{{$b.Release.Latest}}{{else}}not known{{end}}</dd></div>
 <div><dt>Last looked</dt><dd>{{if not $b.Release.Checked.IsZero}}<time datetime="{{iso $b.Release.Checked}}">{{when $b.Release.Checked}}</time>{{else}}not yet{{end}}</dd></div>
 </dl>
-{{if $b.UpdateAvailable}}<p class="alert">ESM {{$b.Release.Latest}} is out.</p>{{end}}
+{{if $b.UpdateAvailable}}<p class="alert info"><strong class="tag">Update</strong> ESM {{$b.Release.Latest}} is out.</p>{{end}}
 {{if $b.Release.Note}}<p class="note">{{$b.Release.Note}}</p>{{end}}
-{{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place? ESM ends after the update, and its service manager, if it has one, starts the new version. Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
+{{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn primary" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place? ESM ends after the update, and its service manager, if it has one, starts the new version. Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
 <p class="note">ESM never updates itself on its own. An update takes a release only when its signature checks out with the key built into ESM and the binary's hash matches the signed list; the old binary is kept next to it as <span class="mono">.previous</span>. ESM then restarts through its service manager (<span class="mono">esm service install</span>); when nothing would start it again, the update asks first and ESM then has to be started by hand. On the box: <span class="mono">esm update-self</span>.</p>
 </section>
 
@@ -108,7 +108,7 @@
 <td>Token</td>
 <td class="mono">{{.Role}}</td>
 <td class="dim">{{if .LastUsed.IsZero}}never{{else}}<time datetime="{{iso .LastUsed}}">{{when .LastUsed}}</time>{{end}}</td>
-<td><button type="button" class="btn" data-act="revoke" data-id="{{.ID}}" data-confirm="Revoke this token? Scripts that use it stop working at once.">Revoke</button></td>
+<td><button type="button" class="btn danger" data-act="revoke" data-id="{{.ID}}" data-confirm="Revoke this token? Scripts that use it stop working at once.">Revoke</button></td>
 </tr>{{end}}
 </tbody>
 </table>
@@ -151,19 +151,19 @@
 {{if $v.Admin}}<a class="btn" href="/box?check=1#health-h">{{if $d.Checked}}Run again{{else}}Run the health check{{end}}</a>{{end}}
 </div>
 {{if not $v.Admin}}<p class="note">The health check needs the admin role.</p>{{else if not $d.Checked}}<p class="note">The health check test-binds every free port of the ranges, among other things, so it runs only when asked, one at a time.</p>{{end}}
-{{if $d.DoctorWhy}}<p class="alert">{{$d.DoctorWhy}}</p>{{end}}
+{{if $d.DoctorWhy}}<p class="alert error"><strong class="tag">Error</strong> {{$d.DoctorWhy}}</p>{{end}}
 <div class="rows">
-{{range $d.Doctor.Checks}}<div class="row check">
+{{range $d.Doctor.Checks}}<div class="row health">
 <span class="result {{.Status}}">{{check .Status}}</span>
 <span class="strong name">{{.Name}}</span>
 <span class="dim what">{{.Message}}</span>
 </div>{{end}}
-<div class="row check">
+<div class="row health">
 <span class="result warn">Check</span>
 <span class="strong name">reachable from outside</span>
 <span class="dim what">ESM cannot test from this box whether players can reach the game ports from the internet. Try joining from outside.</span>
 </div>
-<div class="row check">
+<div class="row health">
 <span class="result {{if $b.LimitsEnforced}}ok{{else}}warn{{end}}">{{if $b.LimitsEnforced}}OK{{else}}Check{{end}}</span>
 <span class="strong name">limits</span>
 <span class="dim what">{{if $b.LimitsEnforced}}Memory ceilings and CPU quotas are enforced by systemd.{{else}}Memory ceilings and CPU quotas are not enforced in {{$b.Supervisor}} mode.{{end}}</span>
@@ -171,11 +171,11 @@
 </div>
 </section>
 
-<section class="panel spread" aria-labelledby="root-h">
-<div>
-<h2 class="sub" id="root-h">Everything ESM keeps is in one folder</h2>
-<p class="mono dim">{{$b.Root}} (builds, instances, backups, audit.log)</p>
-</div>
+<section class="panel" aria-labelledby="root-h">
+<div class="spread">
+<h2 class="label" id="root-h">Everything ESM keeps is in one folder</h2>
 {{if $v.Admin}}<a class="btn link" href="/audit">Open the audit log</a>{{end}}
+</div>
+<p class="mono dim wrap">{{$b.Root}} (builds, instances, backups, audit.log)</p>
 </section>
 {{end}}

@@ -1,6 +1,33 @@
 {{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$o := .Data.More}}
 {{template "tabs" .}}
-<div class="grid wide">
+<section class="panel" aria-labelledby="update-h">
+<div class="spread">
+<h2 class="label" id="update-h">Update</h2>
+{{template "update-pill" $s}}
+</div>
+<p class="flow"><span class="mono">{{$s.Build}}</span>{{if $s.UpdateAvailable}}<span class="arrow" aria-hidden="true">&rarr;</span><span class="sr">to</span><span class="mono newest">{{$s.Update.Target}}</span>{{end}}<span class="badge {{$s.Channel}}">{{$s.Channel}}</span></p>
+{{if $o.Update.Behind}}<p class="note">{{plural $o.Update.Behind "build"}} behind.</p>{{end}}
+{{if $s.Update.LastError}}<p class="alert error"><strong class="tag">Error</strong> The last automatic update failed: {{$s.Update.LastError}}</p>{{end}}
+{{if $s.UpdateAvailable}}<p class="note">{{if $s.Update.Pending}}{{if $s.Update.Waiting}}Waiting: {{$s.Update.Waiting}}.{{else}}It is put in place at the next check.{{end}}{{else if $s.Update.Waiting}}{{$s.Update.Waiting}}.{{else}}auto_update is {{$s.AutoUpdate}}: update by hand.{{end}}
+{{if $s.Update.Overdue}}<span class="warnword">Waiting longer than {{$s.UpdateMaxWait}}.</span>{{end}}</p>{{end}}
+{{if $s.Status.UpdateUnverified}}<p class="note"><span class="mono">{{$s.Build}}</span> was put in place by an automatic update while the server was stopped, and nothing was started. The next start waits for it to get ready and goes back to <span class="mono">{{$s.Status.UpdateRollbackBuild}}</span> if it does not.</p>{{end}}
+<p class="note">Automatic updates: <span class="mono">{{$s.AutoUpdate}}</span>. <a href="/servers/{{$s.Name}}/settings#updates">{{if $v.Admin}}Change them{{else}}See them{{end}} in Settings</a></p>
+<details class="more"><summary><span class="hint">How automatic updates work</span></summary>
+<div class="more-body"><p>auto_update is set under Settings: off and install only show the newer build; restart updates a running server as soon as it has no players (it asks the query port), with a backup first and a roll back to the previous build when the new one does not get ready. A stopped server is never started by an update: its build is switched, and the next start checks it.</p></div>
+</details>
+{{if $v.Operator}}{{if $o.Update.Others}}<form class="tools" data-form="update" data-name="{{$s.Name}}">
+<label class="field"><span>Update to build</span>
+<select name="to" required>
+{{if not $o.Update.Selected}}<option value="" selected disabled>Choose a build</option>{{end}}
+{{range $o.Update.Options}}<option value="{{.Version}}"{{if .Running}} disabled{{end}}{{if .Selected}} selected{{end}}{{if .Commit}} title="Commit {{.Commit}}"{{end}}>{{.Version}} ({{.Channel}}{{if .Newest}}, newest{{end}}{{if .Running}}, running now{{end}})</option>{{end}}
+</select></label>
+<button type="submit" class="btn primary">Update</button>
+</form>
+<p class="note">An update backs up the world first, stops the server, starts the new build and waits until it is ready. If it never gets ready, the old build is put back and started.</p>
+{{else}}<p class="note">No other {{$s.Channel}} build is installed. Install one under <a href="/builds">Builds</a>.</p>{{end}}{{end}}
+</section>
+
+<div class="grid cards">
 <section class="panel" aria-labelledby="details-h">
 <h2 class="label" id="details-h">Details</h2>
 <dl class="facts">
@@ -48,7 +75,7 @@
 </section>
 </div>
 
-<div class="grid wide">
+<div class="grid cards">
 <section class="panel" aria-labelledby="events-h">
 <h2 class="label" id="events-h">Recent events</h2>
 <div class="rows" data-events-of="{{$s.Name}}">
@@ -62,30 +89,11 @@
 <h2 class="label" id="log-h">Log (live)</h2>
 <a class="btn link" href="/servers/{{$s.Name}}/log">Open the full log</a>
 </div>
-{{if $o.LogWhy}}<p class="alert">{{$o.LogWhy}}</p>{{else}}<div class="logbox short" data-log-of="{{$s.Name}}" data-source="server" data-keep="20">
+{{if $o.LogWhy}}<p class="alert info"><strong class="tag">Note</strong> {{$o.LogWhy}}</p>{{else}}<div class="logbox short" data-log-of="{{$s.Name}}" data-source="server" data-keep="20">
 {{range $o.Log}}<div class="line{{if .Level}} {{.Level}}{{end}}">{{if .Level}}<span class="lvl">{{.Level}}</span>{{end}}{{.Text}}</div>{{else}}<div class="line dim" data-empty>No lines yet.</div>{{end}}
 </div>{{end}}
 </section>
 </div>
 
-{{if or $s.UpdateAvailable $s.Update.LastError $s.Status.UpdateUnverified}}<section class="panel" aria-labelledby="newer-h">
-<h2 class="label" id="newer-h">Newer build</h2>
-{{template "update-note" $s}}
-<p class="note">auto_update is set under Settings: off and install only show the newer build; restart updates a running server as soon as it has no players (it asks the query port), with a backup first and a roll back to the previous build when the new one does not get ready. A stopped server is never started by an update: its build is switched, and the next start checks it.</p>
-</section>{{end}}
-
-{{if $v.Operator}}<section class="panel" aria-labelledby="update-h">
-<h2 class="label" id="update-h">Update</h2>
-{{if $o.Updates}}<form class="inline" data-form="update" data-name="{{$s.Name}}">
-<label class="field"><span>Update to build</span>
-<select name="to" required>
-{{range $o.Updates}}<option value="{{.Version}}">{{.Version}} ({{.Channel}}{{if .Commit}}, {{.Commit}}{{end}})</option>{{end}}
-</select></label>
-<button type="submit" class="btn">Update</button>
-</form>
-<p class="note">An update backs up the world first, stops the server, starts the new build and waits until it is ready. If it never gets ready, the old build is put back and started.</p>
-{{else}}<p class="note">No other {{$s.Channel}} build is installed. Install one under <a href="/builds">Builds</a>.</p>{{end}}
-</section>{{end}}
-
-<p class="warnword">Stop and Restart ask the server to stop and wait for it. Until it is confirmed that this server build saves the world when it is asked to stop, up to one autosave interval of progress can be lost. Back up first if players are on.</p>
+<p class="alert warn"><strong class="tag">Warning</strong> Stop and Restart ask the server to stop and wait for it. Until it is confirmed that this server build saves the world when it is asked to stop, up to one autosave interval of progress can be lost. Back up first if players are on.</p>
 {{end}}
