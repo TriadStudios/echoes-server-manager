@@ -87,6 +87,8 @@ func TestSettingsScreenShowsTheCatalog(t *testing.T) {
 		`data-game`:                                             "the catalog fields are marked",
 		`as <span class="mono">-ServerName</span> and as <span class="mono">-SteamServerName</span>`: "the two switches the server name goes to",
 		`A new name reaches the server at its next start.`:                                           "when a new server name applies",
+		`at most 63 bytes of UTF-8 (63 characters of plain ASCII`:                                    "the longest server name",
+		`name="display_name" maxlength="63"`:                                                         "the server name field held to 63",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("%s: %q is missing", what, want)

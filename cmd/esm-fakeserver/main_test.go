@@ -267,10 +267,11 @@ func TestFakeLifecycle(t *testing.T) {
 	}
 }
 
-// The name the query port answers with, the one Steam's server list shows,
-// is the Steam server name; the session in the ready line is named after
-// -ServerName=. Without -SteamServerName= the fake answers with no name,
-// like a server the list shows unnamed.
+// The name the query port answers with, which stands for the one the game
+// gives Steam's server list, is the Steam server name; the session in the
+// ready line is named after -ServerName=. Without -SteamServerName= the
+// fake answers with no name (it has no engine configuration to fall back
+// to).
 func TestFakeSteamServerName(t *testing.T) {
 	read := func(args ...string) options {
 		t.Helper()

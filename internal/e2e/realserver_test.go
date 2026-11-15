@@ -148,9 +148,9 @@ func TestReadyThroughQueryPort(t *testing.T) {
 	}
 }
 
-// The display name reaches the server as the name Steam's server list
-// shows (-SteamServerName, which the fake answers the query port with) as
-// well as -ServerName, a name with spaces whole. A change of it while the
+// The display name reaches the server as the name for Steam's server list
+// (-SteamServerName, which the fake answers the query port with) as well
+// as -ServerName, a name with spaces whole. A change of it while the
 // server runs says that it waits for the next start, and the restart
 // brings it.
 func TestSteamServerNameThroughTheAPI(t *testing.T) {

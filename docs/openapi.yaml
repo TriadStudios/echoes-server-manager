@@ -1309,13 +1309,20 @@ components:
         with which the server's engine does not start, keeps ESM from
         starting the server (409 command_line_unsafe). The instance's
         `unsafe_stored_settings` names them, and the instance takes no
-        other change until a stored -SteamServerName= is removed.
+        other change until a stored -SteamServerName= is removed. It names
+        a display_name of more than 63 bytes too, which an earlier version
+        took: it is passed as stored, and the game cuts it to 63
+        characters in Steam's server list; other changes are taken.
         `command_line_too_long`: the server command line of the
         instance, as an earlier version stored its settings, is longer than
         the 12000 characters a change may lead to; beyond 16127 ESM does not
         start the server: the server's engine starts with no more than
         16383, and ESM keeps 256 of them free for what a build's start
-        script may add.
+        script may add. This version passes the server name a second time
+        (-SteamServerName=), which makes every line up to 84 characters
+        longer than an earlier version made it, so an instance close to
+        either limit may now pass it; a shorter display_name (it counts
+        twice) brings it back.
     Settings:
       type: object
       additionalProperties: false
@@ -1369,15 +1376,21 @@ components:
       properties:
         display_name:
           type: string
-          maxLength: 64
+          maxLength: 63
           description: |
             The server name. Empty means the instance name. It goes to the
             server twice, with the same value: as -ServerName= and as
-            -SteamServerName=, the name in Steam's server list. It follows
-            the rules for values on the command line (see Settings) and
-            counts twice in the length of the line. A change reaches a
-            running server at its next start (restart_required is true).
-            Neither switch can be set by a rule or an extra argument.
+            -SteamServerName=, from which the game takes the name for
+            Steam's server list. The game cuts a name of 64 characters or
+            more to 63, so a name set or changed has at most 63 bytes of
+            UTF-8 (63 characters of plain ASCII; 422 `invalid`, naming the
+            limit). A name of 64 bytes stored by an earlier version may be
+            sent back unchanged; it is passed as stored, the game cuts it,
+            and the instance carries the warning unsafe_stored_settings. The
+            name follows the rules for values on the command line (see
+            Settings) and counts twice in the length of the line. A change
+            reaches a running server at its next start (restart_required is
+            true). Neither switch can be set by a rule or an extra argument.
         cluster: { type: string }
         channel: { type: string, enum: [live, test] }
         map:

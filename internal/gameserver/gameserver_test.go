@@ -118,7 +118,7 @@ func TestLaunchArgsMinimal(t *testing.T) {
 }
 
 // The server name goes on the command line twice: as -ServerName and as
-// -SteamServerName, the name Steam's server list shows. Each is one
+// -SteamServerName, the name for Steam's server list. Each is one
 // argument, built the same way, right after the other, so the server reads
 // the same name for both (a name with a space whole, in quotes), the second
 // costs the line five characters more than the first, neither is found

@@ -421,11 +421,20 @@ settings page.
 
 The server name (`display_name`, or the instance's name when it is empty)
 goes to the server twice, with the same value: as `-ServerName=` and as
-`-SteamServerName=`, the name in Steam's server list, which the game reads
-from that switch and not from `-ServerName=`. Both are passed the same way
-and follow the rules below once, and neither can be set by a rule or an
-extra argument. A new name reaches a running server at its next start.
-`-SteamServerName=` is not confirmed on a real host yet.
+`-SteamServerName=`. The game's Steam session code takes the name for
+Steam's server list from `-SteamServerName=`, not from `-ServerName=`
+(only without the switch does it fall back to its engine configuration),
+and cuts a name of 64 characters or more to 63. So a display name has at
+most 63 bytes of UTF-8 (63 characters of plain ASCII). Both switches are
+passed the same way and follow the rules below once, the name counts
+twice in the length of the command line, and neither switch can be set
+by a rule or an extra argument. A new name reaches a running server at
+its next start. No real server has run with `-SteamServerName=` yet: that
+a name with a space arrives whole there (it does for `-ServerName=`) and
+that it then shows in the public server list are not seen yet. A display
+name of 64 bytes, which an earlier version took, is passed as stored and
+cut by the game; the instance carries the warning `unsafe_stored_settings`
+until the name is shortened.
 
 An instance keeps its game settings in `rules` (`--set Key=Value` at
 create, `rules` in the API, the fields of the settings page). A setting
@@ -503,7 +512,13 @@ carries the warning `command_line_too_long`; beyond 16127 ESM does not
 start its server, and says why (409 `command_line_too_long`): of the
 16383 the engine starts with, ESM keeps 256 free for what a build's start
 script may put on the line besides (the name of the game's project, say),
-since it does not know what a build's script adds.
+since it does not know what a build's script adds. This version passes
+the server name a second time, so every command line is longer than an
+earlier version made it, by ` -SteamServerName=`, the name and, for a
+name with a space, its quotes (at most 84 characters): an instance whose
+stored line was close to 12000 may now carry `command_line_too_long`, and
+one close to 16127 is now not started. A shorter display name (it counts
+twice), or shorter rules or extra arguments, bring it back.
 
 These rules follow how the engine reads its command line, as far as ESM
 knows it from the engine's source; they are not yet checked against a
