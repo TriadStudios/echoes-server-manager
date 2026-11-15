@@ -138,13 +138,21 @@ func (v *view) Admin() bool    { return auth.Role(v.Session.Role).Allows(auth.Ro
 // not a cookie session).
 func (v *view) CSRF() string { return v.Session.CSRFToken }
 
+// notLoggedIn reports whether an API error says that the caller has no
+// valid login: 401, or 429 for an address with too many failed
+// authentications, which refuses only callers without a valid login (the
+// login itself is not limited by it).
+func notLoggedIn(err error) bool {
+	var ae *apiError
+	return errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusTooManyRequests)
+}
+
 // begin starts a page that needs a login. A caller that has none is sent to
 // /setup, which asks for one (or for the first setup).
 func (p *Page) begin(w http.ResponseWriter, r *http.Request) (*view, bool) {
 	v := &view{w: w, r: r, c: client{h: p.api, r: r}}
 	if err := v.c.get("/api/v1/session", &v.Session); err != nil {
-		var ae *apiError
-		if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		if notLoggedIn(err) {
 			http.Redirect(w, r, "/setup?next="+url.QueryEscape(r.URL.Path), http.StatusSeeOther)
 			return nil, false
 		}

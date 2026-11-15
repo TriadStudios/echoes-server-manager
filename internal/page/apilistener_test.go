@@ -150,3 +150,28 @@ func TestPageOnTheAPIListener(t *testing.T) {
 		}
 	}
 }
+
+// An address with too many failed authentications still gets to the login
+// and logs in: the page takes the 429 of the limit as "not logged in", and
+// the login has its own limit only. With the session, every screen works.
+func TestLoginWorksFromALimitedAddress(t *testing.T) {
+	s := newSite(t)
+	s.setup()
+	for range api.AuthFailMax + 5 {
+		s.api("GET", "/api/v1/session", "esm_"+strings.Repeat("w", 43), nil, nil)
+	}
+	if st := s.api("GET", "/api/v1/session", "", nil, nil); st != http.StatusTooManyRequests {
+		t.Fatalf("the address is not limited: %d", st)
+	}
+	resp, _ := s.get("/box", "")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/setup?next=%2Fbox" {
+		t.Fatalf("a screen without a login: %d %v", resp.StatusCode, resp.Header)
+	}
+	if resp, body := s.get("/setup?next=%2Fbox", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, `data-form="login"`) {
+		t.Fatalf("the login form: %d", resp.StatusCode)
+	}
+	var lr api.LoginResult
+	s.must(http.StatusOK, "POST", "/api/v1/login", "", api.LoginRequest{Username: "admin", Password: "a long password 1"}, &lr)
+	s.csrf = lr.CSRFToken
+	s.checkPage("/box", "session", s.csrf)
+}
