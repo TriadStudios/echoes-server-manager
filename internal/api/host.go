@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/tlscert"
 )
 
@@ -62,7 +63,9 @@ func newAPIHostSet(listen string, names []string) *hostSet {
 func (hs *hostSet) add(entries []string) {
 	for _, p := range entries {
 		if h, pt, err := net.SplitHostPort(p); err == nil {
-			hs.exact[joinHost(h, pt)] = true
+			if n, ok := config.ParsePort(pt); ok {
+				hs.exact[joinHost(h, strconv.Itoa(n))] = true
+			}
 		} else {
 			hs.anyPort[normHost(p)] = true
 		}
@@ -99,10 +102,12 @@ func (hs *hostSet) allows(header string, tls bool) bool {
 			port = "443"
 		}
 	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+	n, ok := config.ParsePort(port)
+	if !ok || n < 1 {
 		return false
 	}
-	return hs.exact[joinHost(host, port)] || hs.anyPort[normHost(host)]
+	// The port as a number, so "08740" is 8740.
+	return hs.exact[joinHost(host, strconv.Itoa(n))] || hs.anyPort[normHost(host)]
 }
 
 // listener is how one TCP listener of ESM treats the requests it takes:

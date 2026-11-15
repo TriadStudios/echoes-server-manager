@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -124,7 +123,7 @@ func checkHostName(h string) error {
 	bad := fmt.Errorf("%q must be a host name or IP address, with an optional :port, without a scheme, path or wildcard", h)
 	host := h
 	if hh, p, err := net.SplitHostPort(h); err == nil {
-		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+		if n, ok := ParsePort(p); !ok || n < 1 {
 			return bad
 		}
 		host = hh

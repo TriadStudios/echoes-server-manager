@@ -55,7 +55,7 @@ var wildcardAllowed = []struct{ file, line, why string }{
 	{"internal/config/apilistener_test.go", `"0.0.0.0:8740", "main listener"`, "api_listener rule checks; nothing is bound"},
 	{"internal/config/apilistener_test.go", `HostNames: []string{"0.0.0.0"}`, "api_listener rule checks; nothing is bound"},
 	{"internal/config/apilistener_test.go", `{"api_listener":{"listen":"0.0.0.0:8743"}}`, "api_listener rule checks; nothing is bound"},
-	{"internal/api/apilistener_test.go", `"panel.example.org:8743", "0.0.0.0:8743"}`, "Host header check; nothing is bound"},
+	{"internal/api/apilistener_test.go", `"panel.example.org:8743", "0.0.0.0:8743",`, "Host header check; nothing is bound"},
 	{"internal/api/apilistener_test.go", `Listen: "0.0.0.0:8743", AllAddresses: true`, "Host header check; nothing is bound"},
 	{"internal/api/apilistener_test.go", `"0.0.0.0:8743": false`, "Host header check; nothing is bound"},
 }

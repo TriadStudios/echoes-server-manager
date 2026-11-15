@@ -248,7 +248,8 @@ func TestAPIListenerHostCheck(t *testing.T) {
 	allowed := []string{apiHost, "192.0.2.10", "192.0.2.10:443", "esm.example.com", "ESM.Example.com.", "esm.example.com:8743",
 		"panel.example.org:8443"}
 	refused := []string{"", "evil.example", "evil.example:8743", "localhost:8743", "127.0.0.1:8743", "[::1]:8743",
-		"localhost:8740", "127.0.0.1:8740", "192.0.2.11:8743", "panel.example.org", "panel.example.org:8743", "0.0.0.0:8743"}
+		"localhost:8740", "127.0.0.1:8740", "192.0.2.11:8743", "panel.example.org", "panel.example.org:8743", "0.0.0.0:8743",
+		"192.0.2.10:+8743", "esm.example.com:-0", "panel.example.org:+8443"}
 	for _, path := range []string{"/api/v1/nothing", "/", "/instances/alpha"} {
 		for _, host := range allowed {
 			if rec := rg.onAPI("GET", path, "", header("host", host)); rec.Code == http.StatusMisdirectedRequest {
@@ -271,6 +272,9 @@ func TestAPIListenerHostCheck(t *testing.T) {
 	}
 	if rec := rg.do("GET", "/api/v1/nothing", "", header("host", "localhost:8740")); rec.Code != http.StatusNotFound {
 		t.Errorf("main listener: %d %s", rec.Code, rec.Body)
+	}
+	if rec := rg.do("GET", "/api/v1/nothing", "", header("host", "localhost:+8740")); rec.Code != http.StatusMisdirectedRequest {
+		t.Errorf("main listener with a signed port: %d %s", rec.Code, rec.Body)
 	}
 
 	// On every address it answers for its host names only.

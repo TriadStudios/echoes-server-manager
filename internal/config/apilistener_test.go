@@ -190,3 +190,33 @@ func TestAPIListenerCertNames(t *testing.T) {
 		t.Fatalf("loopback names %q %v", dns, ips)
 	}
 }
+
+// A port is decimal digits only: a sign ("+80", "-0"), spaces or another
+// base are refused wherever esm.json takes a port.
+func TestPortsAreDigitsOnly(t *testing.T) {
+	for p, want := range map[string]int{"0": 0, "80": 80, "080": 80, "65535": 65535} {
+		if n, ok := ParsePort(p); !ok || n != want {
+			t.Errorf("ParsePort(%q) = %d %v", p, n, ok)
+		}
+	}
+	for _, p := range []string{"", "+80", "-0", "-1", " 80", "80 ", "0x50", "65536", "000080", "8e1", "٨٠"} {
+		if n, ok := ParsePort(p); ok {
+			t.Errorf("ParsePort(%q) = %d, accepted", p, n)
+		}
+		if _, _, err := SplitListen("127.0.0.1:" + p); err == nil {
+			t.Errorf("SplitListen accepted the port %q", p)
+		}
+	}
+	for _, body := range []string{
+		`{"listen":"127.0.0.1:+8740"}`,
+		`{"api_listener":{"listen":"192.0.2.10:+8743"}}`,
+		`{"public_hosts":["esm.example.com:+443"]}`,
+		`{"api_listener":{"listen":"192.0.2.10:8743","host_names":["esm.example.com:+443"]}}`,
+	} {
+		st := openStore(t)
+		st.WriteFile(FileName, []byte(body), 0o600)
+		if _, _, err := Load(st); err == nil {
+			t.Errorf("%s accepted", body)
+		}
+	}
+}
