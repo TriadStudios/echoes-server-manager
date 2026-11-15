@@ -28,6 +28,7 @@ type globals struct {
 	root  string
 	url   string
 	token string
+	pin   string
 	json  bool
 }
 
@@ -37,6 +38,7 @@ func (g *globals) register(fs *flag.FlagSet) {
 	fs.StringVar(&g.root, "root", g.root, "ESM root folder (default $ESM_ROOT or ~/durinn)")
 	fs.StringVar(&g.url, "url", g.url, "URL of a remote ESM (needs --token or $ESM_TOKEN)")
 	fs.StringVar(&g.token, "token", g.token, "API token for --url")
+	fs.StringVar(&g.pin, "pin", g.pin, "public key pin (sha256//...) that the https --url must have, as esm tls prints it")
 	fs.BoolVar(&g.json, "json", g.json, "print one JSON object")
 }
 
@@ -61,7 +63,10 @@ func usageErr(format string, args ...any) error {
 
 const usage = `esm - Echoes Server Manager
 
-Usage: esm [--root DIR] [--json] [--url URL --token TOKEN] <command> [arguments]
+Usage: esm [--root DIR] [--json] [--url URL --token TOKEN [--pin PIN]] <command> [arguments]
+
+  --pin sha256//...             trust the https --url by its public key pin alone (the
+                                API listener's certificate that ESM made; see esm tls)
 
 Service:
   serve                         run the ESM service (game servers keep running when it stops)

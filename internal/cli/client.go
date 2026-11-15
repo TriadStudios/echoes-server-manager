@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
+	"github.com/TriadStudios/echoes-server-manager/internal/tlscert"
 )
 
 // TokenEnv names the environment variable that holds the API token for
@@ -57,7 +60,20 @@ func newClient(g *globals) (*client, error) {
 		if tok == "" {
 			return nil, usageErr("--url needs --token or " + TokenEnv)
 		}
-		return &client{base: strings.TrimRight(g.url, "/"), http: &http.Client{}, token: tok, where: g.url}, nil
+		hc := &http.Client{}
+		if g.pin != "" {
+			if u.Scheme != "https" {
+				return nil, usageErr("--pin needs an https --url")
+			}
+			if !pinRe.MatchString(g.pin) {
+				return nil, usageErr("--pin must be sha256// and the base64 SHA-256 of the public key, as esm tls prints it")
+			}
+			hc.Transport = &http.Transport{TLSClientConfig: pinnedTLS(g.pin)}
+		}
+		return &client{base: strings.TrimRight(g.url, "/"), http: hc, token: tok, where: g.url}, nil
+	}
+	if g.pin != "" {
+		return nil, usageErr("--pin is for --url")
 	}
 	root, err := config.ResolveRoot(g.root)
 	if err != nil {
@@ -74,6 +90,23 @@ func newClient(g *globals) (*client, error) {
 		},
 	}
 	return &client{base: "http://esm", http: &http.Client{Transport: tr}, where: sock}, nil
+}
+
+// pinRe is a public key pin: "sha256//" and 32 bytes in standard base64.
+var pinRe = regexp.MustCompile(`^sha256//[A-Za-z0-9+/]{43}=$`)
+
+// pinnedTLS trusts a server by the public key pin of its certificate
+// alone (tlscert.SPKIPin), as curl -k --pinnedpubkey does: the chain and
+// the host name are not checked, the key is. It is how a client reaches
+// the API listener with a certificate ESM made.
+func pinnedTLS(pin string) *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 || tlscert.SPKIPin(cs.PeerCertificates[0].RawSubjectPublicKeyInfo) != pin {
+				return errors.New("the server's public key does not match --pin")
+			}
+			return nil
+		}}
 }
 
 func (c *client) request(ctx context.Context, method, path string, body any) (*http.Request, error) {

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -185,6 +186,38 @@ func TestAPIListenerThroughAWholeService(t *testing.T) {
 	for _, want := range []string{"API listener started", info.Certificate.SPKIPin, info.Certificate.SHA256} {
 		if !strings.Contains(h.stderr.String(), want) {
 			t.Errorf("the start log does not say %q", want)
+		}
+	}
+
+	// The command line of another machine pins the listener with --pin.
+	remoteCLI := func(args ...string) (int, string, string) {
+		var out, errOut bytes.Buffer
+		code := cli.Main(args, &out, &errOut, "test")
+		return code, out.String(), errOut.String()
+	}
+	url, pin := "https://"+info.Listen, info.Certificate.SPKIPin
+	if code, out, errOut := remoteCLI("--url", url, "--token", read.Token, "--pin", pin, "list"); code != 0 ||
+		!strings.Contains(oneLine(t, "list", out), "alpha running") {
+		t.Fatalf("esm --pin list: %d %q %q", code, out, errOut)
+	}
+	if code, out, errOut := remoteCLI("--url", url, "--token", read.Token, "--pin", pin, "start", "alpha"); code != 1 ||
+		!strings.Contains(errOut, "operator") {
+		t.Fatalf("esm --pin start with a read token: %d %q %q", code, out, errOut)
+	}
+	wrong := "sha256//" + strings.Repeat("A", 43) + "="
+	if code, _, errOut := remoteCLI("--url", url, "--token", read.Token, "--pin", wrong, "list"); code != 1 || !strings.Contains(errOut, "does not match --pin") {
+		t.Fatalf("esm with a wrong pin: %d %q", code, errOut)
+	}
+	if code, _, errOut := remoteCLI("--url", url, "--token", read.Token, "list"); code != 1 || !strings.Contains(errOut, "certificate") {
+		t.Fatalf("esm without a pin: %d %q", code, errOut)
+	}
+	for _, args := range [][]string{
+		{"--url", "http://" + info.Listen, "--token", read.Token, "--pin", pin, "list"},
+		{"--root", h.root, "--pin", pin, "list"},
+		{"--url", url, "--token", read.Token, "--pin", "sha256//short", "list"},
+	} {
+		if code, _, errOut := remoteCLI(args...); code != 1 || !strings.Contains(errOut, "--pin") {
+			t.Errorf("esm %q: %d %q", args, code, errOut)
 		}
 	}
 
