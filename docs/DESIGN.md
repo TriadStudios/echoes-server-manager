@@ -268,7 +268,7 @@ passwords), ESM knows the switches of the server builds by name, in one
 catalog in the adapter
 ([`internal/gameserver/catalog.go`](../internal/gameserver/catalog.go)):
 for each the key, a group, a type, the server's default, the allowed range
-or values, a line of help, and two flags, `new_world_only` and `caution`.
+or values, a line of help, and a flag, `caution`.
 The API serves it read-only (`GET /api/v1/game-settings`, every role), the
 page makes its settings fields from it, and `esm game-settings` prints it.
 
@@ -486,12 +486,12 @@ may now carry `command_line_too_long`, and one close to 16127 is now not
 started. A shorter display name (it counts twice), or shorter rules or
 extra arguments, bring it back.
 
-**World rules apply to a new world only.** The settings of the group
-"World rules" are copied into the world when the game creates it; from
-then on the world keeps the rules saved with it, and a change here takes
-effect only for a new world (for example under a new world name). ESM does
-not edit a world's saved rules. `LastWipe` is the exception: it is read at
-every start (it is the date the server list shows), so it sits with the
+**World rules apply at every start.** The game applies the settings of the
+group "World rules" each time the server starts, not only when it creates a
+world. A rule left empty is not passed: the game then uses its default, and
+that replaces the value saved with the world. ESM does not edit a world's
+saved rules. `LastWipe` is not a world rule: it is the date the server list
+shows, and left empty the world keeps its own date, so it sits with the
 identity settings.
 
 The two tokens (`AnnouncementsToken`, `ProblemReportToken`) are secrets:
@@ -508,29 +508,29 @@ and are kept with the passwords (see [Passwords](#passwords)).
 | `AdminLoginMaxAttempts` | int | `5` | at least 0 (0: no lockout) | |
 | `AdminLoginLockoutSeconds` | int | `60` | 0 to 3600 seconds (0: no lockout) | |
 | `BossSummonCooldownSeconds` | int | `0` | at least 0 seconds | |
-| `LastWipe` | date | not set (the world's own) | YYYY-MM-DD, from 2000, not in the future | read at every start |
+| `LastWipe` | date | not set (the world's own) | YYYY-MM-DD, from 2000, not in the future | left empty keeps the date saved with the world |
 | **World rules** | | | | |
-| `HarvestRate` | float | `1` | 0.1 to 1000 | new world only |
-| `XPRate` | float | `1` | 0.1 to 1000 | new world only |
-| `TamingRate` | float | `1` | 0.1 to 1000 | new world only |
-| `TamingBiteRate` | float | `1` | 0.1 to 1000 | new world only |
-| `HatchRate` | float | `1` | 0.1 to 1000 | new world only |
-| `MatureRate` | float | `1` | 0.1 to 1000 | new world only |
-| `MatingRate` | float | `1` | 0.1 to 1000 | new world only |
-| `CareRate` | float | `1` | 0.1 to 1000 | new world only |
-| `ImprintRate` | float | `1` | 0.1 to 1000 | new world only |
-| `DayLengthMinutes` | float | `60` | 5 to 240 minutes | new world only |
-| `StructureDecay` | bool | `True` | `True`, `False` | new world only |
-| `StructureDecayMultiplier` | float | `1` | 0.1 to 10 | new world only |
-| `PvP` | bool | `False` | `True`, `False` | new world only |
-| `PvPStructureDamage` | bool | `True` | `True`, `False` | new world only |
-| `OfflineRaidProtection` | bool | `False` | `True`, `False` | new world only |
-| `ORPActivationMinutes` | float | `15` | 0 to 1440 minutes | new world only |
-| `ORPStructureDamageTaken` | float | `0.25` | 0 to 1 | new world only |
-| `ORPTameDamageTaken` | float | `0.25` | 0 to 1 | new world only |
-| `ORPTurretDamageMultiplier` | float | `2` | 0 to 10 | new world only |
-| `Difficulty` | enum | `1` | `0` (Easy), `1` (Normal), `2` (Hard) | new world only |
-| `DeathDropMode` | enum | `Everything` | `Everything`, `InventoryOnly`, `Nothing` | new world only |
+| `HarvestRate` | float | `1` | 0.1 to 1000 | |
+| `XPRate` | float | `1` | 0.1 to 1000 | |
+| `TamingRate` | float | `1` | 0.1 to 1000 | |
+| `TamingBiteRate` | float | `1` | 0.1 to 1000 | |
+| `HatchRate` | float | `1` | 0.1 to 1000 | |
+| `MatureRate` | float | `1` | 0.1 to 1000 | |
+| `MatingRate` | float | `1` | 0.1 to 1000 | |
+| `CareRate` | float | `1` | 0.1 to 1000 | |
+| `ImprintRate` | float | `1` | 0.1 to 1000 | |
+| `DayLengthMinutes` | float | `60` | 5 to 240 minutes | |
+| `StructureDecay` | bool | `True` | `True`, `False` | |
+| `StructureDecayMultiplier` | float | `1` | 0.1 to 10 | |
+| `PvP` | bool | `False` | `True`, `False` | |
+| `PvPStructureDamage` | bool | `True` | `True`, `False` | |
+| `OfflineRaidProtection` | bool | `False` | `True`, `False` | |
+| `ORPActivationMinutes` | float | `15` | 0 to 1440 minutes | |
+| `ORPStructureDamageTaken` | float | `0.25` | 0 to 1 | |
+| `ORPTameDamageTaken` | float | `0.25` | 0 to 1 | |
+| `ORPTurretDamageMultiplier` | float | `2` | 0 to 10 | |
+| `Difficulty` | enum | `1` | `0` (Easy), `1` (Normal), `2` (Hard) | |
+| `DeathDropMode` | enum | `Everything` | `Everything`, `InventoryOnly`, `Nothing` | |
 | **Chat** | | | | |
 | `ChatLog` | bool | `True` | `True`, `False` | |
 | `ChatFilter` | enum | `Mask` | `Off`, `Mask`, `Drop` | |
@@ -1621,8 +1621,8 @@ by hand:
   under the field, the rest with the range, the default and the switch
   behind "More". At most two fields share a row, one on a phone, and each
   group is a panel of its own, with links to the groups above them. An
-  empty field is a setting not set. The world rules carry the notice that only a new world takes
-  them. A value set in another spelling than the field writes (`true` for
+  empty field is a setting not set. The world rules carry the note that the game applies them at every
+  start. A value set in another spelling than the field writes (`true` for
   `True`) is kept as it is, and a stored value the catalog does not accept
   is shown as text with the reason, so saving never rewrites it. (A game
   setting stored empty shows as not set, and a save leaves it out: it is
@@ -1750,7 +1750,8 @@ Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
 object). `logs` prints the log lines themselves, and `game-settings` a
 table of the [game settings](#game-settings): key, type, default, what is
-allowed, and whether a setting is a world rule, a caution or a secret.
+allowed, and whether a setting is a caution or a secret; a group's title is a
+row of its own, so the world rules stand under theirs.
 `create --set Key=Value` is checked against the catalog by the API like
 any other change. `create`, `list` and
 `status` print the warnings of an instance in words; one that passes its
@@ -1998,10 +1999,10 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   and a `-` before an ASCII letter after an accented one are refused
   (` - ` with spaces is fine); an emoji joined with a zero width joiner is
   refused with the format characters, the class the joiner belongs to.
-- **World rules reach a new world only.** The game copies them into a
-  world when it creates it and keeps them with the world; ESM does not
-  edit a world's saved rules. A changed world rule shows in the instance's
-  rules, but an existing world goes on with the rules it was created with.
+- **A world rule left empty replaces the saved one.** The game applies the
+  world rules at every start, and ESM passes none for a rule that is empty
+  or not set, so the game uses its default and that replaces the value
+  saved with the world. ESM does not edit a world's saved rules.
 - **No overrides of the engine's configuration files.** `-ini:`,
   `-iniFile=` and `-CustomConfig=` are refused as extra arguments and as
   rules, so the build's

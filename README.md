@@ -699,10 +699,11 @@ does not know yet. The rest is in the
 | Chat | `ChatLog`, `ChatFilter` (`Off`, `Mask`, `Drop`), `ChatBlockedWords` |
 | Announcements and reports | `AnnouncementsUrl`, `AnnouncementsPollSeconds` (at least 10), `ProblemReportUrl`, and the two tokens `AnnouncementsToken` and `ProblemReportToken` |
 
-**World rules apply only when the world is first created.** The game keeps
-them with the world from then on, so a change reaches only a new world (for
-example under a new world name); an existing world keeps its saved rules.
-`LastWipe` is not a world rule: it is read at every start.
+**World rules apply at every start of the server.** The game applies the
+rules set here each time the server starts, not only when it creates a
+world. A rule left empty uses the game's default and replaces the value
+saved with the world. `LastWipe` is not a world rule: left empty it keeps
+the date saved with the world.
 
 The two tokens are secrets: set them like the passwords (below), never as
 rules. A list (`AdminPlayerIds`, `ChatBlockedWords`) is items separated by
