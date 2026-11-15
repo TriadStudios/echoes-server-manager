@@ -98,8 +98,13 @@ type Service struct {
 	sock  net.Listener
 	web   *http.Server
 	local *http.Server
-	errc  chan error
-	once  sync.Once
+	// apiTCP and apiWeb are the API listener (api_listener), nil when it
+	// is off; apiInfo is what GET /box shows of it.
+	apiTCP  net.Listener
+	apiWeb  *http.Server
+	apiInfo *api.APIListenerInfo
+	errc    chan error
+	once    sync.Once
 	// exit is closed when the service should end after a self-update;
 	// restarts, set just before, says whether its service manager starts
 	// it again.
@@ -157,7 +162,7 @@ func Start(o Options) (_ *Service, err error) {
 	if created {
 		log.Info("wrote the default config", "path", config.FileName)
 	}
-	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 2), exit: make(chan struct{}), exe: o.Executable, version: o.Version,
+	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 3), exit: make(chan struct{}), exe: o.Executable, version: o.Version,
 		restartedBy: o.RestartedBy}
 	if s.restartedBy == nil {
 		s.restartedBy = restartedBy
@@ -238,6 +243,12 @@ func Start(o Options) (_ *Service, err error) {
 		}
 		s.tcp = tls.NewListener(s.tcp, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 	}
+	if cfg.APIListener != nil {
+		if err := s.listenAPI(cfg.APIListener); err != nil {
+			return nil, err
+		}
+		cleanups = append(cleanups, func() { s.apiTCP.Close() })
+	}
 
 	if err := s.inst.Resume(); err != nil {
 		return nil, err
@@ -247,7 +258,7 @@ func Start(o Options) (_ *Service, err error) {
 		Builds: bm, Supervisor: s.sup, Logger: log, TLS: useTLS, HTTPS: useTLS || cfg.BehindTLSProxy,
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
-		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts,
+		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts, APIListener: s.apiInfo,
 		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate,
 		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
@@ -256,9 +267,21 @@ func Start(o Options) (_ *Service, err error) {
 	s.local = newHTTPServer(srv.SocketHandler(), errLog)
 	go s.serve(s.web, s.tcp)
 	go s.serve(s.local, s.sock)
+	apiListen := ""
+	if s.apiTCP != nil {
+		s.apiWeb = newHTTPServer(srv.APIListenerHandler(), errLog)
+		go s.serve(s.apiWeb, s.apiTCP)
+		apiListen = s.apiInfo.Listen
+	}
 	s.steam.Start()
 	log.Info("ESM started", "version", o.Version, "root", st.Path(), "listen", s.tcp.Addr().String(), "tls", useTLS,
-		"socket", cfg.SocketPath(), "supervisor", s.sup.Kind(), "limits_enforced", s.sup.LimitsEnforced())
+		"api_listener", apiListen, "socket", cfg.SocketPath(), "supervisor", s.sup.Kind(), "limits_enforced", s.sup.LimitsEnforced())
+	if s.apiInfo != nil {
+		c := s.apiInfo.Certificate
+		log.Info("API listener started, TLS only: "+takes(s.apiInfo.Page), "listen", s.apiInfo.Listen,
+			"host_names", s.apiInfo.HostNames, "page", s.apiInfo.Page, "certificate", c.Source,
+			"certificate_file", c.File, "not_after", c.NotAfter, "sha256", c.SHA256, "spki_pin", c.SPKIPin)
+	}
 	if !s.sup.LimitsEnforced() {
 		log.Warn("memory and CPU limits are not enforced in process mode")
 	}
@@ -358,6 +381,10 @@ func (s *Service) serve(srv *http.Server, l net.Listener) {
 
 // Addr is the TCP address the API listens on.
 func (s *Service) Addr() string { return s.tcp.Addr().String() }
+
+// APIListener is the API listener, with its real address and the
+// certificate it serves; nil when api_listener is not set.
+func (s *Service) APIListener() *api.APIListenerInfo { return s.apiInfo }
 
 // SocketPath is the unix socket path.
 func (s *Service) SocketPath() string { return s.cfg.SocketPath() }
@@ -461,7 +488,23 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	var err error
 	s.once.Do(func() {
 		s.bus.Close()
-		err = errors.Join(s.web.Shutdown(ctx), s.local.Shutdown(ctx))
+		// All listeners stop taking requests at once, and each waits for
+		// its own requests to end.
+		servers := []*http.Server{s.web, s.local}
+		if s.apiWeb != nil {
+			servers = append(servers, s.apiWeb)
+		}
+		errs := make([]error, len(servers))
+		var wg sync.WaitGroup
+		for i, srv := range servers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = srv.Shutdown(ctx)
+			}()
+		}
+		wg.Wait()
+		err = errors.Join(errs...)
 		s.steam.Close()
 		n := s.inst.Close()
 		s.sup.Close()
