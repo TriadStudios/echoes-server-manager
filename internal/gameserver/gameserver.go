@@ -56,13 +56,13 @@ const (
 	LogFileSwitch = "-abslog"
 )
 
-// SteamServerNameSwitch sets the server's name in Steam's server list.
-// CONFIRMED from the game's Steam session code: the game reads that name
-// from this switch, not from -ServerName; only when the switch is absent
-// does it fall back to SteamServerName under [OnlineSubsystemSteam] in the
-// engine's configuration, and the switch wins over that. It cuts a name
-// of 64 characters or more to 63, with a warning in its log, so ESM holds
-// the server name to MaxServerNameBytes.
+// SteamServerNameSwitch carries the name the game gives Steam, the name
+// for Steam's server list. CONFIRMED from the game's Steam session code:
+// the game takes that name from this switch, not from -ServerName; only
+// when the switch is absent does it fall back to SteamServerName under
+// [OnlineSubsystemSteam] in the engine's configuration. The game cuts a
+// name of 64 characters or more to 63 and writes a warning to its log, so
+// ESM holds a display name set or changed to MaxServerNameBytes.
 //
 // ESM passes the server name (Launch.ServerName) twice, as -ServerName and
 // as this switch, built the same way from the same value, one argument
@@ -73,13 +73,16 @@ const (
 // then shows in the public server list has been seen.
 const SteamServerNameSwitch = "-SteamServerName"
 
-// MaxServerNameBytes is the longest server name ESM passes, in bytes of
-// UTF-8. Steam keeps a server name of at most 64 bytes with its
-// terminator, and the game cuts a name of 64 characters or more to 63; a
-// name of at most 63 bytes has at most 63 characters whichever way they
-// are counted, so the game never cuts a name ESM passes. A display name
-// set from now on is held to it. An instance's own name, which the server
-// gets when there is no display name, has at most 32 ASCII characters.
+// MaxServerNameBytes is the longest display name ESM takes when one is set
+// or changed, in bytes of UTF-8. Steamworks limits a game server name to
+// 64 bytes including the terminator, and the game cuts a name of 64
+// characters or more to 63; a name of at most 63 bytes has at most 63
+// characters whichever way they are counted, so the game does not cut a
+// display name set or changed from this version on. One of 64 bytes that
+// an earlier version stored is passed as stored, and the game may cut it
+// (see instances.Instance.storedUnsafe). An instance's own name, which the
+// server gets when there is no display name, has at most 32 ASCII
+// characters.
 const MaxServerNameBytes = 63
 
 // MultihomeSwitch is the engine's bind-address switch. ESM never passes it

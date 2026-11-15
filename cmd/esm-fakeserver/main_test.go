@@ -267,9 +267,9 @@ func TestFakeLifecycle(t *testing.T) {
 	}
 }
 
-// The name the query port answers with, which stands for the one the game
-// gives Steam's server list, is the Steam server name; the session in the
-// ready line is named after -ServerName=. Without -SteamServerName= the
+// The name the query port answers with, which stands for the name the
+// game gives Steam, is the Steam server name; the session in the ready
+// line is named after -ServerName=. Without -SteamServerName= the
 // fake answers with no name (it has no engine configuration to fall back
 // to).
 func TestFakeSteamServerName(t *testing.T) {
@@ -286,8 +286,8 @@ func TestFakeSteamServerName(t *testing.T) {
 		return o
 	}
 	for _, c := range []struct {
-		args              []string
-		session, listName string
+		args               []string
+		session, steamName string
 	}{
 		{[]string{"-ServerName=Alpha EU - west"}, "Alpha EU - west", ""},
 		{[]string{"-ServerName=Alpha EU", "-SteamServerName=Alpha EU"}, "Alpha EU", "Alpha EU"},
@@ -295,7 +295,7 @@ func TestFakeSteamServerName(t *testing.T) {
 		{[]string{"-steamservername=lower", "-ServerName=S"}, "S", "lower"},
 	} {
 		o := read(c.args...)
-		if o.serverName != c.session || o.steamServerName != c.listName || (&server{o: o}).info().Name != c.listName {
+		if o.serverName != c.session || o.steamServerName != c.steamName || (&server{o: o}).info().Name != c.steamName {
 			t.Errorf("%q: session %q, Steam server name %q, query answer %q", c.args, o.serverName, o.steamServerName, (&server{o: o}).info().Name)
 		}
 	}

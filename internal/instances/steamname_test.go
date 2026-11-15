@@ -14,10 +14,10 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit/cmdline"
 )
 
-// listedName asks the server of an instance on its query port for the
-// name it answers with: the name for Steam's server list, which the
-// fake server takes from -SteamServerName, as the game does.
-func listedName(t *testing.T, m *Manager, name string) string {
+// answeredName asks the server of an instance on its query port for the
+// name it answers with. The fake server takes that name from
+// -SteamServerName, where the game takes the name it gives Steam from.
+func answeredName(t *testing.T, m *Manager, name string) string {
 	t.Helper()
 	v, err := m.Get(name)
 	if err != nil {
@@ -34,12 +34,12 @@ func listedName(t *testing.T, m *Manager, name string) string {
 	return info.Name
 }
 
-// The server name reaches the server as the name of its session
+// The server name reaches the fake server as the name of its session
 // (-ServerName) and as the name for Steam's server list
-// (-SteamServerName), a name with spaces whole. A new name reaches a
-// running server at its next start, not before, and the change says that
-// a restart is needed. Without a display name the server is listed under
-// the instance's name.
+// (-SteamServerName), which it answers its query port with, a name with
+// spaces whole. A new name reaches a running server at its next start, not
+// before, and the change says that a restart is needed. Without a display
+// name the fake answers with the instance's name.
 func TestSteamServerNameReachesTheServer(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -52,8 +52,8 @@ func TestSteamServerNameReachesTheServer(t *testing.T) {
 	if _, err := r.m.Start(ctx, "alpha", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := listedName(t, r.m, "alpha"); got != first {
-		t.Fatalf("the server is listed as %q, want %q", got, first)
+	if got := answeredName(t, r.m, "alpha"); got != first {
+		t.Fatalf("the query port answers with the name %q, want %q", got, first)
 	}
 	log, _ := r.st.Abs(serverLog("alpha"))
 	if text, _ := os.ReadFile(log); !strings.Contains(string(text), "Dedicated session '"+first+"' registered") {
@@ -64,14 +64,14 @@ func TestSteamServerNameReachesTheServer(t *testing.T) {
 	if err != nil || !restart || !v.Status.RestartRequired {
 		t.Fatalf("a new name for a running server: restart %v, status %+v, %v", restart, v.Status, err)
 	}
-	if got := listedName(t, r.m, "alpha"); got != first {
-		t.Fatalf("before its next start the server is listed as %q, want %q", got, first)
+	if got := answeredName(t, r.m, "alpha"); got != first {
+		t.Fatalf("before its next start the query port answers with the name %q, want %q", got, first)
 	}
 	if st, err := r.m.Restart(ctx, "alpha", "", true); err != nil || st.RestartRequired {
 		t.Fatalf("restart: %+v %v", st, err)
 	}
-	if got := listedName(t, r.m, "alpha"); got != second {
-		t.Fatalf("after the restart the server is listed as %q, want %q", got, second)
+	if got := answeredName(t, r.m, "alpha"); got != second {
+		t.Fatalf("after the restart the query port answers with the name %q, want %q", got, second)
 	}
 
 	if _, _, err := r.m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr("")}}); err != nil {
@@ -80,8 +80,8 @@ func TestSteamServerNameReachesTheServer(t *testing.T) {
 	if _, err := r.m.Restart(ctx, "alpha", "", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := listedName(t, r.m, "alpha"); got != "alpha" {
-		t.Fatalf("without a display name the server is listed as %q, want the instance's name", got)
+	if got := answeredName(t, r.m, "alpha"); got != "alpha" {
+		t.Fatalf("without a display name the query port answers with the name %q, want the instance's name", got)
 	}
 }
 
@@ -274,13 +274,15 @@ func TestServerNameCountsTwiceOnTheLine(t *testing.T) {
 	}
 }
 
-// The game cuts a Steam server name of 64 characters or more to 63, so a
-// display name set from now on has at most 63 bytes of UTF-8, which is at
-// most 63 characters however they are counted: 63 ASCII characters are
-// taken and 64 are not, at a create and at a change, and the same goes for
-// names of characters of two and four bytes. The refusal names the limit
-// and never the name. Without a display name the server gets the
-// instance's name, which is never longer than 32 ASCII characters.
+// The game cuts a name of 64 characters or more to 63, and Steamworks
+// limits a game server name to 64 bytes including the terminator, so a
+// display name set or changed from this version on has at most 63 bytes
+// of UTF-8, which is at most 63 characters however they are counted: 63
+// ASCII characters are taken and 64 are not, at a create and at a change,
+// and the same goes for names of characters of two and four bytes. The
+// refusal names the limit and never the name. Without a display name the
+// server gets the instance's name, which is never longer than 32 ASCII
+// characters.
 func TestServerNameIsHeldTo63Bytes(t *testing.T) {
 	r := newRig(t, nil)
 	r.install(testkit.BuildOptions{Version: "1.0"})
@@ -352,12 +354,22 @@ func TestServerNameIsHeldTo63Bytes(t *testing.T) {
 }
 
 // An earlier version took a display name of 64 bytes. Such an instance
-// keeps loading and starting with its name passed as stored, which the
-// game cuts to 63 in Steam's server list, and it carries the warning
-// unsafe_stored_settings naming display_name, whose words say so. Other
-// changes are taken; a name of at most 63 bytes clears the warning.
-func TestStoredDisplayNameLongerThanSteamTakes(t *testing.T) {
-	for _, stored := range []string{strings.Repeat("Zq7", 21) + "x", strings.Repeat("é", 32)} {
+// keeps loading and starting with its name passed as stored, and it
+// carries the warning unsafe_stored_settings naming display_name, whose
+// words say that the name may be cut: the game cuts a name of 64
+// characters or more to 63, and the ASCII name here has 64; what Steam
+// shows for the one of 32 characters of two bytes each is not known. Other changes are taken, with the name sent back unchanged;
+// a change to another name of 64 bytes, or to a longer one, is refused,
+// and a name of at most 63 bytes clears the warning.
+func TestStoredDisplayNameOf64Bytes(t *testing.T) {
+	for _, c := range []struct{ stored, other string }{
+		{strings.Repeat("Zq7", 21) + "x", strings.Repeat("Zq7", 21) + "y"}, // 64 bytes, 64 characters
+		{strings.Repeat("é", 32), strings.Repeat("é", 31) + "ü"},           // 64 bytes, 32 characters
+	} {
+		stored := c.stored
+		if len(stored) != 64 || len(c.other) != 64 || c.other == stored {
+			t.Fatalf("the case is wrong: %d and %d bytes", len(stored), len(c.other))
+		}
 		r := newRig(t, nil)
 		r.install(testkit.BuildOptions{Version: "1.0"})
 		r.create("alpha", nil)
@@ -379,8 +391,8 @@ func TestStoredDisplayNameLongerThanSteamTakes(t *testing.T) {
 		if !slices.Contains(v.Warnings, WarnUnsafeStoredSettings) || !slices.Equal(storedUnsafe(t, v), []string{"display_name"}) {
 			t.Errorf("%d bytes: warnings %q, settings named %q", len(stored), v.Warnings, storedUnsafe(t, v))
 		}
-		if words := WarningWords(WarnUnsafeStoredSettings, v.UnsafeStoredSettings); !strings.Contains(words, "cuts it to 63") ||
-			!strings.Contains(words, "display_name") || strings.Contains(words, stored) {
+		if words := WarningWords(WarnUnsafeStoredSettings, v.UnsafeStoredSettings); !strings.Contains(words, "passed as stored and may be cut") ||
+			strings.Contains(words, "cuts it") || !strings.Contains(words, "display_name") || strings.Contains(words, stored) {
 			t.Errorf("the warning in words: %q", words)
 		}
 		m.Start(context.Background(), "alpha", false)
@@ -394,6 +406,14 @@ func TestStoredDisplayNameLongerThanSteamTakes(t *testing.T) {
 		}
 		if _, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(stored + "x")}}); !fault.Is(err, fault.Invalid) {
 			t.Errorf("%d bytes: a longer name: %v", len(stored), err)
+		}
+		_, _, err = m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(c.other)}})
+		if !fault.Is(err, fault.Invalid) || !strings.Contains(err.Error(), "63 bytes") || strings.Contains(err.Error(), c.other) ||
+			strings.Contains(err.Error(), "Zq7") {
+			t.Errorf("%d bytes: a change to another name of %d bytes: %v", len(stored), len(c.other), err)
+		}
+		if v, err := m.Get("alpha"); err != nil || v.DisplayName != stored || !slices.Contains(v.Warnings, WarnUnsafeStoredSettings) {
+			t.Errorf("%d bytes: after the refused change: %v, warnings %q", len(stored), err, v.Warnings)
 		}
 		fixed, _, err := m.Patch("alpha", PatchRequest{Settings: Settings{DisplayName: ptr(stored[:len(stored)-2])}})
 		if err != nil || slices.Contains(fixed.Warnings, WarnUnsafeStoredSettings) || len(storedUnsafe(t, fixed)) != 0 {

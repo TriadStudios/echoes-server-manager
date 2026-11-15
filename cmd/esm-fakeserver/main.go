@@ -66,12 +66,12 @@
 // The query port answers A2S_INFO, the Source server query, only once the
 // server is ready: a request without the server's challenge gets the
 // challenge reply, one with it the info reply (name, map, players, max
-// players). The name there stands for the one the game gives Steam's
-// server list, and the fake takes it from -SteamServerName=, not from
-// -ServerName=, as the game does (gameserver.SteamServerNameSwitch).
-// Without that switch the fake answers with no name: the game would fall
-// back to its engine configuration, which the fake does not have.
-// -ServerName= names its session, in the ready line. Only for tests it also says whether a
+// players). The name there stands for the name the game gives Steam, and
+// the fake takes it from -SteamServerName=, not from -ServerName=, as the
+// game does (gameserver.SteamServerNameSwitch). Without that switch the
+// fake answers with no name: the game would fall back to its engine
+// configuration, which the fake does not have. -ServerName= names its
+// session, in the ready line. Only for tests it also says whether a
 // password is the right one: "JOIN <server password>" and "ADMIN <admin
 // password>" are answered with OK or DENIED.
 package main
@@ -159,8 +159,8 @@ type options struct {
 	failStart    bool
 	exitCode     int
 
-	// steamServerName is the name in Steam's server list, the one the
-	// query port answers with.
+	// steamServerName is the name for Steam's server list
+	// (-SteamServerName=), the one the query port answers with.
 	steamServerName string
 }
 
@@ -673,7 +673,7 @@ func (s *server) answerQueries() {
 }
 
 // info is the fake's answer to A2S_INFO. Its name is the Steam server
-// name: the one the game gives Steam's server list.
+// name, which stands for the name the game gives Steam.
 func (s *server) info() gameserver.Info {
 	osByte := byte('l')
 	if runtime.GOOS == "windows" {

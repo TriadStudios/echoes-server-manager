@@ -421,20 +421,26 @@ settings page.
 
 The server name (`display_name`, or the instance's name when it is empty)
 goes to the server twice, with the same value: as `-ServerName=` and as
-`-SteamServerName=`. The game's Steam session code takes the name for
-Steam's server list from `-SteamServerName=`, not from `-ServerName=`
-(only without the switch does it fall back to its engine configuration),
-and cuts a name of 64 characters or more to 63. So a display name has at
-most 63 bytes of UTF-8 (63 characters of plain ASCII). Both switches are
-passed the same way and follow the rules below once, the name counts
-twice in the length of the command line, and neither switch can be set
-by a rule or an extra argument. A new name reaches a running server at
-its next start. No real server has run with `-SteamServerName=` yet: that
-a name with a space arrives whole there (it does for `-ServerName=`) and
-that it then shows in the public server list are not seen yet. A display
-name of 64 bytes, which an earlier version took, is passed as stored and
-cut by the game; the instance carries the warning `unsafe_stored_settings`
-until the name is shortened.
+`-SteamServerName=`. The game's Steam session code takes the name it
+gives Steam from `-SteamServerName=`, not from `-ServerName=` (only
+without the switch does it fall back to its engine configuration), and
+cuts a name of 64 characters or more to 63, with a warning in its log;
+Steamworks limits a game server name to 64 bytes including the
+terminator. So a display name set or changed has at most 63 bytes of
+UTF-8 (63 characters of plain ASCII), and so at most 63 characters,
+which the game does not cut. Both switches are passed the same way and
+follow the rules below once, the name counts twice in the length of the
+command line, and neither switch can be set by a rule or an extra
+argument. A new name reaches a running server at its next start. No real
+server has run with `-SteamServerName=` yet: that a name with a space
+arrives whole there (it does for `-ServerName=`) and that the name then
+shows in the public server list are not seen yet. A display name of 64
+bytes, which an earlier version took, is passed as stored and may be
+cut: the game cuts it to 63 when it has 64 characters (all of one byte),
+and what Steam shows for one with characters of more than one byte is
+not known. It may be sent back unchanged, but not changed to another
+name of more than 63 bytes, and the instance carries the warning
+`unsafe_stored_settings` until the name has at most 63 bytes.
 
 An instance keeps its game settings in `rules` (`--set Key=Value` at
 create, `rules` in the API, the fields of the settings page). A setting

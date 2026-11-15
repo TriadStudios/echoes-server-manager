@@ -139,7 +139,7 @@ are refused, so typos are reported.
 | Field              | Meaning |
 |--------------------|---------|
 | `name`             | `^[a-z][a-z0-9-]{0,31}$`, fixed. It is in the folders ESM puts on the server command line, so a new name may not hold a name the engine searches that line for (see [Game settings](#game-settings)). |
-| `display_name`     | Name shown to players (the server name); empty means the instance name. At most 63 bytes of UTF-8 (63 characters of plain ASCII). Passed twice with the same value: as `-ServerName=` and as `-SteamServerName=`, the name in Steam's server list (see below). A change reaches a running server at its next start. |
+| `display_name`     | Name shown to players (the server name); empty means the instance name. Set or changed, at most 63 bytes of UTF-8 (63 characters of plain ASCII); one of 64 bytes that an earlier version stored is kept (see below). Passed twice with the same value: as `-ServerName=` and as `-SteamServerName=`, the name for Steam's server list (see below). A change reaches a running server at its next start. |
 | `cluster`          | Optional label. |
 | `channel`          | `live` or `test`; must match the build. |
 | `build`            | Current build. Changed only by an update. |
@@ -209,28 +209,32 @@ key), the secrets file switch (or, in the compatibility mode, the password
 and token switches), and the extra arguments.
 
 The server name is passed twice. The game's Steam session code takes the
-name for Steam's server list from `-SteamServerName=`, not from
-`-ServerName=`; only without the switch does it fall back to
-`SteamServerName` under `[OnlineSubsystemSteam]` in the engine's
-configuration, and the switch wins over that. Both are built the same
-way, each one argument (`-SteamServerName=Alpha EU` right after
-`-ServerName=Alpha EU`), from the same value, which follows the rules for
-values in [Game settings](#game-settings) once and so for both; an empty
-name passes neither. The name counts twice in the length of the line. A
+name it gives Steam from `-SteamServerName=`, not from `-ServerName=`;
+only when the switch is absent does it fall back to `SteamServerName`
+under `[OnlineSubsystemSteam]` in the engine's configuration. Both are
+built the same way, each one argument (`-SteamServerName=Alpha EU` right
+after `-ServerName=Alpha EU`), from the same value, which follows the
+rules for values in [Game settings](#game-settings) once and so for
+both; an empty name passes neither. The name counts twice in the length of the line. A
 change of `display_name` reaches a running server at its next start
 (`restart_required`), like every other setting.
 
-The game cuts a Steam server name of 64 characters or more to 63, with a
-warning in its log (Steam keeps 64 bytes with the terminator). So a
-display name set or changed has at most 63 bytes of UTF-8, which are at
-most 63 characters however they are counted (63 characters of plain
-ASCII); a longer one is refused with 422 `invalid`, which names the
-limit and not the name. An instance's name, which the server gets without
-a display name, has at most 32. A display name of 64 bytes, which an
-earlier version took, keeps loading and starting and is passed as
-stored, and the game cuts it; the instance carries the warning
-`unsafe_stored_settings` naming `display_name`, takes other changes, and
-loses the warning when the name is shortened.
+The game cuts a name of 64 characters or more to 63 and writes a warning
+to its log, and Steamworks limits a game server name to 64 bytes
+including the terminator. So a display name set or changed has at most
+63 bytes of UTF-8, which are at most 63 characters however they are
+counted (63 characters of plain ASCII), a name the game does not cut; a
+longer one is refused with 422 `invalid`, which names the limit and not
+the name. An instance's name, which the server gets without a display
+name, has at most 32 ASCII characters. A display name of 64 bytes, which
+an earlier version took, keeps loading and starting and is passed as
+stored, and it may be cut: the game cuts it to 63 when it has 64
+characters (all of one byte), and what Steam shows for one of 64 bytes
+with characters of more than one byte is not known. The instance carries
+the warning `unsafe_stored_settings` naming `display_name`, takes other
+changes (the name sent back unchanged), refuses a change to another name
+of more than 63 bytes, and loses the warning when the name has at most
+63 bytes.
 
 No real server has run with `-SteamServerName=` yet, so two things are
 not seen: that a name with a space arrives whole there (the same form
@@ -1511,13 +1515,15 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
   query port other than the default.
 - Whether a loose per-server config file next to the build is read; ESM
   passes every setting on the command line instead.
-- `-SteamServerName=` on a real host. The game's Steam session code reads
-  the name for Steam's server list from it (before its engine
+- `-SteamServerName=` on a real host. The game's Steam session code takes
+  the name it gives Steam from it (only without it from its engine
   configuration) and cuts a name of 64 characters or more to 63; ESM
   passes the server name there exactly as it passes `-ServerName=`, at
-  most 63 bytes. No real server has run with it yet: that a name with a
-  space arrives whole (it does for `-ServerName=`) and that the name shows
-  in the public server list are not seen.
+  most 63 bytes when it is set or changed from this version on (one of 64
+  bytes stored earlier is passed as stored). No real server has run with
+  it yet: that a name with a space arrives whole (it does for
+  `-ServerName=`) and that the name shows in the public server list are
+  not seen.
 - The password and token switches on a real host (`-Password=`,
   `-AdminPassword=`, `-AnnouncementsToken=`, `-ProblemReportToken=`; the
   test server ran with neither password).

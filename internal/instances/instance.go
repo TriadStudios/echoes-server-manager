@@ -288,13 +288,14 @@ func invalid(field, format string, args ...any) error {
 }
 
 // maxStoredDisplayName is the longest display name earlier versions took,
-// in bytes. One set from now on has at most gameserver.MaxServerNameBytes.
+// in bytes. One set or changed from this version on has at most
+// gameserver.MaxServerNameBytes.
 const maxStoredDisplayName = 64
 
 // displayNameTooLong is the refusal of a display name that is too long or
 // not printable. It says the limit and never repeats the name.
 func displayNameTooLong() error {
-	return invalid("display_name", "must be printable text of at most %d bytes of UTF-8 (%d characters of plain ASCII): the game cuts a longer name in Steam's server list",
+	return invalid("display_name", "must be printable text of at most %d bytes of UTF-8 (%d characters of plain ASCII): Steam limits a game server name to 64 bytes with the terminator, and the game cuts a name of 64 characters or more to 63",
 		gameserver.MaxServerNameBytes, gameserver.MaxServerNameBytes)
 }
 
@@ -470,8 +471,10 @@ func (in *Instance) checkChanges(old *Instance, now time.Time) error {
 		return invalid("max_players", "must be between 1 and %d, the most the game server takes", gameserver.MaxPlayersLimit)
 	}
 	// An empty display name is no value: the server gets the instance's
-	// name then, which is never longer than a server name may be. A new
-	// one is held to what the game passes to Steam's server list whole.
+	// name then, which has at most 32 ASCII characters. A new one, or one
+	// changed, is held to gameserver.MaxServerNameBytes, a name the game
+	// does not cut; one stored by an earlier version that is sent back
+	// unchanged is not.
 	if (old == nil || in.DisplayName != old.DisplayName) && in.DisplayName != "" {
 		if len(in.DisplayName) > gameserver.MaxServerNameBytes {
 			return displayNameTooLong()
@@ -649,11 +652,14 @@ func (s switchNames) repeatedBefore(i int) bool {
 // extra argument that names a switch ESM sets itself
 // (gameserver.IsReservedSwitch): -SteamServerName, which an earlier version
 // did not set, stored as a rule or an extra argument is passed after ESM's
-// own, and the server reads ESM's. A display name longer than
-// gameserver.MaxServerNameBytes, which an earlier version took, is named
-// too: it is passed as stored, and the game cuts it in Steam's server
-// list. Neither it nor any other setting named here keeps the instance
-// from starting, unless it holds an en dash (see enDashIn).
+// own, and the server reads ESM's. A display name of more than
+// gameserver.MaxServerNameBytes bytes (64, which an earlier version took)
+// is named too: it is passed as stored, and the game may cut it. The game
+// cuts a name of 64 characters or more to 63, so it cuts one of 64
+// single-byte characters; what Steam shows for one of 64 bytes with
+// characters of more than one byte is not known. Neither it nor any other
+// setting named here keeps the instance from starting, unless it holds an
+// en dash (see enDashIn).
 func (in Instance) storedUnsafe(s Secrets) []string {
 	var out []string
 	unsafe := func(v string) bool {
@@ -671,8 +677,8 @@ func (in Instance) storedUnsafe(s Secrets) []string {
 	if _, found := gameserver.SearchedName(in.Name); found {
 		out = append(out, "name")
 	}
-	// A display name longer than a server name may be is passed as stored,
-	// and the game cuts it in Steam's server list.
+	// A display name of more than gameserver.MaxServerNameBytes bytes, which
+	// an earlier version took, is passed as stored, and the game may cut it.
 	if in.DisplayName != "" && (unsafe(in.DisplayName) || len(in.DisplayName) > gameserver.MaxServerNameBytes) {
 		out = append(out, "display_name")
 	}

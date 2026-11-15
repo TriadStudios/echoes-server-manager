@@ -1310,9 +1310,11 @@ components:
         starting the server (409 command_line_unsafe). The instance's
         `unsafe_stored_settings` names them, and the instance takes no
         other change until a stored -SteamServerName= is removed. It names
-        a display_name of more than 63 bytes too, which an earlier version
-        took: it is passed as stored, and the game cuts it to 63
-        characters in Steam's server list; other changes are taken.
+        a display_name of more than 63 bytes of UTF-8 too, which an
+        earlier version took: it is passed as stored and may be cut (the
+        game cuts a name of 64 characters or more to 63; what Steam shows
+        for one of 64 bytes with characters of more than one byte is not
+        known); other changes are taken.
         `command_line_too_long`: the server command line of the
         instance, as an earlier version stored its settings, is longer than
         the 12000 characters a change may lead to; beyond 16127 ESM does not
@@ -1376,16 +1378,20 @@ components:
       properties:
         display_name:
           type: string
-          maxLength: 63
           description: |
             The server name. Empty means the instance name. It goes to the
             server twice, with the same value: as -ServerName= and as
-            -SteamServerName=, from which the game takes the name for
-            Steam's server list. The game cuts a name of 64 characters or
-            more to 63, so a name set or changed has at most 63 bytes of
+            -SteamServerName=, from which the game takes the name it gives
+            Steam. The game cuts a name of 64 characters or more to 63, and
+            Steamworks limits a game server name to 64 bytes including the
+            terminator, so a name set or changed has at most 63 bytes of
             UTF-8 (63 characters of plain ASCII; 422 `invalid`, naming the
-            limit). A name of 64 bytes stored by an earlier version may be
-            sent back unchanged; it is passed as stored, the game cuts it,
+            limit). The limit is in bytes, not in characters, so the schema
+            gives no maxLength. A name of 64 bytes stored by an earlier
+            version may be sent back unchanged, but not changed to another
+            name of more than 63 bytes; it is passed as stored and may be
+            cut (the game cuts one of 64 characters to 63; what Steam shows
+            for one with characters of more than one byte is not known),
             and the instance carries the warning unsafe_stored_settings. The
             name follows the rules for values on the command line (see
             Settings) and counts twice in the length of the line. A change

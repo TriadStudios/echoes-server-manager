@@ -119,10 +119,13 @@ func TestLaunchArgsMinimal(t *testing.T) {
 
 // The server name goes on the command line twice: as -ServerName and as
 // -SteamServerName, the name for Steam's server list. Each is one
-// argument, built the same way, right after the other, so the server reads
-// the same name for both (a name with a space whole, in quotes), the second
-// costs the line five characters more than the first, neither is found
-// inside the other, and neither is passed when the name is empty.
+// argument, built the same way, right after the other, so the line, as
+// testkit/cmdline reads it the way the engine does, holds the same name
+// for both (a name with a space whole, in quotes), the second costs the
+// line five characters more than the first, neither is found inside the
+// other, and neither is passed when the name is empty. Whether a name with
+// a space arrives whole for -SteamServerName on a real server is not seen
+// yet.
 func TestSteamServerNameIsTheServerName(t *testing.T) {
 	for _, name := range []string{"s", "Alpha EU - west", "Welcome, traveller (and friends)", "Café \U0001F642 on", "Alpha-EU"} {
 		argv := Launch{Map: "M", MaxPlayers: 1, ServerName: name, WorldName: "w", UserDir: "D", LogFile: "L"}.Args()
@@ -140,7 +143,7 @@ func TestSteamServerNameIsTheServerName(t *testing.T) {
 		}
 		for _, sw := range []string{ServerNameSwitch, SteamServerNameSwitch} {
 			if got, ok := cmdline.Value(line, strings.TrimPrefix(sw, "-")); !ok || got != name {
-				t.Errorf("%q: the server reads %s as %q (found: %v)", name, sw, got, ok)
+				t.Errorf("%q: the line holds %s as %q (found: %v)", name, sw, got, ok)
 			}
 		}
 		n := 0
@@ -150,7 +153,7 @@ func TestSteamServerNameIsTheServerName(t *testing.T) {
 			}
 		}
 		if n != 2 {
-			t.Errorf("%q: the server finds %d server name switches on %q", name, n, line)
+			t.Errorf("%q: %d server name switches are found on %q", name, n, line)
 		}
 	}
 	for _, a := range (Launch{Map: "M", MaxPlayers: 1, WorldName: "w"}).Args() {

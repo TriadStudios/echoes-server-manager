@@ -148,9 +148,9 @@ func TestReadyThroughQueryPort(t *testing.T) {
 	}
 }
 
-// The display name reaches the server as the name for Steam's server list
-// (-SteamServerName, which the fake answers the query port with) as well
-// as -ServerName, a name with spaces whole. A change of it while the
+// The display name reaches the fake server as the name for Steam's server
+// list (-SteamServerName, which the fake answers the query port with) as
+// well as -ServerName, a name with spaces whole. A change of it while the
 // server runs says that it waits for the next start, and the restart
 // brings it.
 func TestSteamServerNameThroughTheAPI(t *testing.T) {
@@ -160,7 +160,7 @@ func TestSteamServerNameThroughTheAPI(t *testing.T) {
 	const first, second = "Alpha EU - west", "Alpha EU, the second (PvE)"
 	h.must(http.StatusCreated, "POST", "/api/v1/instances", map[string]any{"name": "alpha", "bind_ip": "127.0.0.1",
 		"rules": fastRules(nil), "display_name": first}, nil)
-	listed := func() string {
+	answered := func() string {
 		t.Helper()
 		var v instances.View
 		h.must(http.StatusOK, "GET", "/api/v1/instances/alpha", nil, &v)
@@ -175,20 +175,20 @@ func TestSteamServerNameThroughTheAPI(t *testing.T) {
 		return info.Name
 	}
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/start?wait=true", struct{}{}, nil)
-	if got := listed(); got != first {
-		t.Fatalf("the server is listed as %q, want %q", got, first)
+	if got := answered(); got != first {
+		t.Fatalf("the query port answers with the name %q, want %q", got, first)
 	}
 	var ch api.InstanceChange
 	h.must(http.StatusOK, "PATCH", "/api/v1/instances/alpha", map[string]any{"display_name": second}, &ch)
 	if !ch.RestartRequired || !ch.Status.RestartRequired || ch.DisplayName != second {
 		t.Fatalf("a new display name while the server runs: %+v", ch)
 	}
-	if got := listed(); got != first {
-		t.Fatalf("before the next start the server is listed as %q", got)
+	if got := answered(); got != first {
+		t.Fatalf("before the next start the query port answers with the name %q", got)
 	}
 	h.must(http.StatusOK, "POST", "/api/v1/instances/alpha/restart?wait=true", struct{}{}, nil)
-	if got := listed(); got != second {
-		t.Fatalf("after the restart the server is listed as %q, want %q", got, second)
+	if got := answered(); got != second {
+		t.Fatalf("after the restart the query port answers with the name %q, want %q", got, second)
 	}
 	if cmd := logLines(t, h.serverLog("alpha"), hasPrefix("Command line: ")); len(cmd) != 1 ||
 		!strings.Contains(cmd[0], " -ServerName="+second+" -SteamServerName="+second+" ") {
