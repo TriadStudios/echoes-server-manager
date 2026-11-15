@@ -117,10 +117,12 @@ does that only when something
 will: on Linux, when systemd runs ESM (the unit of `esm service install`).
 Otherwise, and on Windows, the update is refused and nothing changes,
 unless the caller sets `exit_anyway` (the page asks first); ESM then
-updates, ends, and has to be started again by hand. `esm update-self` on
-the command line replaces the binary and ends nothing: restart the service
-yourself (`systemctl --user restart esm`). Game servers keep running
-either way and the new ESM adopts them.
+updates, ends, and has to be started again by hand. After a restart the
+page reloads itself once the new ESM answers, or says after a minute that
+ESM did not come back. `esm update-self` on the command line replaces
+the binary and ends nothing: restart the service yourself
+(`systemctl --user restart esm`). Game servers keep running either way
+and the new ESM adopts them.
 
 One self-update runs at a time: while it runs it holds the lock file
 `<binary>.update.lock` next to the binary, and another one, from the page

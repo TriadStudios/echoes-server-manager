@@ -75,6 +75,109 @@
     return data;
   }
 
+  // awaitEsm: start
+  // After a self-update ESM ends and its service manager starts the new
+  // binary, so the page waits for that: it looks at GET /api/v1/box, the
+  // route that names the running version, every WAIT_EVERY ms, and gives up
+  // WAIT_FOR ms after it began.
+  var WAIT_EVERY = 2000;
+  var WAIT_FOR = 60000;
+
+  // updateStep says what one look at /api/v1/box means to a page that waits
+  // for ESM to run version want: 'back' when ESM answers with that version,
+  // or answers without the login. Sessions are kept in memory only, so a
+  // restarted ESM has none (401, or 429 for an address limited for failed
+  // authentications), while the old one keeps them until it ends. Anything
+  // else is 'wait': no answer yet, an error from a proxy in front of ESM,
+  // or the old version still answering.
+  function updateStep(status, box, want) {
+    if (status === 200) { return box && box.version === want ? 'back' : 'wait'; }
+    return sessionEnded('/api/v1/box', status) || status === 429 ? 'back' : 'wait';
+  }
+
+  // awaitEsm looks with io.look() (which resolves {status, box}, or rejects
+  // when nothing answers) until updateStep says 'back' or the time is over.
+  // io brings the clock and the timers (now(), later(fn, ms), cancel(h)), so
+  // that a test can run it without a page. It gives {done, stop}: done
+  // resolves 'back', 'late' (the time is over; the last look came after it)
+  // or 'stopped' (stop() was called, for a page that goes away).
+  function awaitEsm(want, io) {
+    var began = io.now();
+    var timer = null;
+    var over = false;
+    var finish = null;
+    var done = new Promise(function (resolve) { finish = resolve; });
+    function end(how) {
+      if (over) { return; }
+      over = true;
+      io.cancel(timer);
+      finish(how);
+    }
+    function look() {
+      io.look().then(function (a) {
+        return updateStep(a.status, a.box, want);
+      }).catch(function () {
+        return 'wait';
+      }).then(function (step) {
+        if (over) { return; }
+        if (step === 'back') {
+          end('back');
+        } else if (io.now() - began >= WAIT_FOR) {
+          end('late');
+        } else {
+          timer = io.later(look, WAIT_EVERY);
+        }
+      });
+    }
+    timer = io.later(look, WAIT_EVERY);
+    return { done: done, stop: function () { end('stopped'); } };
+  }
+  // awaitEsm: end
+
+  // lookAtBox reads GET /api/v1/box with its own request, not call(): the
+  // answers that matter here (401 from a restarted ESM, 502 from a proxy)
+  // must not send the page anywhere by themselves. A look that gets no
+  // answer in 5 seconds is given up, so one hanging connection cannot hold
+  // the wait.
+  async function lookAtBox() {
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function () { ctl.abort(); }, 5000) : 0;
+    try {
+      var resp = await fetch('/api/v1/box', {
+        credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' },
+        signal: ctl ? ctl.signal : undefined
+      });
+      var box = null;
+      try { box = await resp.json(); } catch (e) { box = null; }
+      return { status: resp.status, box: box };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // waitForRestart says what the page waits for, then reloads the Box
+  // screen once ESM answers with version to (or without the login: the
+  // reload then ends on the login page). After WAIT_FOR it says that ESM did
+  // not come back. It stops when the page goes away.
+  async function waitForRestart(to) {
+    say('ESM ' + to + ' is in place; waiting for ESM to restart...');
+    var w = awaitEsm(to, {
+      now: function () { return Date.now(); },
+      later: function (fn, ms) { return setTimeout(fn, ms); },
+      cancel: function (h) { clearTimeout(h); },
+      look: lookAtBox
+    });
+    window.addEventListener('pagehide', w.stop);
+    var how = await w.done;
+    window.removeEventListener('pagehide', w.stop);
+    if (how === 'back') {
+      location.replace('/box#esm-h');
+    } else if (how === 'late') {
+      say('ESM ' + to + ' is in place, but ESM did not come back within a minute. If its service manager does not start it, ' +
+        'start ESM again on the box (esm serve); then reload this page.', true);
+    }
+  }
+
   // done reloads the page with a fixed notice the server shows.
   function done(code) {
     var u = new URL(location.href);
@@ -173,7 +276,8 @@
         r = await call('POST', '/api/v1/box/self-update', { exit_anyway: true });
       }
       if (r.restarting) {
-        say('ESM ' + r.to + ' is in place and ESM restarts now. Reload this page in a few seconds.');
+        // The button stays busy while the page waits for the new ESM.
+        await waitForRestart(r.to);
       } else {
         say('ESM ' + r.to + ' is in place and ESM ends now. Start it again on the box (esm serve), then reload this page.');
       }
