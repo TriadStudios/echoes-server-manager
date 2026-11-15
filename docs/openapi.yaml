@@ -73,10 +73,12 @@ info:
     an `Authorization` that is not a bearer token, a session cookie where
     only tokens are taken, a socket-only call). At 60 of them within a
     minute, every such call of the address gets 429 `rate_limited` with
-    `Retry-After`, before anything else is checked and without an audit
-    entry, until the oldest of them is a minute old (those refused count
-    too). A call with a valid token or session is never refused by this,
-    and login and setup have their own limit only.
+    `Retry-After`, without an audit entry, until the oldest of them is a
+    minute old (those refused count too). The 429 comes after the Host
+    check and once the credentials the call brings are found not valid,
+    before anything else (its body is not read): so a call with a valid
+    token or session is never refused by it. Login and setup have their
+    own limit only.
 
     Every error has the shape `{"error": {"code": "...", "message": "..."}}`.
     Request bodies are JSON and at most 1 MiB (413 `too_large`), and must
@@ -88,12 +90,12 @@ info:
     `{}`); each writes an audit entry, refused or not, as does every call
     refused for lack of a role (403). A read refused for a missing login
     (401) or another host name (421) is not recorded. Of a client address
-    without a valid login, a minute holds at most: the first failed
-    authentication the log would take, one `auth.limited` entry when the
-    address is limited, 20 entries of its other calls (failed logins,
-    logouts without a session, changes to unknown paths, and so on) and
-    one `audit.quiet` entry after them. A login or setup that works is
-    always recorded.
+    without a valid login, a minute holds at most 22 entries: 20 of its
+    calls (of its failed authentications only the first the log would
+    take; its failed logins, logouts without a session, changes to
+    unknown paths, and so on), one `audit.quiet` entry after them, and
+    one `auth.limited` entry when the address is limited. A login or setup
+    that works is always recorded.
 
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks

@@ -1411,28 +1411,31 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   a call answered only on the socket. They count per client address (an
   IPv4 address, or the /64 of an IPv6 address), apart from the login's
   limit: at 60 inside a minute, every such call of that address is
-  answered 429 `rate_limited` with `Retry-After`, before anything else
-  and without an audit entry or event, until the oldest of the 60 is a
-  minute old; the refused calls count too, so a flood keeps itself
-  refused. Guessing a token is not the concern (a token is 32 random
-  bytes); the limit is about the load and the audit log, since a client
-  that keeps its connection open can send thousands of tries a second. A
-  call with a valid token or session is never refused by it, and the
-  login, setup and the page's login form are not limited by it (the page
-  takes its 429 as "not logged in" and shows the login), so it locks no
-  user out. An honest client hits it only by retrying a wrong token about
+  answered 429 `rate_limited` with `Retry-After`, without an audit entry
+  or event, until the oldest of the 60 is a minute old; the refused calls
+  count too, so a flood keeps itself refused. The 429 comes after the
+  Host check and once the credentials of the call are found not valid,
+  before anything else (the body is not read); the limit is looked at
+  only then, so a call with a valid token or session is never refused by
+  it and never waits for it. Guessing a token is not the concern (a
+  token is 32 random bytes); the limit is about the load and the audit
+  log, since a client that keeps its connection open can send thousands
+  of tries a second. The login, setup and the page's login form are not
+  limited by it (the page, and its script, take the 429 of
+  `GET /api/v1/session` as "not logged in" and show the login), so it
+  locks no user out. An honest client hits it only by retrying a wrong token about
   once a second for a minute. Behind a proxy or a tunnel every client has
   the proxy's address, so one client's flood makes the others without a
   valid login wait as well; their logins still work. What is recorded of
-  clients without a valid login is bounded per address and minute: of its
-  failed authentications the first that the audit log would take (a
-  change, or a 403), and one entry `auth.limited` when the address is
-  limited ("60 failed authentications from 192.0.2.7 within 1m0s: ...
-  answered 429 and not recorded until ..."); of its other calls that the
-  audit log takes (failed logins and setup codes, refusals of the login's
-  limit, logouts without a session, changes to unknown paths) the first
-  20, and then one entry `audit.quiet`. A login or setup that works is
-  recorded whatever these bounds. Audit entries are the only events such
+  clients without a valid login is bounded per address and minute, to at
+  most 22 entries: the first 20 of its calls that the audit log takes (of
+  its failed authentications only the first that the log would take, a
+  change or a 403; its failed logins and setup codes, refusals of the
+  login's limit, logouts without a session, changes to unknown paths),
+  then one entry `audit.quiet`, and one entry `auth.limited` when the
+  address is limited ("60 failed authentications from 192.0.2.7 within
+  1m0s: ... answered 429 and not recorded until ..."). A login or setup
+  that works is recorded whatever these bounds. Audit entries are the only events such
   calls make, so the event stream is bounded the same way.
 - **Tokens and roles.** API tokens (`esm_` + 43 characters) are shown once
   and stored as SHA-256. Roles: `read` sees everything except tokens, the
@@ -1836,8 +1839,13 @@ wrong, it changes in the adapter and the fake, and nowhere else.
 - **Clients without a valid login are bounded per address.** An attacker
   with many addresses (a botnet, or many IPv6 networks) gets the bounds of
   [Failed authentications](#logins-and-exposure) once per address, so the
-  audit log still grows with the number of addresses, by a few entries a
-  minute each.
+  audit log still grows with the number of addresses, by up to about 22
+  entries a minute each. The limit keeps at most 65,536 addresses; when
+  it is full, each new one makes room with a look at all of them under
+  the limit's lock, so a flood from that many addresses slows the answers
+  to other callers without a valid login. Callers with a valid token or
+  session never wait for it: the limit is looked at only for a call whose
+  credentials are not valid.
 - **The API listener.** It takes no client certificates: a token is all a
   client shows. Its certificate is renewed
   only at a start (30 days before it ends), so an ESM that runs for the

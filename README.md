@@ -282,8 +282,10 @@ is null (with the reason in `live.unknown`) while the game server does not
 report it. Login limits, request limits and the audit log are as on the
 main listener. On both, an address with 60 failed authentications (a wrong
 token, no token) within a minute gets 429 for every call without a valid
-token until it stops for a minute; valid tokens and logins from it go on
-working, and the audit log records only a couple of entries of it a minute.
+token; the limit lifts once the oldest failure of the last minute is a
+minute old (calls refused meanwhile count as failures too). Valid tokens
+and logins from that address go on working, and the audit log records
+only a couple of entries of it a minute.
 The API listener also ends the connection after each 401 or 429. See
 [The API listener](docs/DESIGN.md#the-api-listener) for the details.
 
