@@ -85,6 +85,8 @@ func TestSettingsScreenShowsTheCatalog(t *testing.T) {
 		`Problem report token (none)`:                           "a token that is not set",
 		`name="rule:Banner"`:                                    "a rule outside the catalog",
 		`data-game`:                                             "the catalog fields are marked",
+		`as <span class="mono">-ServerName</span> and as <span class="mono">-SteamServerName</span>`: "the two switches the server name goes to",
+		`A new name reaches the server at its next start.`:                                           "when a new server name applies",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("%s: %q is missing", what, want)
