@@ -184,12 +184,48 @@
   }
   // waitForRestart: end
 
-  // done reloads the page with a fixed notice the server shows.
+  // navigate: start
+  // withoutFragment is the address u with no fragment.
+  function withoutFragment(u) {
+    var c = new URL(u.href);
+    c.hash = '';
+    return c.href;
+  }
+
+  // go loads the page at path (a path with its query and fragment) as a new
+  // document, also when path is the address the page is at but for the
+  // fragment: location.replace(path) is then only a jump to the fragment
+  // within the page, which a browser takes without loading anything, so a
+  // change or a check that gave the same notice as before seemed to do
+  // nothing. The address is then set to path, fragment and all, and loaded
+  // again: the page still ends at the section the fragment names.
+  function go(path) {
+    var cur = new URL(location.href);
+    var to = new URL(path, cur);
+    if (path.indexOf('#') < 0 || withoutFragment(cur) !== withoutFragment(to)) {
+      location.replace(path);
+      return;
+    }
+    history.replaceState(history.state, '', to.pathname + to.search + to.hash);
+    location.reload();
+  }
+
+  // done loads the page again with a fixed notice the server shows.
   function done(code) {
     var u = new URL(location.href);
     u.searchParams.set('done', code);
-    location.replace(u.pathname + u.search + u.hash);
+    go(u.pathname + u.search + u.hash);
   }
+
+  // releaseCheckPath is the Box screen at its release section with the
+  // notice for what a check for a newer ESM release found: a wait the
+  // release server asks for, the result of a look less than a minute old,
+  // or a look made now.
+  function releaseCheckPath(r) {
+    var code = r.retry_after ? 'release-wait' : (r.reused ? 'release-recent' : 'release');
+    return '/box?done=' + code + '#esm-h';
+  }
+  // navigate: end
 
   async function busy(el, work) {
     if (el) { el.disabled = true; el.setAttribute('aria-busy', 'true'); }
@@ -262,12 +298,12 @@
     // of a look that ended less than a minute ago, or of the release
     // server's request to wait), then shows the Box screen again with it,
     // like done() but without ?check=1, so that a health check on the
-    // screen is not run again unasked.
+    // screen is not run again unasked. A second check that gives the same
+    // notice goes to the address the page is at: go loads it again.
     'release-check': async function () {
       say('Looking for a newer ESM release...');
       var r = await call('POST', '/api/v1/box/release-check');
-      var code = r.retry_after ? 'release-wait' : (r.reused ? 'release-recent' : 'release');
-      location.replace('/box?done=' + code + '#esm-h');
+      go(releaseCheckPath(r));
     },
     'self-update': async function () {
       var r;

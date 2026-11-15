@@ -92,7 +92,6 @@ Instances:
                                 set a password or token, read from standard input
   game-settings [--group access|world|chat|reports]
                                 the game settings ESM knows by name, for --set
-                                (world rules take effect only in a new world)
   logs <name> [-n N] [-f] [--console]
   update <name> --to <version>
   backup <name>

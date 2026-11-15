@@ -35,7 +35,8 @@ func textOf(h string) string {
 
 // The settings screen has a labelled field for every game setting of the
 // catalog, in its group, with its help and default; the world rules carry
-// the notice that only a new world takes them. Values set are shown (also
+// the note that the game applies them at every start, as a plain note like
+// the other groups, not as a warning. Values set are shown (also
 // one written another way than the field writes it), rules outside the
 // catalog are listed apart, and a token is never shown.
 func TestSettingsScreenShowsTheCatalog(t *testing.T) {
@@ -62,8 +63,17 @@ func TestSettingsScreenShowsTheCatalog(t *testing.T) {
 		}
 	}
 	world := fieldset(body, "group-world")
-	if !strings.Contains(world, "only when the world is first created") || !strings.Contains(world, `class="alert`) {
-		t.Errorf("the world rules do not carry the notice:\n%s", world)
+	if !strings.Contains(textOf(world), "The game applies these at every start of the server. A rule left empty uses the game's default and replaces the value saved with the world.") {
+		t.Errorf("the world rules do not carry the note:\n%s", world)
+	}
+	if strings.Contains(world, `class="alert`) || !strings.Contains(world, `<p class="note">The game applies these`) {
+		t.Errorf("the note of the world rules is not a plain note like the others:\n%s", world)
+	}
+	if text := textOf(body); strings.Contains(text, "only when a world is created") || strings.Contains(text, "first created") {
+		t.Error("the page still says that world rules apply only to a new world")
+	}
+	if !strings.Contains(textOf(body), "Settings and rules take effect when the server starts.") {
+		t.Error("the page does not say when settings and rules take effect")
 	}
 	for _, x := range cat.Settings {
 		fs := fieldset(body, "group-"+x.Group)

@@ -134,7 +134,8 @@ func TestReleaseCheckButton(t *testing.T) {
 		"'release-check': async function ()",
 		"call('POST', '/api/v1/box/release-check')",
 		"var code = r.retry_after ? 'release-wait' : (r.reused ? 'release-recent' : 'release');",
-		"location.replace('/box?done=' + code + '#esm-h')",
+		"return '/box?done=' + code + '#esm-h';",
+		"go(releaseCheckPath(r));",
 	} {
 		if !strings.Contains(js, need) {
 			t.Errorf("esm.js lacks %q", need)
