@@ -129,3 +129,49 @@ func TestBudgetIsHonest(t *testing.T) {
 		}
 	}
 }
+
+// Spans are said roughly, and what is yet to come is "in ..." or due.
+func TestSpans(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		0:                            "less than a minute",
+		59 * time.Second:             "less than a minute",
+		time.Minute:                  "1 min",
+		59 * time.Minute:             "59 min",
+		4*time.Hour + 12*time.Minute: "4 h 12 min",
+		47 * time.Hour:               "47 h 0 min",
+		2*24*time.Hour + 4*time.Hour: "2 d 4 h",
+		10*24*time.Hour + 23*time.Hour + 59*time.Minute: "10 d 23 h",
+	} {
+		if got := span(d); got != want {
+			t.Errorf("span(%s) = %q, want %q", d, got, want)
+		}
+	}
+	if got := ago(time.Now().Add(-2*time.Hour - 5*time.Minute - time.Second)); got != "2 h 5 min ago" {
+		t.Errorf("ago: %q", got)
+	}
+	if got := until(time.Now().Add(4*time.Hour + 12*time.Minute + 30*time.Second)); got != "in 4 h 12 min" {
+		t.Errorf("until: %q", got)
+	}
+	if got := until(time.Now().Add(-time.Minute)); got != "due now" {
+		t.Errorf("until, passed: %q", got)
+	}
+	if ago(time.Time{}) != "" || until(time.Time{}) != "" || since(time.Time{}) != "" {
+		t.Error("no time, no words")
+	}
+}
+
+// A backup's reason is one of four tags, each with a tone of its own; a
+// reason the page does not know is shown as it is, in the plain tone.
+func TestBackupReasons(t *testing.T) {
+	for reason, want := range map[string][2]string{
+		instances.ReasonScheduled:  {"Scheduled", "muted"},
+		instances.ReasonManual:     {"Manual", "ok"},
+		instances.ReasonPreUpdate:  {"Before update", "avail"},
+		instances.ReasonPreRestore: {"Before restore", "info"},
+		"imported":                 {"imported", "muted"},
+	} {
+		if got := [2]string{backupWhy(reason), backupTone(reason)}; got != want {
+			t.Errorf("%s: %v, want %v", reason, got, want)
+		}
+	}
+}

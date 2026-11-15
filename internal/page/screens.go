@@ -424,26 +424,18 @@ func (p *Page) players(v *view) {
 	p.render(v, "players", http.StatusOK)
 }
 
-type backupsData struct {
-	List  []instances.Backup
-	Total int64
-	Why   string
-}
-
 func (p *Page) backups(v *view) {
 	d, ok := p.server(v, "backups")
 	if !ok {
 		return
 	}
-	b := backupsData{}
 	var bl api.BackupList
+	why := ""
 	if err := v.c.get("/api/v1/instances/"+url.PathEscape(d.S.Name)+"/backups", &bl); err != nil {
-		b.Why = err.Error()
+		why = err.Error()
 	}
-	b.List = bl.Backups
-	for _, x := range b.List {
-		b.Total += x.SizeBytes
-	}
+	b := makeBackups(bl.Backups, d.S.Backup.Keep, time.Now(), time.Local)
+	b.Why = why
 	d.More = b
 	v.Events = "instance=" + url.QueryEscape(d.S.Name) + "&types=state"
 	p.render(v, "backups", http.StatusOK)

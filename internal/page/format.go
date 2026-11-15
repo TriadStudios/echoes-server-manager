@@ -22,9 +22,12 @@ var funcs = template.FuncMap{
 	"when":     when,
 	"iso":      func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
 	"since":    since,
+	"ago":      ago,
+	"until":    until,
 	"state":    stateWord,
 	"warning":  func(code string, stored []string) string { return sentence(instances.WarningWords(code, stored)) },
 	"why":      backupWhy,
+	"whytone":  backupTone,
 	"updstate": updateStatus,
 	"noevery":  func(d config.Duration) bool { return d.D() <= 0 },
 	"players":  playersOf,
@@ -150,7 +153,33 @@ func since(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	d := time.Since(t)
+	return span(time.Since(t))
+}
+
+// ago is since with its unit sentence: "2 h 5 min ago".
+func ago(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return since(t) + " ago"
+}
+
+// until is how long it is to t, like "in 4 h 12 min", or "due now" when t
+// has come.
+func until(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Until(t)
+	if d <= 0 {
+		return "due now"
+	}
+	return "in " + span(d)
+}
+
+// span says how long d is, roughly: "less than a minute", "12 min",
+// "4 h 12 min", "2 d 4 h".
+func span(d time.Duration) string {
 	switch {
 	case d < time.Minute:
 		return "less than a minute"
@@ -169,18 +198,32 @@ func stateWord(s instances.State) string {
 	return strings.ToUpper(string(s[:1])) + string(s[1:])
 }
 
+// backupWhy names the reason of a backup in a word or two.
 func backupWhy(reason string) string {
 	switch reason {
 	case instances.ReasonManual:
-		return "Made by hand"
+		return "Manual"
 	case instances.ReasonScheduled:
-		return "Schedule"
+		return "Scheduled"
 	case instances.ReasonPreUpdate:
-		return "Before an update"
+		return "Before update"
 	case instances.ReasonPreRestore:
-		return "Before a restore"
+		return "Before restore"
 	}
 	return reason
+}
+
+// backupTone is the colour of a backup's reason tag (the tones of a pill).
+func backupTone(reason string) string {
+	switch reason {
+	case instances.ReasonManual:
+		return "ok"
+	case instances.ReasonPreUpdate:
+		return "avail"
+	case instances.ReasonPreRestore:
+		return "info"
+	}
+	return "muted"
 }
 
 // playersOf is "players / max", with "?" when the count is not known.

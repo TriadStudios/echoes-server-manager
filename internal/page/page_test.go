@@ -342,7 +342,7 @@ func checkHTML(t *testing.T, what, body, csrf string, secrets ...string) {
 					unlabelled = append(unlabelled, control{tag, a["id"], a["name"]})
 				}
 			case "th":
-				if s := a["scope"]; s != "col" && s != "row" {
+				if s := a["scope"]; s != "col" && s != "row" && s != "rowgroup" {
 					t.Errorf("%s: <th> without scope", what)
 				}
 			case "button":
@@ -489,7 +489,7 @@ func TestEveryScreen(t *testing.T) {
 		t.Error("the audit log is for admins only")
 	}
 	dl := "/api/v1/instances/alpha/backups/" + backup.ID + "/download"
-	if !strings.Contains(op["/servers/alpha/backups"], dl) || strings.Contains(rd["/servers/alpha/backups"], dl) || !strings.Contains(rd["/servers/alpha/backups"], "Made by hand") {
+	if !strings.Contains(op["/servers/alpha/backups"], dl) || strings.Contains(rd["/servers/alpha/backups"], dl) || !strings.Contains(rd["/servers/alpha/backups"], "Manual") {
 		t.Error("backup downloads are for operators; read still sees the list")
 	}
 	if strings.Contains(op["/servers/alpha/settings"], `data-save="later"`) || !strings.Contains(admin["/servers/alpha/settings"], `data-save="later"`) ||
@@ -609,6 +609,29 @@ func TestEveryScreen(t *testing.T) {
 		!strings.Contains(admin["/builds"], `data-confirm="Remove the 1 build that no server runs or keeps for a rollback? This frees `) ||
 		strings.Contains(op["/builds"], `data-act="prune"`) || strings.Contains(rd["/builds"], `data-act="prune"`) {
 		t.Error("removing unused builds: admin only, and it says what it frees")
+	}
+
+	// Backups: a strip of facts, backups by day with their reason as a tag,
+	// the newest marked, the Restore warning as a note, the policy folded
+	// into one line. Back up now is in the head of the screen, for operators.
+	for _, who := range []map[string]string{admin, op, rd} {
+		b := who["/servers/alpha/backups"]
+		for _, want := range []string{"<dt>Last backup</dt>", "<dt>Kept</dt>", "1 of 10", "<dt>Total size</dt>", `<th scope="rowgroup" colspan=`, ">Today</th>",
+			`<span class="badge changed">Newest</span>`, `<span class="pill ok">Manual</span>`, `<strong class="tag">Note</strong> Restore stops the server`,
+			`<details class="more edit panel">`, "<strong>Policy:</strong> "} {
+			if !strings.Contains(b, want) {
+				t.Errorf("backups lack %q", want)
+			}
+		}
+		if strings.Contains(b, `<strong class="tag">Warning</strong> Restore`) || strings.Contains(b, `class="goes"`) {
+			t.Error("backups: the Restore warning is back, or a backup goes next with one of ten kept")
+		}
+	}
+	for who, want := range map[string]bool{"admin": true, "op": true, "rd": false} {
+		b := map[string]map[string]string{"admin": admin, "op": op, "rd": rd}[who]["/servers/alpha/backups"]
+		if got := strings.Contains(b, `class="btn primary" data-act="backup" data-name="alpha"`); got != want {
+			t.Errorf("%s: Back up now on the Backups screen: %v", who, got)
+		}
 	}
 
 	// Live updates: the event streams each screen opens.
