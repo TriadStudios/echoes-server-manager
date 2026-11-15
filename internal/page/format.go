@@ -51,6 +51,19 @@ var funcs = template.FuncMap{
 		host, _, err := config.SplitListen(listen)
 		return err == nil && config.IsLoopback(host)
 	},
+	// hint and helpmore split a setting's help: its first sentence is
+	// shown under the field, the rest when the reader asks for more.
+	"hint":     func(help string) string { first, _ := splitHelp(help); return first },
+	"helpmore": func(help string) string { _, rest := splitHelp(help); return rest },
+}
+
+// splitHelp splits a help text after its first sentence: first is that
+// sentence, rest what follows ("" when the help is one sentence).
+func splitHelp(help string) (first, rest string) {
+	if i := strings.Index(help, ". "); i >= 0 {
+		return help[:i+1], strings.TrimSpace(help[i+2:])
+	}
+	return help, ""
 }
 
 // sentence starts s with a capital letter and ends it with a period.

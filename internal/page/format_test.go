@@ -7,6 +7,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
+	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
@@ -84,6 +85,22 @@ func TestFormatting(t *testing.T) {
 	}
 	if got := sentence("memory and CPU limits are not enforced"); got != "Memory and CPU limits are not enforced." {
 		t.Errorf("sentence: %q", got)
+	}
+	for help, want := range map[string][2]string{
+		"Multiplies what gathering yields. 1 is normal.":                  {"Multiplies what gathering yields.", "1 is normal."},
+		"Token sent with each problem report.":                            {"Token sent with each problem report.", ""},
+		"Wrong passwords before a lockout. 0: never locked. More, again.": {"Wrong passwords before a lockout.", "0: never locked. More, again."},
+		"": {"", ""},
+	} {
+		if first, rest := splitHelp(help); first != want[0] || rest != want[1] {
+			t.Errorf("splitHelp(%q) = %q, %q; want %q, %q", help, first, rest, want[0], want[1])
+		}
+	}
+	// Split and put together again, every help of the catalog is whole.
+	for _, s := range gameserver.GameSettings() {
+		if first, rest := splitHelp(s.Help); strings.TrimSpace(first+" "+rest) != s.Help || first == "" {
+			t.Errorf("the help of %s does not split into its sentences: %q, %q", s.Key, first, rest)
+		}
 	}
 }
 

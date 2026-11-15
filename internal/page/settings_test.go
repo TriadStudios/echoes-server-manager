@@ -25,6 +25,14 @@ func fieldset(body, id string) string {
 	return body[start : start+end]
 }
 
+var tagRe = regexp.MustCompile(`<[^>]*>`)
+
+// textOf is the text of a piece of HTML as a reader sees it: without its
+// tags, entities read, every run of white space one space.
+func textOf(h string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(tagRe.ReplaceAllString(h, " "))), " ")
+}
+
 // The settings screen has a labelled field for every game setting of the
 // catalog, in its group, with its help and default; the world rules carry
 // the notice that only a new world takes them. Values set are shown (also
@@ -67,7 +75,9 @@ func TestSettingsScreenShowsTheCatalog(t *testing.T) {
 			t.Errorf("%s: no field in group %s", x.Key, x.Group)
 			continue
 		}
-		if !strings.Contains(fs, html.EscapeString(x.Help)) || !strings.Contains(fs, html.EscapeString(x.Label)) {
+		// The help is shown whole, as text: its first sentence under the
+		// field, the rest behind "More".
+		if !strings.Contains(textOf(fs), x.Help) || !strings.Contains(fs, html.EscapeString(x.Label)) {
 			t.Errorf("%s: no label or help", x.Key)
 		}
 		if x.Default != "" && !strings.Contains(fs, "Default: ") {
