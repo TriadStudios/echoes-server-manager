@@ -50,7 +50,9 @@ ESM is not:
   creating the import folder, and for a few reads: the read-only checks of
   `esm doctor` and the config read without a running service, a server's
   status file, the save files a backup copies (each checked to be a
-  regular file), and the process checks under `/proc`.
+  regular file), the operator's TLS certificate and key files (`tls_cert`,
+  `tls_key`, also those of `api_listener`), and the process checks under
+  `/proc`.
 
 The web page is plain HTML made by the service on the same origin as the
 API (see [The web page](#the-web-page)); it may be rebuilt with
@@ -72,6 +74,11 @@ return the JSON 404 error.
                                users.json)
     tokens.json                API tokens (SHA-256 only)
     steam.json                 branch passwords of the Steam sources (0600)
+    api-listener.key           key of the certificate ESM made for the API
+                               listener (0600; only with api_listener and
+                               no tls_cert of its own)
+    api-listener.crt           that certificate (0600; a copy may be given
+                               to clients to trust)
   steam/linux64/               the 64-bit Steam client libraries (put there
                                by the box owner; see steam_runtime_dir)
   builds/
@@ -120,6 +127,7 @@ are refused, so typos are reported.
 | `tls_cert`, `tls_key`  | (none)            | TLS certificate and key files. |
 | `behind_tls_proxy`     | `false`           | Browsers reach ESM only through a TLS reverse proxy: the session cookie is marked Secure. |
 | `public_hosts`         | (none)            | Further host names (`host` for any port, or `host:port`) the API and the page answer to; see [Logins and exposure](#logins-and-exposure). |
+| `api_listener`         | (none: off)       | A second listener for the API alone, TLS only, for clients on other machines: `listen` (an IP address of the box and a port; required, no default), `all_addresses` (must be `true` for `0.0.0.0`, `[::]` or an empty host), `tls_cert` and `tls_key` (together, or neither for a certificate ESM makes; a relative path is taken from the root), `host_names` (`host` for any port, or `host:port`), `page` (default `false`: API tokens only). Never written by ESM; see [The API listener](#the-api-listener). |
 | `build_import_dir`     | `<root>/imports`  | The only folder local build sources are read from (created 0700 at start; a relative path is taken from the root). |
 | `game_ports`           | `7777-7786`       | Range for game ports. |
 | `query_ports`          | `27015-27024`     | Range for query ports. |
@@ -1258,7 +1266,14 @@ skipped.
   the next timed restart and scheduled backup.
 - `GET /api/v1/box` also reports the box's memory, CPUs, load average and
   the disk that holds the root, as the system reports them, with the same
-  null-and-reason rule, and the time zone that restart times use.
+  null-and-reason rule, the time zone that restart times use, and the
+  [API listener](#the-api-listener) with its certificate's fingerprints
+  (`api_listener`, null when it is off).
+- `GET /api/v1/instances` gives every instance as `GET
+  /api/v1/instances/{name}` does, with its state, build, ports, display
+  name and `live.players`, so a panel needs one call for all servers.
+  `live.players` is known only when the game server reports it, and null
+  (with the reason in `live.unknown`) otherwise: a null is not 0.
 - Downloads: `GET .../logs/download` gives a log as text with the rules of
   the log tail (at most the newest 16 MiB, read into memory, so at most two
   run at once and another gets 429 `busy`); `GET .../backups/{id}/download`
@@ -1285,7 +1300,8 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 - **Loopback by default.** The API listens on `127.0.0.1:8740`. ESM refuses
   to start on any other address unless `tls_cert` and `tls_key` are set. A
   reverse proxy with TLS in front of a loopback ESM is the expected way to
-  reach it from elsewhere.
+  reach the page from elsewhere; for the API alone there is the
+  [API listener](#the-api-listener).
 - **Host names.** On TCP, ESM answers only requests that name one of its
   own hosts in the `Host` header: `localhost`, `127.0.0.1` and `[::1]`
   with the listen port, the listen address itself when it is a specific
@@ -1410,6 +1426,92 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   `/C:/Windows/win.ini`, or a Windows stream name), a segment that starts
   with a dot, or a control character gets 404, whatever files there are.
 
+### The API listener
+
+A control panel, a bot or a website on another machine or in a container
+reaches ESM's API through the API listener, without a reverse proxy made
+by hand:
+
+```json
+"api_listener": {
+  "listen": "192.0.2.10:8743",
+  "host_names": ["esm.example.com"]
+}
+```
+
+- **Off by default.** Only an `api_listener` object in esm.json turns it
+  on, and ESM never writes one: an esm.json without it reads as before. An
+  older ESM refuses an esm.json with it (unknown fields are refused), so
+  take it out before going back to one.
+- **Where.** `listen` is one IP address of the box and a port; it has no
+  default, and a host name is not bound. Every address of the box
+  (`0.0.0.0`, `[::]`, an empty host) is refused unless `all_addresses:
+  true` is set too, and then `host_names` must name what clients use (the
+  Host check would take nothing else). The main listener's own address
+  and port is refused. A test binary binds loopback only, as everywhere.
+- **TLS, always.** Also on loopback: TLS 1.2 at least with Go's default
+  cipher suites, HTTP/1.1. Plain http gets the HTTP server's own 400 and
+  nothing of the API. The certificate is the operator's, `tls_cert` and
+  `tls_key` (the server's own certificate first in the file, then its
+  chain), read at start: ESM does not start when either cannot be read or
+  the key is not the certificate's, and logs a warning when the
+  certificate is not for every name of the listener or not valid now.
+  Without them ESM makes one: ECDSA P-256, self-signed, valid for ten
+  years, for the `host_names` (without ports; addresses as IP addresses)
+  and the listen address when it is one address, for server
+  authentication, without a key usage extension, kept in
+  `secrets/api-listener.key` and `secrets/api-listener.crt` (0600, each
+  written atomically). It is made once and served again at every start.
+  It is made anew, and the log says why, when a file is missing or does
+  not read, when the two do not go together, when it is not for every
+  name of the listener any more (a name added to `host_names`, another
+  listen address), or 30 days before it ends. A key that still reads is
+  kept, so the public key pin stays the same and only the certificate's
+  fingerprint changes. A name taken out of `host_names` makes no new one.
+- **Pinning.** `GET /api/v1/box` (`api_listener.certificate`), the Box
+  screen, `esm tls` and the start log give the certificate's SHA-256
+  fingerprint (hex pairs with colons, as `openssl x509 -fingerprint
+  -sha256` prints it) and its public key pin: `sha256//` and the base64
+  SHA-256 of its DER SubjectPublicKeyInfo, the form curl's
+  `--pinnedpubkey` takes. A client that pins the key (`curl -k
+  --pinnedpubkey <pin>`) checks the key alone; one that also trusts a
+  copy of the certificate file as its only issuer (`curl --cacert <copy>
+  --pinnedpubkey <pin>`) checks the certificate and the host name too.
+  From the command line, `esm --url https://... --pin <pin>` pins the key.
+  Nothing of this is secret, so every role sees it.
+- **Tokens only.** Without `page: true` the listener takes API tokens
+  alone, each with its role, as on the main listener. A request with the
+  session cookie and no bearer token gets 401 `tokens_only` (with both,
+  the token counts); setup, login and logout get 403 `tokens_only`; the
+  page, every path outside `/api/`, is not served (404). With `page: true`
+  the page, its setup and its logins work there as on the main listener,
+  and always as https: the session cookie is Secure, an `Origin` must say
+  `https`, every change needs the CSRF token. Sessions are ESM's own, so a
+  session made on one listener is good on the other, as far as a browser
+  sends its cookie there (it sends it only to the host it got it from).
+  The calls answered only on the unix socket stay refused (403
+  `socket_only`) whatever the token or session.
+- **Host check.** The API listener takes the `host_names` entries (`host`
+  for any port, or `host:port`) and its listen address, with or without a
+  port; nothing else, `localhost` neither unless it is listed (421
+  `misdirected_request`). The main listener's loopback names and
+  `public_hosts` are not the API listener's, and its `host_names` are not
+  the main listener's.
+- **Limits.** What [API overview](#api-overview) says holds there the
+  same: the header, body and reply limits and deadlines, the idle
+  timeout, at most two log downloads at once (both listeners together),
+  one health check at a time, the audit log. Failed logins (with `page:
+  true`), setup codes and password changes count against the same limit
+  as on the main listener, per user name and per client address. Its
+  clients reach it directly, so `behind_tls_proxy`, which leaves the
+  address out of that count on the main listener, does not apply to it;
+  the client address is taken from the connection, never from forwarding
+  headers, there as everywhere. Wrong tokens are not counted: a token is
+  32 random bytes, and every try is a TLS connection of its own.
+- **Shutdown.** When ESM ends, every listener stops taking requests at
+  once; event streams end first, and each listener then waits for its own
+  open requests, the API listener as the main one.
+
 ## The web page
 
 - **Plain HTML from the service.** Each screen is an `html/template` file
@@ -1477,6 +1579,12 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   (`GET /api/v1/box/doctor`) only when an admin asks, because it test-binds
   every free port of the ranges; other roles are told it needs the admin
   role. The Builds screen offers installing only to admins.
+- **API listener.** The Box screen's Access card says whether the
+  [API listener](#the-api-listener) is on and where; when it is, a card
+  of its own shows what it takes, its host names, its certificate (made
+  by ESM or the operator's, until when, the file) with the SHA-256
+  fingerprint and the public key pin, and how a client pins it, to every
+  role, as `GET /api/v1/box` does.
 - **Release check by hand.** The Box screen's ESM version card shows the
   newest release, when ESM last looked and what failed, if anything. Its
   "Check now" button (every role, while `update_check` is on) calls
@@ -1498,9 +1606,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
 ## Command line
 
 ```
-esm [--root DIR] [--json] [--url URL [--token TOKEN]] <command> [arguments]
+esm [--root DIR] [--json] [--url URL [--token TOKEN] [--pin PIN]] <command> [arguments]
 
-serve | doctor [--bind IP] | version [--check] | update-self [--force]
+serve | doctor [--bind IP] | tls | version [--check] | update-self [--force]
 service install [--force]
 list | status [name]
 create <name> [--build V] [--channel C] [--map M] [--world W] [--display-name N]
@@ -1525,7 +1633,11 @@ With `--url` the command line talks to an ESM elsewhere with an API token,
 best given in `ESM_TOKEN` (a `--token` argument shows in the process
 list). `--url` must be https, except to this machine (`localhost`,
 127.0.0.1, `[::1]`): over plain http the token would cross the network in
-clear.
+clear. `--pin sha256//...` trusts the https `--url` by the public key pin
+of its certificate alone, as `curl -k --pinnedpubkey` does: the way to
+the [API listener](#the-api-listener) with a certificate ESM made, which
+a client does not trust by itself. `tls` prints the API listener, its certificate and its
+two fingerprints (from `GET /api/v1/box`), and only reads.
 
 Every command prints one result line, or one JSON object with `--json`, and
 exits 0 or 1. Errors go to stderr (with `--json`, to stdout as an error
@@ -1683,6 +1795,14 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   session.
 - **The socket on Windows.** Windows has no mode 0600 for the socket file
   and ESM sets no ACLs, so the socket is as private as its folder's ACL.
+  The same holds for the key of the certificate ESM makes for the API
+  listener (`secrets/api-listener.key`).
+- **The API listener.** It counts no wrong tokens (see
+  [The API listener](#the-api-listener)), and it takes no client
+  certificates: a token is all a client shows. Its certificate is renewed
+  only at a start (30 days before it ends), so an ESM that runs for the
+  whole of those 30 days serves it until it ends. A certificate ESM made
+  is self-signed, so every client has to pin it or trust a copy of it.
 - **A server that does not stop is left running.** After `stop_timeout` ESM
   reports `stop_timeout` and does nothing more; ending the server by force
   is the box owner's call. While it runs, a new start of its instance is
