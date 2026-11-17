@@ -1381,8 +1381,11 @@ components:
       description: |
         Start the call as a job and answer 202 with it at once, instead of
         answering when the call is done. The call is checked as without it.
-        A value that is not true or false is 422 `invalid`, and no job is
-        started.
+        The value is read as Go's `strconv.ParseBool` reads it, as the other
+        boolean query parameters are: `1`, `t`, `T`, `TRUE`, `true` and `True`
+        start a job; `0`, `f`, `F`, `FALSE`, `false` and `False`, and an empty
+        value (`?async=`), do not. Any other value (`yes`, `on`, `tRuE`) is 422
+        `invalid`, and nothing is done.
       schema: { type: boolean, default: false }
     JobId:
       name: id
