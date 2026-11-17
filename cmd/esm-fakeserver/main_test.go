@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -212,7 +213,9 @@ func TestFakeLifecycle(t *testing.T) {
 	if err != nil || info.Name != "T" || info.Map != "TestMap" || info.MaxPlayers != 8 || info.Players != 0 || info.ServerType != 'd' {
 		t.Fatalf("A2S_INFO: %+v %v", info, err)
 	}
-	// Sent from loopback, like every socket of a test.
+	// One request, one datagram, never sent again: the fake answers from the
+	// moment it says it is ready. Sent from loopback, like every socket of a
+	// test.
 	conn, err := net.DialUDP("udp", gameserver.LoopbackLocalAddr("127.0.0.1"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: st.Ports.Query})
 	if err != nil {
 		t.Fatal(err)
@@ -590,6 +593,71 @@ func TestFakeReadyOnRequest(t *testing.T) {
 	testkit.WriteControl(r.data, testkit.ControlStop)
 	if code := r.wait(t, 10*time.Second); code != 0 {
 		t.Fatalf("exit %d", code)
+	}
+}
+
+// writerFunc is an io.Writer that is a function.
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// The status file and the ready line say ready only once the query port
+// answers. ESM and the tests ask the query port the moment they read either,
+// and a request that comes sooner is lost: the port does not answer it, which
+// leaves a client that asks once without an answer. Both are looked at
+// where they are written, with a request of the kind such a client sends:
+// one datagram.
+func TestFakeAnswersBeforeItSaysReady(t *testing.T) {
+	for _, noReadyLine := range []bool{false, true} {
+		t.Run(fmt.Sprintf("noReadyLine=%v", noReadyLine), func(t *testing.T) {
+			pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pc.Close()
+			queryPort := pc.LocalAddr().(*net.UDPAddr).Port
+			answers := func() bool {
+				conn, err := net.DialUDP("udp", gameserver.LoopbackLocalAddr("127.0.0.1"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: queryPort})
+				if err != nil {
+					t.Error(err)
+					return false
+				}
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(time.Second))
+				conn.Write(gameserver.InfoRequest(nil))
+				reply := make([]byte, 2048)
+				n, err := conn.Read(reply)
+				ch, _, perr := gameserver.ParseQueryReply(reply[:n])
+				return err == nil && perr == nil && len(ch) == 4
+			}
+			var statusSeen, lineSeen bool
+			s := &server{o: options{mapName: "TestMap", serverName: "T", maxPlayers: 8, noStatusFile: true, noReadyLine: noReadyLine}, queryLn: pc}
+			s.statusHook = func(st gameserver.Status) {
+				if st.State == gameserver.StateReady {
+					statusSeen = true
+					if !answers() {
+						t.Error("the status file is about to say ready, and the query port does not answer yet")
+					}
+				}
+			}
+			s.out = writerFunc(func(p []byte) (int, error) {
+				if gameserver.IsReadyLine(strings.TrimSuffix(string(p), "\n")) {
+					lineSeen = true
+					if !answers() {
+						t.Error("the ready line is being written, and the query port does not answer yet")
+					}
+				}
+				return len(p), nil
+			})
+			go s.answerQueries()
+			s.reportReady()
+			if !statusSeen || lineSeen == noReadyLine {
+				t.Errorf("the status was looked at: %v, the ready line: %v", statusSeen, lineSeen)
+			}
+			if !answers() {
+				t.Error("the query port does not answer once the server is ready")
+			}
+		})
 	}
 }
 
