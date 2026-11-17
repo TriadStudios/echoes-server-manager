@@ -23,6 +23,10 @@ const (
 	// TypeUpdate is a step of an instance's update to a newer build that
 	// ESM found by itself (available, started, updated, failed, overdue).
 	TypeUpdate = "update"
+	// TypeJob is a change of a job (see package jobs): it started, went to
+	// another step, moved on in a step, or ended. Instance names the
+	// instance of an update, backup or restore job.
+	TypeJob = "job"
 )
 
 // Event is one published event. Data is the JSON encoding of the payload,
