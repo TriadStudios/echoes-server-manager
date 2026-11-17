@@ -365,6 +365,20 @@ paths:
         after an update worked and before ESM has ended. A lock older than
         15 minutes was left by an update that did not finish and is taken
         over.
+
+        On Linux the update also writes `<binary>.update.pending` just
+        before the new binary goes in place. The unit that
+        `esm service install` writes runs a small shell script before every
+        start: while that file is there it counts the starts, and at the
+        3rd it puts `<binary>.previous` back in place of the new binary
+        (kept as `<binary>.failed`) instead of starting the new one a third
+        time, so a new ESM that does not come up is replaced by the old one
+        without anyone logging in. A new ESM that has been up for 30
+        seconds removes the file. The ESM that is started after a rollback
+        reports it: an audit entry `box.self_update_rollback`, and
+        `last_self_update` in `GET /box`. A unit written by an older ESM
+        has no such script; `esm service install --force` writes the
+        current one.
       requestBody:
         content:
           application/json:
@@ -1325,6 +1339,16 @@ components:
           type: boolean
           description: A newer ESM release is out (see release). Nothing is updated without POST /box/self-update.
         release: { $ref: "#/components/schemas/ReleaseStatus" }
+        last_self_update:
+          description: |
+            The last self-update that did not come up: the new ESM failed to
+            stay up, and the service unit put the old binary back (this ESM is
+            that old binary). It stays until the next self-update puts a new
+            binary in place. null when there is none. Only a rollback is
+            recorded here; a self-update that worked leaves nothing.
+          oneOf:
+            - $ref: "#/components/schemas/SelfUpdateRecord"
+            - type: "null"
     APIListener:
       type: object
       description: The API listener, TLS only, for clients on other machines.
@@ -1413,13 +1437,21 @@ components:
         exit_anyway:
           type: boolean
           description: Update and end ESM also when nothing starts it again (it then has to be started by hand). Without it, such an update is refused with 409 no_service_manager.
+    SelfUpdateRecord:
+      type: object
+      description: A self-update that did not come up and was rolled back.
+      properties:
+        from: { type: string, description: "The version that was running and is back (empty when the record could not be read).", examples: ["v1.0.0"] }
+        to: { type: string, description: "The version that did not come up (empty when the record could not be read).", examples: ["v1.1.0"] }
+        time: { type: string, format: date-time, description: When the old binary was put back. }
+        rolled_back: { type: boolean, description: Always true. }
     SelfUpdateResult:
       type: object
       properties:
         from: { type: string }
         to: { type: string }
         binary: { type: string, description: The replaced binary. }
-        previous: { type: string, description: Where the old binary was kept (move it back to roll back). }
+        previous: { type: string, description: "Where the old binary was kept (to roll back by hand, move it back; on Linux the service unit does that when the new ESM does not come up)." }
         restarting:
           type: boolean
           description: ESM ends in a moment and its service manager starts the new binary. False after exit_anyway with nothing to start ESM again; ESM ends all the same.

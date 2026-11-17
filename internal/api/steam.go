@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
@@ -29,6 +30,21 @@ type SelfUpdateResult struct {
 	// nothing to start ESM again: ESM ends all the same.
 	Restarting bool   `json:"restarting"`
 	Note       string `json:"note"`
+}
+
+// SelfUpdateRecord is a self-update that did not come up and was rolled
+// back: the new ESM failed to stay up, and the service unit put the old
+// binary back (see release.MarkPending). GET /box carries it as
+// last_self_update until the next self-update puts a new binary in place.
+type SelfUpdateRecord struct {
+	// From is the version that was running and is back; To the version that
+	// did not come up.
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Time is when the old binary was put back.
+	Time time.Time `json:"time"`
+	// RolledBack is always true: only a rolled back update is recorded.
+	RolledBack bool `json:"rolled_back"`
 }
 
 // releaseCheck answers POST /box/release-check: it looks for a newer ESM

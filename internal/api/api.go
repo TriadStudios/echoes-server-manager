@@ -125,6 +125,9 @@ type Options struct {
 	// something does.
 	Release    *release.Checker
 	SelfUpdate func(ctx context.Context, force, exitAnyway bool) (res release.Result, restarting bool, err error)
+	// LastSelfUpdate, when set, is the self-update that was rolled back
+	// before this ESM started; GET /box shows it.
+	LastSelfUpdate *SelfUpdateRecord
 }
 
 // Server serves the API and the page.

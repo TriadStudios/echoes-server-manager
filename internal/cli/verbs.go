@@ -222,6 +222,14 @@ func (e *env) status(args []string) error {
 		if n := len(b.SecretsOnCommandLine); n > 0 {
 			line += fmt.Sprintf("; %s (%s)", unsafeNote, strings.Join(b.SecretsOnCommandLine, ", "))
 		}
+		if u := b.LastSelfUpdate; u != nil {
+			what := "the last self-update"
+			if u.To != "" {
+				what = "the self-update to " + u.To
+			}
+			line += fmt.Sprintf("; %s did not come up and was rolled back on %s (the failed binary is kept as .failed next to esm)",
+				what, u.Time.UTC().Format(time.RFC3339))
+		}
 		return e.result(b, line)
 	case 1:
 		// The instance, not only its status: the warnings belong to it.

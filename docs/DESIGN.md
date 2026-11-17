@@ -66,6 +66,8 @@ return the JSON 404 error.
   esm.json                     config
   esm.sock                     unix socket (only while the service runs)
   audit.log                    append-only audit log, one JSON object per line
+  self-update.json             which rolled back self-update was reported
+                               to the audit log (see "Trust")
   secrets/                     0700
     setup.json                 hash and expiry of the one-time setup code
     users.json                 users with PBKDF2 password hashes
@@ -1100,6 +1102,84 @@ downloads end within 11 minutes) and is taken over. Once an update through
 the API has put a new binary in place, that service takes no other until
 it has ended.
 
+**A new ESM that does not come up is rolled back.** After a self-update
+the old ESM would be gone for good if the new one crashed at once, and
+the box is managed from afar. So on Linux an update that puts a new binary
+in place is not final until that binary has stayed up, and a failed one
+is undone with no one logging in. It works through files next to the
+binary (`release.MarkPending` and friends) and a shell script that the
+service unit runs, because the new binary may not run at all:
+
+1. The update writes `<binary>.update.pending` (JSON `from`, `to`, `time`;
+   a file of its own moved over the name) after it has kept the old binary
+   as `<binary>.previous` and before the new binary goes in place, so a
+   pending file always has a `.previous` to go with it. Once the new binary
+   is in place (and not before: an update that fails first keeps the last
+   record), `release.Placed` removes the `.update.starts` and
+   `.update.rolledback` of earlier updates. It is written by the update
+   itself, so `esm update-self` and the API both do it; not on Windows,
+   which has no unit.
+2. The unit of `esm service install` has `ExecStartPre=-/bin/sh
+   <binary>.update.sh <binary>` (and `StartLimitIntervalSec=0`, with
+   `Restart=always` and `RestartSec=5`, so that systemd keeps starting a
+   binary that keeps failing). The script, `internal/svcunit/rollback.sh`
+   (plain POSIX sh, written next to the binary by `esm service install`,
+   and not text inside the unit, whose quoting rules would make a script
+   of several lines fragile), does nothing at all when the pending file is
+   missing. If `.previous` is the binary that is there already (the same
+   file, tested with `-ef`, or a copy with the same bytes, tested with
+   `cmp -s`), the update never got its new binary in place; the mark is
+   stale, there is nothing to put back (a file cannot replace itself, and
+   GNU `mv` fails on it) and it must not outlive a binary put there by hand,
+   so the script removes the pending and start files at once, at any start,
+   and changes no binary. Otherwise it appends a line to
+   `<binary>.update.starts` and
+   counts the lines. At the 3rd (`release.RollbackStarts`) it links the new
+   binary to `<binary>.failed` (a copy if links fail), moves `.previous`
+   over `<binary>` in one step, writes `<binary>.update.rolledback` (the
+   pending record with `rolled_back_at`), and removes the pending and
+   start files. Without a `.previous` it says so, changes nothing and
+   removes the pending and start files so that it does not repeat. It
+   exits 0 whatever happens, and the `-` makes systemd ignore a failure
+   or a missing script, so it can never keep ESM from starting.
+3. A new ESM confirms the update once it has been up for
+   `release.ConfirmAfter` (30 seconds, after its listeners are bound and
+   serving): it removes the pending and start files. It does so only when
+   it is not the old side of the update: not an ESM that put the new binary
+   in place itself (it is on its way out), and not one that is the
+   `from` of the pending file while another version is its `to` (an ESM that
+   was started a moment before `esm update-self` ran; its timer must not
+   confirm an update that has not run yet). The same ESM, whatever it is,
+   also removes a stale mark: when `.previous` is the binary at the path
+   (`release.SameAsPrevious`: the same file, or the same bytes) the update
+   never got its new binary in place, as in step 2.
+   Every ESM start also rewrites `<binary>.update.sh` when it is there and
+   differs from the script built into the ESM
+   (`svcunit.RefreshScript`, atomically, never making one that is not
+   there), so a self-update, which replaces the binary only, also updates
+   the script that goes with it.
+4. The ESM that starts after a rollback finds `.update.rolledback`, writes
+   one audit entry (`box.self_update_rollback`, actor `system`/`esm`, target
+   `esm <failed version> to <restored version>`, `ok` true) and one warning
+   to the log, remembers in `<root>/self-update.json` which rollback it
+   reported (so a restart does not report it again), and shows it as
+   `last_self_update` in `GET /api/v1/box`, in `esm status` and as a
+   notice on the Box screen. The record stays until the next self-update
+   puts a new binary in place (step 1 removes it); it needs no
+   acknowledging.
+
+What this does not do: the pending file is written by the ESM that runs
+the update, so the update to the first release that has all this is not
+protected (the ESM it starts from writes none), and the next one is. A new
+ESM that stays up 30 seconds and then fails is not rolled back, and
+restarting the service three times within 30 seconds of an update counts
+like three failed starts. Files the new ESM changed (`esm.json`, with a
+new setting the old ESM refuses) stay as they are. An old unit without the
+script is not changed by a self-update: the owner runs `esm service
+install --force`, then `systemctl --user daemon-reload` and `systemctl
+--user restart esm`. A failed update on a box that does not run as the unit
+is rolled back by hand.
+
 **The release check.** With `update_check` on, the service looks up the
 newest release (the release list alone, never a binary) at most every
 `update_check_every` (default 5 minutes, at least 2 minutes), and only
@@ -1151,10 +1231,12 @@ branch password keeps a test branch to the people who know it; ESM keeps
 it like the other secrets.
 
 **ESM as a service.** `esm service install` writes a systemd user unit
-(`~/.config/systemd/user/esm.service`, `Restart=always`) and runs nothing:
-not `systemctl`, not `loginctl`. It uses `KillMode=process`, so stopping
-ESM stops ESM alone: game servers of the process supervisor are ESM's
-children, and systemd would otherwise end them too.
+(`~/.config/systemd/user/esm.service`, `Restart=always`) and the rollback
+script the unit runs before every start (`<binary>.update.sh`; see
+[Trust](#trust)), and runs nothing: not `systemctl`, not `loginctl`.
+It uses `KillMode=process`, so stopping ESM stops ESM alone: game servers
+of the process supervisor are ESM's children, and systemd would otherwise
+end them too.
 
 ## Ports and the firewall
 
@@ -1292,7 +1374,9 @@ skipped.
   password); `PUT /api/v1/steam/{name}/password` sets one (admin); `POST
   /api/v1/builds` with `{"source": "steam:<name>"}` runs a source (admin;
   200 when its build is installed already). `GET /api/v1/box` carries
-  `update_available` and `release`; `POST /api/v1/box/release-check` (read
+  `update_available`, `release` and `last_self_update` (the last self-update
+  that did not come up and was rolled back, else null); `POST
+  /api/v1/box/release-check` (read
   role, CSRF token from a browser session) looks for a newer release at
   once and answers with that `release` status (see
   [The release check](#trust)); `POST /api/v1/box/self-update` (admin)
@@ -2035,6 +2119,14 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   is 15 minutes old. On Windows a second self-update fails while the
   `.previous` binary of the first one still runs (it cannot be replaced);
   end that process first.
+  An update that is killed in the moment between keeping the old binary
+  and moving the new one in place leaves the pending file (see
+  [Trust](#trust)) next to a `.previous` that is the binary that is there.
+  That mark is stale, and it is removed without a rollback: by the
+  service unit's script at the next start, whichever start it is, and,
+  where there is no script, by an ESM that finds it 30 seconds after it
+  started. Until then the pending file stays; a service that has run for
+  days does not look at it again.
 - **A forced self-update takes an older release.** With `force` (admins
   only), ESM takes the release that the release list names as the newest
   even when it is older than the running ESM, as long as its signature
