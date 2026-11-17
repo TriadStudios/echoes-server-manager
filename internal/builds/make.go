@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 )
 
 // ManifestSpec is what a manifest says besides the files: the build's
@@ -151,6 +152,7 @@ func (m *Manager) InstallFolder(ctx context.Context, src string, spec ManifestSp
 	}
 	defer sr.Close()
 	w := newWriter(m.st, tree, m.opts.Limits)
+	w.stop = func() error { return jobs.Interrupted(ctx) }
 	if err := copyFolderSkip(ctx, sr, w, spec.Skip); err != nil {
 		return Build{}, err
 	}
@@ -165,5 +167,5 @@ func (m *Manager) InstallFolder(ctx context.Context, src string, spec ManifestSp
 	if err := m.st.WriteFile(tree+"/"+ManifestName, man.Encode(), 0o400); err != nil {
 		return Build{}, err
 	}
-	return m.finish(tree)
+	return m.finish(ctx, tree)
 }

@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
 	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 )
@@ -65,6 +67,37 @@ func (s *Server) releaseCheck(w http.ResponseWriter, r *http.Request, c *call) e
 	return writeJSON(w, http.StatusOK, rs)
 }
 
+// selfUpdateError turns what a self-update ended with into its answer.
+func selfUpdateError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, release.ErrUpToDate):
+		return errStatus(http.StatusConflict, "up_to_date", "%v", err)
+	case errors.Is(err, release.ErrUnknownVersion):
+		return errStatus(http.StatusConflict, "unknown_version", "%v", err)
+	case errors.Is(err, release.ErrBusy):
+		return errStatus(http.StatusConflict, "busy", "%v", err)
+	case fault.Is(err, fault.Conflict):
+		return err
+	}
+	return fault.Wrap(fault.Failed, "update_failed", err, "self-update failed")
+}
+
+// runSelfUpdate puts the newest release in place of the running binary, and
+// answers as POST /box/self-update does.
+func (s *Server) runSelfUpdate(ctx context.Context, req SelfUpdateRequest) (SelfUpdateResult, error) {
+	res, restarting, err := s.o.SelfUpdate(ctx, req.Force, req.ExitAnyway)
+	if err := selfUpdateError(err); err != nil {
+		return SelfUpdateResult{}, err
+	}
+	note := "ESM ends in a moment so that its service manager starts the new binary (the unit of \"esm service install\" does); game servers keep running and the new ESM adopts them."
+	if !restarting {
+		note = "ESM ends in a moment and nothing starts it again: start it by hand (esm serve) to run the new binary. Game servers keep running and the new ESM adopts them."
+	}
+	return SelfUpdateResult{Result: res, Restarting: restarting, Note: note}, nil
+}
+
 func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) error {
 	var req SelfUpdateRequest
 	if err := decode(r, &req); err != nil {
@@ -74,28 +107,32 @@ func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) err
 	if err := c.adminOnlyIf(req.ExitAnyway, "exit_anyway ends ESM with nothing to start it again, and needs the admin role: ESM must not stay down because of a site token"); err != nil {
 		return err
 	}
+	async, err := asyncParam(r)
+	if err != nil {
+		return err
+	}
 	if s.o.SelfUpdate == nil {
 		return errStatus(http.StatusConflict, "not_available", "this ESM cannot update itself")
 	}
-	res, restarting, err := s.o.SelfUpdate(r.Context(), req.Force, req.ExitAnyway)
-	switch {
-	case errors.Is(err, release.ErrUpToDate):
-		return errStatus(http.StatusConflict, "up_to_date", "%v", err)
-	case errors.Is(err, release.ErrUnknownVersion):
-		return errStatus(http.StatusConflict, "unknown_version", "%v", err)
-	case errors.Is(err, release.ErrBusy):
-		return errStatus(http.StatusConflict, "busy", "%v", err)
-	case fault.Is(err, fault.Conflict):
+	if async {
+		if s.o.SelfUpdateCheck != nil {
+			if err := selfUpdateError(s.o.SelfUpdateCheck(req.ExitAnyway)); err != nil {
+				return err
+			}
+		}
+		// The job ends as done when ESM is about to end: the caller then
+		// looks at GET /box for the new version.
+		return s.startJob(w, c, jobs.KindSelfUpdate, "esm", func(ctx context.Context) (any, error) {
+			out, err := s.runSelfUpdate(ctx, req)
+			return out, err
+		})
+	}
+	out, err := s.runSelfUpdate(r.Context(), req)
+	if err != nil {
 		return err
-	case err != nil:
-		return fault.Wrap(fault.Failed, "update_failed", err, "self-update failed")
 	}
-	c.target = "esm " + res.From + " to " + res.To
-	note := "ESM ends in a moment so that its service manager starts the new binary (the unit of \"esm service install\" does); game servers keep running and the new ESM adopts them."
-	if !restarting {
-		note = "ESM ends in a moment and nothing starts it again: start it by hand (esm serve) to run the new binary. Game servers keep running and the new ESM adopts them."
-	}
-	return writeJSON(w, http.StatusOK, SelfUpdateResult{Result: res, Restarting: restarting, Note: note})
+	c.target = "esm " + out.From + " to " + out.To
+	return writeJSON(w, http.StatusOK, out)
 }
 
 // --- Steam sources ---
@@ -145,12 +182,24 @@ func (s *Server) steamPassword(w http.ResponseWriter, r *http.Request, c *call) 
 // installSteam runs a Steam source: POST /builds {"source": "steam:<name>"}.
 // A build id that is installed already answers 200 with that build, a new
 // one 201.
-func (s *Server) installSteam(w http.ResponseWriter, r *http.Request, c *call, name string, req InstallRequest) error {
+func (s *Server) installSteam(w http.ResponseWriter, r *http.Request, c *call, name string, req InstallRequest, async bool) error {
 	if req.SHA256 != "" {
 		return fault.Invalidf("sha256 does not apply to a Steam source")
 	}
 	if s.o.Steam == nil {
 		return fault.New(fault.Invalid, "no_source", "no Steam source %q", name)
+	}
+	if async {
+		if err := s.o.Steam.Check(name); err != nil {
+			return err
+		}
+		return s.startJob(w, c, jobs.KindInstall, steam.SourcePrefix+name, func(ctx context.Context) (any, error) {
+			b, _, err := s.o.Steam.Install(ctx, name, true)
+			if err != nil {
+				return nil, err
+			}
+			return s.buildView(b, s.o.Instances.BuildUsers()), nil
+		})
 	}
 	b, installed, err := s.o.Steam.Install(r.Context(), name, true)
 	if err != nil {

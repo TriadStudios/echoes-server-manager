@@ -33,6 +33,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/netbind"
 	"github.com/TriadStudios/echoes-server-manager/internal/page"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
@@ -98,6 +99,7 @@ type Service struct {
 	sup   supervisor.Supervisor
 	inst  *instances.Manager
 	steam *steam.Manager
+	api   *api.Server
 	rel   *release.Client
 	tcp   net.Listener
 	sock  net.Listener
@@ -273,9 +275,10 @@ func Start(o Options) (_ *Service, err error) {
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
 		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts, APIListener: s.apiInfo,
-		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate, LastSelfUpdate: lastUpdate,
+		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate, SelfUpdateCheck: s.selfUpdateCheck, LastSelfUpdate: lastUpdate,
 		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
+	s.api = srv
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
 	s.web = newHTTPServer(srv.Handler(), errLog)
 	s.local = newHTTPServer(srv.SocketHandler(), errLog)
@@ -548,6 +551,36 @@ func noServiceManager() string {
 		". Update on the box with esm update-self and restart ESM yourself, or set exit_anyway to update and end ESM anyway; it then has to be started by hand"
 }
 
+// selfUpdateRefused says why a self-update is refused before the release
+// server is asked: releases are not looked up at all, or nothing would start
+// ESM again after it ends (unless exitAnyway is set).
+func (s *Service) selfUpdateRefused(exitAnyway bool) error {
+	if s.releaseOff != "" {
+		return errors.New(s.releaseOff)
+	}
+	if s.restartedBy() == "" && !exitAnyway {
+		return fault.New(fault.Conflict, "no_service_manager", "%s", noServiceManager())
+	}
+	return nil
+}
+
+// selfUpdateCheck is selfUpdateRefused, and also says when an update is
+// running or has put its binary in place already (see selfUpdate): what
+// the call that starts a self-update as a job answers at once.
+func (s *Service) selfUpdateCheck(exitAnyway bool) error {
+	if err := s.selfUpdateRefused(exitAnyway); err != nil {
+		return err
+	}
+	if !s.updating.TryLock() {
+		return release.ErrBusy
+	}
+	defer s.updating.Unlock()
+	if s.updated {
+		return fmt.Errorf("%w: ESM was updated already and ends in a moment", release.ErrBusy)
+	}
+	return nil
+}
+
 // selfUpdate replaces ESM's binary with the newest release's (see
 // release.Client.Update) and, when that worked, asks the service to end a
 // moment later so the answer still reaches the caller. Game servers keep
@@ -555,13 +588,10 @@ func noServiceManager() string {
 // ends, it refuses (409 no_service_manager) and changes nothing, unless
 // exitAnyway is set. restarting says whether something starts ESM again.
 func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res release.Result, restarting bool, err error) {
-	if s.releaseOff != "" {
-		return release.Result{}, false, errors.New(s.releaseOff)
+	if err := s.selfUpdateRefused(exitAnyway); err != nil {
+		return release.Result{}, false, err
 	}
 	by := s.restartedBy()
-	if by == "" && !exitAnyway {
-		return release.Result{}, false, fault.New(fault.Conflict, "no_service_manager", "%s", noServiceManager())
-	}
 	// One at a time, and none after one worked: a second update before
 	// this ESM ends would keep the new binary as the previous one.
 	if !s.updating.TryLock() {
@@ -580,6 +610,7 @@ func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res r
 		return res, false, err
 	}
 	s.updated = true
+	jobs.Step(ctx, "restart")
 	if by != "" {
 		s.log.Info("ESM binary updated; ending so the service manager starts the new one", "from", res.From, "to", res.To,
 			"previous", res.Previous, "restarted_by", by)
@@ -624,6 +655,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		wg.Wait()
 		err = errors.Join(errs...)
+		// The jobs that run are waited for like the requests were, for
+		// as long as ctx allows; what they use is closed after them.
+		if jerr := s.api.ShutdownJobs(ctx); jerr != nil {
+			err = errors.Join(err, jerr)
+		}
 		s.steam.Close()
 		n := s.inst.Close()
 		s.sup.Close()

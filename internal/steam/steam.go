@@ -20,6 +20,7 @@ package steam
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -32,7 +33,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +45,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/config"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
 )
@@ -348,10 +352,23 @@ func (m *Manager) Target(name string) (version string, since time.Time, ok bool)
 
 // --- installs ---
 
+// Check says whether Install would take the source's name: the source must
+// be one of esm.json. It is what a call that starts the install as a job
+// answers at once.
+func (m *Manager) Check(name string) error {
+	if _, ok := m.cfg.SteamSource(name); !ok {
+		return fault.New(fault.Invalid, "no_source", "no Steam source %q in %s", name, config.FileName)
+	}
+	return nil
+}
+
 // Install runs SteamCMD for the source and installs its build when no
 // build of that build id is installed yet. manual marks a request by a
 // person: SteamCMD then also validates every file. It returns the build
-// and whether it was installed now (false: it was there already).
+// and whether it was installed now (false: it was there already). In a job
+// its steps are download (SteamCMD, with the bytes so far), unpack (the
+// app's files are copied into the build's folder), verify and place; the job
+// can be cancelled until place begins.
 func (m *Manager) Install(ctx context.Context, name string, manual bool) (b builds.Build, installed bool, err error) {
 	src, ok := m.cfg.SteamSource(name)
 	if !ok {
@@ -444,6 +461,7 @@ func (m *Manager) install(ctx context.Context, src config.SteamSource, manual bo
 	if err != nil {
 		return builds.Build{}, false, "", fault.Invalidf("Steam source %s: %v", src.Name, err)
 	}
+	jobs.Step(ctx, "download")
 	if err := m.runSteamCMD(ctx, src, script, homeAbs, pw); err != nil {
 		return builds.Build{}, false, "", err
 	}
@@ -458,6 +476,7 @@ func (m *Manager) install(ctx context.Context, src config.SteamSource, manual bo
 	if err := m.checkSpace(src.Name, version, appAbs); err != nil {
 		return builds.Build{}, false, "", err
 	}
+	jobs.Step(ctx, "unpack")
 	b, err := m.builds.InstallFolder(ctx, appAbs, builds.ManifestSpec{
 		Version: version, Commit: "steam app " + src.AppID + " build " + am.BuildID, Channel: src.Channel,
 		DefaultMap: src.DefaultMap, Executables: src.Executable, Skip: []string{"steamapps"},
@@ -655,11 +674,15 @@ func (m *Manager) runSteamCMD(ctx context.Context, src config.SteamSource, scrip
 		defer close(done)
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		sc.Split(scanLines)
 		for sc.Scan() {
 			for _, line := range strings.Split(sc.Text(), "\r") {
 				line = mask(line, pw)
 				if strings.TrimSpace(line) == "" {
 					continue
+				}
+				if done, total, ok := downloadProgress(line); ok {
+					jobs.Progress(ctx, done, total)
 				}
 				fmt.Fprintln(logf, line)
 				if strings.Contains(strings.ToLower(line), "invalid password") {
@@ -680,7 +703,11 @@ func (m *Manager) runSteamCMD(ctx context.Context, src config.SteamSource, scrip
 		return nil
 	}
 	if ctx.Err() != nil {
-		return fault.New(fault.Failed, "steamcmd_failed", "SteamCMD for %s was stopped (time limit or ESM shutting down)", src.Name)
+		why := "time limit or ESM shutting down"
+		if jobs.InJob(ctx) {
+			why = "time limit, a cancel, or ESM shutting down"
+		}
+		return fault.New(fault.Failed, "steamcmd_failed", "SteamCMD for %s was stopped (%s)", src.Name, why)
 	}
 	if wrongPassword {
 		return fault.New(fault.Invalid, "wrong_password", "SteamCMD says the password of branch %s of Steam source %s is wrong; set it again", src.Branch, src.Name)
@@ -695,6 +722,40 @@ func (m *Manager) runSteamCMD(ctx context.Context, src config.SteamSource, scrip
 		}
 	}
 	return fault.New(fault.Failed, "steamcmd_failed", "SteamCMD failed for Steam source %s (%s); its output is in %s", src.Name, why, logFile(src.Name))
+}
+
+// scanLines is bufio.ScanLines that also ends a line at a carriage return:
+// SteamCMD writes the progress of a download over one line with it, and the
+// lines are wanted as they come, not once the line feed after them arrives.
+func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+// progressRe is the line SteamCMD writes while it downloads, like
+// "Update state (0x61) downloading, progress: 25.69 (123456 / 480123)": the
+// bytes done and the bytes there are. Other states of an update (verifying,
+// committing) count other things, and are not read.
+var progressRe = regexp.MustCompile(`downloading, progress: [0-9.]+ \((\d+) / (\d+)\)`)
+
+// downloadProgress reads the progress of a download from a line of
+// SteamCMD's output.
+func downloadProgress(line string) (done, total int64, ok bool) {
+	m := progressRe.FindStringSubmatch(line)
+	if m == nil {
+		return 0, 0, false
+	}
+	done, err1 := strconv.ParseInt(m[1], 10, 64)
+	total, err2 := strconv.ParseInt(m[2], 10, 64)
+	if err1 != nil || err2 != nil || total <= 0 || done < 0 {
+		return 0, 0, false
+	}
+	return min(done, total), total, true
 }
 
 // mask hides the password in a line of SteamCMD output.

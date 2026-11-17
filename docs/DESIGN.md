@@ -1366,8 +1366,8 @@ desktop firewall ask about them.
 ## Watching
 
 The service keeps an in-memory event bus. Every event has an increasing id,
-a time, a type (`state`, `log`, `build`, `audit`), an optional instance and
-JSON data. `GET /api/v1/events` streams them as Server-Sent Events; a client
+a time, a type (`state`, `log`, `build`, `update`, `job`, `audit`), an
+optional instance and JSON data. `GET /api/v1/events` streams them as Server-Sent Events; a client
 that reconnects with `Last-Event-ID` receives what it missed while the
 events are still in memory. New server log and console lines are published
 as `log` events, which is how `esm logs -f` follows a server.
@@ -1415,6 +1415,132 @@ A restore refuses a backup that names any file outside the save folder.
 Scheduled restarts (`schedule.restart_at`) restart running instances at
 the given local times; a time that passes while an instance is stopped is
 skipped.
+
+## Jobs
+
+The calls that take long (an update, a backup, a restore, the install of a
+build, ESM's own update) run synchronously inside their request, and still
+do. With `?async=true` they are started as **jobs** instead, so that a panel
+can show how far one is and a dropped connection cannot cancel the work.
+The code is `internal/jobs`; `internal/api/jobs.go` is the API's side of it.
+
+- **The call is checked first, then the job starts.** An async call is
+  checked as the call that waits is, and every refusal that the request
+  alone decides is answered at once with the same status and code: the
+  role, the body, the instance, the build, the backup (`Manager.CheckUpdate`,
+  `CheckBackup`, `CheckRestore`, `builds.Manager.CheckInstall` and
+  `steam.Manager.Check` do the looking, with the same code the call itself
+  then uses), the site role's limits, and for ESM's own update what needs no
+  release server (`Options.SelfUpdateCheck`). What needs the file, the
+  network or the instance's state at the moment it runs (a wrong sha256 of a
+  local archive, a download, a build that exists already, `up_to_date`) ends
+  the job as `failed` with the code the call would have answered; the job
+  runs through the same functions, so the codes are the same. Then the job is
+  started and the answer is 202 with the job and `Location:
+  /api/v1/jobs/{id}`. At most 32 jobs run at once (429 `busy`), and none is
+  started while ESM ends (503 `shutting_down`).
+- **A context of its own.** The work of a job gets a context that comes from
+  the runner, never from the request: the client may go away, and neither it
+  nor a request that ended can stop the job. (An update, a backup and a
+  restore already did their work with a context cut loose from the request;
+  an install and ESM's own update used the request's, and a client that left
+  ended them midway. A job that is not async is as it was.)
+- **State and steps.** A job is `running`, and then `done` (with the
+  `result` the call answers), `failed` (with the `error`, `code` and
+  `message` as the call answers it) or `cancelled`. It records its steps
+  with the times they began and ended; `step` is the step it is in, or of a
+  finished job the one it ended in. The code that does the work tells its
+  steps through the context (`jobs.Step`, `jobs.Progress`, `jobs.Commit`);
+  they do nothing in a context without a job, so a call that waits runs
+  the very same code. Steps: update `backup`, `stop`, `switch_build`,
+  `start`, `wait_ready`, and `rollback` after a build that did not get ready
+  (a server that was stopped is not stopped first, and is stopped again
+  after the check); backup `wait_save`, `copy`, `prune`; restore `stop`,
+  `backup_current`, `put_in_place`, `start`, `wait_ready`; install `download`
+  (a URL or SteamCMD, with the bytes: for SteamCMD those of its
+  `downloading, progress: 25.69 (123 / 480)` lines), `unpack` (an archive
+  is unpacked or its sha256 checked, a folder is copied, the files of a Steam
+  app are copied), `verify` (the manifest and the hash of each file) and
+  `place`; self-update `verify_signature` (the newest release is looked up
+  and its signed list of hashes fetched and checked, before the binary is
+  downloaded), `download` (the binary, with its bytes), `place_binary` and
+  `restart`. A part of the work that is one step of its own (the backup that
+  an update or a restore makes) is run quietly (`jobs.Quiet`), so that its
+  steps do not show inside the step of the job. Bytes are told at most four
+  times a second.
+- **Cancel.** `DELETE /api/v1/jobs/{id}` cancels an install, and nothing
+  else: while the job is in `download`, `unpack` or `verify`, nothing has been
+  put in place. Entering `place` is `jobs.Commit`, which the job takes under
+  the lock the cancel takes too: of a cancel and the move to `place`, exactly
+  one wins, so a build is never placed after a cancel was taken, and a cancel
+  that is refused says so (409 `not_cancellable`: not an install, ended
+  already, or placing). The install checks the job's context at each file it
+  copies or checks and at each download read, so a cancel stops it within a
+  file; SteamCMD is killed with its process group. The cancel needs the role
+  that starts the job (the admin's for an install from a folder, an archive
+  or an address; the site role's too for a Steam source), checked before
+  the job is looked at for `not_cancellable`: an operator cancelling an
+  update has the role to start one, and is told it cannot be cancelled; a
+  reader is refused with 403. The call answers when the job has stopped, or
+  after 5 seconds with the job as it is (`cancelling`). The job stays in the
+  list, `cancelled`, with no result and no error.
+- **Who and what is recorded.** The job names its `actor`, the audit entry
+  of the call that started it: kind, id, role and, for a site token, the
+  person it said it acts for. The actor and the target are cut and scrubbed
+  as an audit entry's fields are (`audit.CleanActor`, `audit.Clean`), so
+  what a site token wrote as the person it acts for never reaches a job, an
+  event or an answer unscrubbed. The call is recorded when it is made, as
+  accepted (like any call); the end of the job is recorded as `job.end`,
+  with the same actor, `<id> <kind> <target>` as its target, whether the job
+  was `done` and, if not, the error (or `cancelled`); a cancel is
+  `job.cancel`. So a failed update is in the audit log as it is for the
+  call that waits.
+- **Events and the read role.** Every start, step, end and cancel of a job is
+  a `job` event with the whole job (with its instance, for an update, a
+  backup or a restore), and the progress of a download at most four times a
+  second. Events are told in the order the changes were made. A job holds
+  what the audit log records of the call, which is the operator role's and
+  above, so every job event is restricted like a state event of a hidden
+  instance (see [Passwords](#passwords)), also when it is asked for later:
+  the `read` role gets the job as `readView` shows it, with no `id` and
+  `acting_user` of the actor (its kind and role stay), the target of an
+  install as its kind (`folder`, `archive`, the scheme and host of an
+  address, a Steam source as it is), a self-update's result without the
+  paths `binary` and `previous`, and, for an install or a self-update that
+  failed, the `code` of the error with a text that names no path (`pathFreeErrors`
+  has one per code, and a code it has not gets a text that only says that the
+  operator role is shown why): the text of such an error is the one the call
+  answers, and it may name the binary of ESM and its update lock, the import
+  folder, SteamCMD, or the file an OS error names. The errors of an update, a
+  backup and a restore keep their text (the read role is shown the same causes
+  of an update in the instance's own `update.last_error`). The result and the error of a job on an
+  instance with `secret_delivery: command_line` are redacted on top of that:
+  a status with the notice for its reason and the notice for the text of the
+  error; the steps and times are not secret. `GET /api/v1/jobs` and
+  `GET /api/v1/jobs/{id}` redact the same way (the filter `?target=` is
+  matched against the target as the caller sees it), also for an instance that
+  is gone. The operator, admin and site roles get the job whole.
+- **Memory only.** Jobs are in memory. The runner keeps the last 100 jobs
+  and those that ended less than 24 hours ago (no more than 1000 that ended,
+  whatever their age, so that memory is bounded); a job that runs is never
+  dropped. They are lost when ESM ends or restarts, and a job that ran then
+  is not resumed: the caller looks at the instance, the builds or
+  `GET /api/v1/box` to see what became of the work. A self-update job is
+  `done` when the new binary is in place and ESM is about to end, so the
+  caller polls `GET /api/v1/box` for the new version.
+- **Shutdown.** The service stops the HTTP servers (which wait for the
+  requests that run), then waits for the jobs that run for as long as the
+  same shutdown allows (30 seconds from `esm serve`), then asks what still
+  runs to stop (its context ends: an install stops, a job that has nothing
+  to stop it with, such as an update that waits for a server to be ready,
+  ends when the manager closes, as the request would), gives it a few
+  seconds, and goes on to close the Steam manager, the instances and the
+  audit log. A job that was stopped by this ends `failed` with the code
+  `shutting_down`. So jobs end the way the requests did.
+- **Not jobs.** Start, stop and restart (`?wait=true` is their way to wait),
+  deleting, and the calls that change a setting are quick or have their own
+  wait and stay as they are. The command line's verbs stay synchronous too;
+  `esm jobs` and `esm job <id>` only show jobs that others started.
 
 ## API overview
 
@@ -1500,6 +1626,12 @@ skipped.
   puts the newest release in place and ends the service for its service
   manager to start again (refused with 409 `no_service_manager` when
   nothing would, unless `exit_anyway` is set; see [Trust](#trust)).
+
+- Jobs: `POST` with `?async=true` on `/instances/{name}/update`, `/backup`
+  and `/restore`, `/builds` and `/box/self-update` starts a job and answers
+  202 (see [Jobs](#jobs)); `GET /api/v1/jobs` (newest first, `?state=`,
+  `?target=`), `GET /api/v1/jobs/{id}` and, for an install,
+  `DELETE /api/v1/jobs/{id}` read and cancel them.
 
 See [openapi.yaml](openapi.yaml) for every endpoint.
 
@@ -1775,10 +1907,16 @@ the box.
   role may, among them looking for a newer ESM release with
   `POST /api/v1/box/release-check`; start, stop, restart, update an
   instance to an installed build, back up, restore, download a backup,
-  logs, events) and four calls more: `PATCH /api/v1/instances/{name}`
+  logs, events, jobs) and four calls more: `PATCH /api/v1/instances/{name}`
   with the fields of a panel only (below), `POST /api/v1/builds` with a
   Steam source only, `POST /api/v1/builds/prune` and
   `POST /api/v1/box/self-update` without `exit_anyway`.
+- **Jobs.** It looks at them like every role. `DELETE /api/v1/jobs/{id}` is an
+  operator call, so it passes the route's role check; the call then asks for
+  the role that starts the job, and the site role starts an install from a
+  Steam source and no other install, so it cancels those (and is told 409
+  `not_cancellable` of an update, which it starts but cannot cancel; see
+  [Jobs](#jobs)).
 - **What it may not (403).** Tokens (list, make, revoke), logins, the audit
   log and its events, creating and deleting instances, secrets (passwords
   and tokens of a server), a Steam password, deleting a build, the health
@@ -2052,6 +2190,7 @@ steam list | steam password <name> [--clear]   (the password on standard input)
 update <name> --to <version>
 backup <name>
 restore <name> <backup-id>
+jobs [--state running|done|failed|cancelled] [--target T] | job <id>
 token create --role read|operator|admin|site [--name NAME]
 user list | user passwd <name>   (asked twice without echo, or one line of standard input)
 ```
@@ -2215,6 +2354,11 @@ fake, and nowhere else.
 
 ## Known limits
 
+- **Jobs are lost when ESM ends.** They are kept in memory only (see
+  [Jobs](#jobs)): after a restart of ESM, a panel that was following a job
+  gets 404 for it and has to look at the instance, the builds or the box to
+  see what became of the work. A job that was running when ESM ended is not
+  resumed. ESM's own update, which ends ESM, is such a job by design.
 - **Passwords can be confirmed by an admin.** A setting that contains an
   instance's password is refused (422 `password_in_settings`), so an admin
   can test a guess by putting it into, say, the display name. Admins set

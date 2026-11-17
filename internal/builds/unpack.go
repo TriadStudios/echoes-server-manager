@@ -24,6 +24,10 @@ const (
 	kindTarGz = "tar.gz"
 )
 
+// IsArchive reports whether a file name is one of an archive that a build
+// is installed from (.zip, .tar.gz or .tgz).
+func IsArchive(name string) bool { return archiveKind(name) != "" }
+
 // archiveKind tells the archive type from a file name, or "".
 func archiveKind(name string) string {
 	n := strings.ToLower(name)
@@ -50,6 +54,9 @@ type writer struct {
 	seen   map[string]bool // lower-case names
 	files  int
 	bytes  int64
+	// stop, when set, is asked before each file and folder: an error ends
+	// the unpacking (the job that does it was cancelled).
+	stop func() error
 }
 
 func newWriter(st *store.Store, dst string, l Limits) *writer {
@@ -70,6 +77,11 @@ func (w *writer) claim(name string) (string, error) {
 }
 
 func (w *writer) dir(name string) error {
+	if w.stop != nil {
+		if err := w.stop(); err != nil {
+			return err
+		}
+	}
 	clean, err := CleanName(name)
 	if err != nil {
 		return unsafeArchive("%v", err)
@@ -83,6 +95,11 @@ func (w *writer) dir(name string) error {
 // file writes one file. Executable bits in mode are kept (as 0500); every
 // file is otherwise read-only (0400).
 func (w *writer) file(name string, mode fs.FileMode, r io.Reader) error {
+	if w.stop != nil {
+		if err := w.stop(); err != nil {
+			return err
+		}
+	}
 	clean, err := w.claim(name)
 	if err != nil {
 		return err

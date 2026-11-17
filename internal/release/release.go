@@ -30,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 )
 
 // Repo is the GitHub repository ESM releases come from.
@@ -398,8 +400,9 @@ func copyBody(u *url.URL, resp *http.Response, limit int64, w io.Writer) error {
 	return nil
 }
 
-// get fetches an https URL into w, at most limit bytes.
-func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) error {
+// get fetches an https URL into w, at most limit bytes. With track the job
+// of ctx, if any, is told how far the download has come.
+func (c *Client) get(ctx context.Context, raw string, limit int64, track bool, w io.Writer) error {
 	u, resp, err := c.request(ctx, raw, nil)
 	if err != nil {
 		return err
@@ -408,12 +411,15 @@ func (c *Client) get(ctx context.Context, raw string, limit int64, w io.Writer) 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s answered %s", u.Host, resp.Status)
 	}
+	if track {
+		w = jobs.Writer(ctx, max(resp.ContentLength, 0), w)
+	}
 	return copyBody(u, resp, limit, w)
 }
 
 func (c *Client) getSmall(ctx context.Context, raw string, limit int64) ([]byte, error) {
 	var b bytes.Buffer
-	if err := c.get(ctx, raw, limit, &b); err != nil {
+	if err := c.get(ctx, raw, limit, false, &b); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil

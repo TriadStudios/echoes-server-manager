@@ -21,6 +21,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
 	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/sysinfo"
@@ -364,6 +365,10 @@ func (s *Server) installBuild(w http.ResponseWriter, r *http.Request, c *call) e
 	if err := decode(r, &req); err != nil {
 		return err
 	}
+	async, err := asyncParam(r)
+	if err != nil {
+		return err
+	}
 	c.target = builds.RedactSource(req.Source)
 	name, isSteam := strings.CutPrefix(strings.TrimSpace(req.Source), steam.SourcePrefix)
 	// A folder, an archive or an address is a program that runs with ESM's own
@@ -373,7 +378,19 @@ func (s *Server) installBuild(w http.ResponseWriter, r *http.Request, c *call) e
 		return err
 	}
 	if isSteam {
-		return s.installSteam(w, r, c, name, req)
+		return s.installSteam(w, r, c, name, req, async)
+	}
+	if async {
+		if err := s.o.Builds.CheckInstall(req.Source, req.SHA256); err != nil {
+			return err
+		}
+		return s.startJob(w, c, jobs.KindInstall, c.target, func(ctx context.Context) (any, error) {
+			b, err := s.o.Builds.Install(ctx, req.Source, req.SHA256)
+			if err != nil {
+				return nil, err
+			}
+			return s.buildView(b, s.o.Instances.BuildUsers()), nil
+		})
 	}
 	b, err := s.o.Builds.Install(r.Context(), req.Source, req.SHA256)
 	if err != nil {
@@ -642,6 +659,19 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request, c *call) error {
 		return fault.Invalidf("to: the build version to update to is required")
 	}
 	c.target = name + " to " + req.To
+	async, err := asyncParam(r)
+	if err != nil {
+		return err
+	}
+	if async {
+		if err := s.o.Instances.CheckUpdate(name, req.To); err != nil {
+			return err
+		}
+		return s.startJob(w, c, jobs.KindUpdate, name, func(ctx context.Context) (any, error) {
+			st, err := s.o.Instances.Update(ctx, name, req.To)
+			return st, err
+		})
+	}
 	st, err := s.o.Instances.Update(r.Context(), name, req.To)
 	if err != nil {
 		return err
@@ -653,6 +683,19 @@ func (s *Server) backup(w http.ResponseWriter, r *http.Request, c *call) error {
 	name, err := action(r, c, nil)
 	if err != nil {
 		return err
+	}
+	async, err := asyncParam(r)
+	if err != nil {
+		return err
+	}
+	if async {
+		if err := s.o.Instances.CheckBackup(name); err != nil {
+			return err
+		}
+		return s.startJob(w, c, jobs.KindBackup, name, func(ctx context.Context) (any, error) {
+			b, err := s.o.Instances.Backup(ctx, name, instances.ReasonManual)
+			return b, err
+		})
 	}
 	b, err := s.o.Instances.Backup(r.Context(), name, instances.ReasonManual)
 	if err != nil {
@@ -672,6 +715,19 @@ func (s *Server) restore(w http.ResponseWriter, r *http.Request, c *call) error 
 		return fault.Invalidf("backup: the backup id is required")
 	}
 	c.target = name + "/" + req.Backup
+	async, err := asyncParam(r)
+	if err != nil {
+		return err
+	}
+	if async {
+		if err := s.o.Instances.CheckRestore(name, req.Backup); err != nil {
+			return err
+		}
+		return s.startJob(w, c, jobs.KindRestore, name, func(ctx context.Context) (any, error) {
+			st, err := s.o.Instances.Restore(ctx, name, req.Backup)
+			return st, err
+		})
+	}
 	st, err := s.o.Instances.Restore(r.Context(), name, req.Backup)
 	if err != nil {
 		return err

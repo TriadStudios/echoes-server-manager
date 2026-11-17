@@ -34,6 +34,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 )
 
@@ -247,17 +248,74 @@ func (m *Manager) List() ([]Build, error) {
 	return out, nil
 }
 
+// source is an install request read: what to install and from where.
+type source struct {
+	text   string   // the source as given, trimmed
+	sha256 string   // lower case, or ""
+	remote *url.URL // set for an https source
+	kind   string   // the archive kind of a remote source
+}
+
+// parseSource reads and checks what a request to install a build asks for,
+// without touching any file: the source is given, the sha256 is one, a URL is
+// https with a sha256 and names an archive. A local source is looked at by
+// openLocal.
+func parseSource(text, wantSHA256 string) (source, error) {
+	src := source{text: strings.TrimSpace(text), sha256: strings.ToLower(strings.TrimSpace(wantSHA256))}
+	if src.text == "" {
+		return source{}, fault.Invalidf("source is required: a folder, a .zip/.tar.gz/.tgz file or an https URL")
+	}
+	if src.sha256 != "" && !ValidSHA256(src.sha256) {
+		return source{}, fault.Invalidf("sha256 must be 64 hex characters")
+	}
+	lower := strings.ToLower(src.text)
+	switch {
+	case strings.HasPrefix(lower, "http://"):
+		return source{}, fault.Invalidf("plain http downloads are refused; use an https URL with a sha256")
+	case strings.HasPrefix(lower, "https://"):
+		if src.sha256 == "" {
+			return source{}, fault.Invalidf("a sha256 is required to install from a URL")
+		}
+		u, err := url.Parse(src.text)
+		if err != nil || u.Host == "" || u.User != nil {
+			return source{}, fault.Invalidf("invalid URL (user names and passwords in URLs are not accepted)")
+		}
+		src.kind = archiveKind(path.Base(u.Path))
+		if src.kind == "" {
+			return source{}, fault.Invalidf("the URL path must end in .zip, .tar.gz or .tgz")
+		}
+		src.remote = u
+	}
+	return src, nil
+}
+
+// CheckInstall says whether Install would take its request, as far as the
+// request and the import folder tell, without installing anything: what
+// Install refuses before it reads or downloads a byte. It is what a call that
+// starts the install as a job answers at once.
+func (m *Manager) CheckInstall(source, wantSHA256 string) error {
+	src, err := parseSource(source, wantSHA256)
+	if err != nil || src.remote != nil {
+		return err
+	}
+	ls, err := m.openLocal(src.text, src.sha256)
+	if err != nil {
+		return err
+	}
+	ls.Close()
+	return nil
+}
+
 // Install installs a build from source: a local folder, a local .zip,
 // .tar.gz or .tgz file, or an https URL to such an archive. wantSHA256 is
-// required for URLs and optional for local archives.
+// required for URLs and optional for local archives. In a job its steps are
+// download (a URL only; with the bytes so far), unpack (copy a folder, or
+// check an archive's sha256 and unpack it), verify and place. The job can
+// be cancelled until place begins.
 func (m *Manager) Install(ctx context.Context, source, wantSHA256 string) (Build, error) {
-	source = strings.TrimSpace(source)
-	wantSHA256 = strings.ToLower(strings.TrimSpace(wantSHA256))
-	if source == "" {
-		return Build{}, fault.Invalidf("source is required: a folder, a .zip/.tar.gz/.tgz file or an https URL")
-	}
-	if wantSHA256 != "" && !ValidSHA256(wantSHA256) {
-		return Build{}, fault.Invalidf("sha256 must be 64 hex characters")
+	src, err := parseSource(source, wantSHA256)
+	if err != nil {
+		return Build{}, err
 	}
 	work := tempDir + "/" + tempPrefix + randomName()
 	tree := work + "/tree"
@@ -270,40 +328,29 @@ func (m *Manager) Install(ctx context.Context, source, wantSHA256 string) (Build
 		return Build{}, err
 	}
 	w := newWriter(m.st, tree, m.opts.Limits)
-	lower := strings.ToLower(source)
-	switch {
-	case strings.HasPrefix(lower, "http://"):
-		return Build{}, fault.Invalidf("plain http downloads are refused; use an https URL with a sha256")
-	case strings.HasPrefix(lower, "https://"):
-		if wantSHA256 == "" {
-			return Build{}, fault.Invalidf("a sha256 is required to install from a URL")
-		}
-		u, err := url.Parse(source)
-		if err != nil || u.Host == "" || u.User != nil {
-			return Build{}, fault.Invalidf("invalid URL (user names and passwords in URLs are not accepted)")
-		}
-		kind := archiveKind(path.Base(u.Path))
-		if kind == "" {
-			return Build{}, fault.Invalidf("the URL path must end in .zip, .tar.gz or .tgz")
-		}
-		archive := work + "/download." + kind
-		if err := m.download(ctx, u, archive, wantSHA256); err != nil {
+	w.stop = func() error { return jobs.Interrupted(ctx) }
+	if src.remote != nil {
+		jobs.Step(ctx, "download")
+		archive := work + "/download." + src.kind
+		if err := m.download(ctx, src.remote, archive, src.sha256); err != nil {
 			return Build{}, err
 		}
+		jobs.Step(ctx, "unpack")
 		f, err := m.st.Open(archive)
 		if err != nil {
 			return Build{}, err
 		}
 		defer f.Close()
-		if err := unpack(kind, f, w); err != nil {
+		if err := unpack(src.kind, f, w); err != nil {
 			return Build{}, err
 		}
-	default:
-		if err := m.installLocal(source, wantSHA256, w); err != nil {
+	} else {
+		jobs.Step(ctx, "unpack")
+		if err := m.installLocal(src.text, src.sha256, w); err != nil {
 			return Build{}, err
 		}
 	}
-	return m.finish(tree)
+	return m.finish(ctx, tree)
 }
 
 // notAllowed refuses a local source outside the import folder. It says
@@ -317,71 +364,124 @@ func (m *Manager) notAllowed() error {
 		"a local source must be a readable folder or archive inside the import folder %s (or give an https URL)", m.opts.ImportDir)
 }
 
-// installLocal copies or unpacks a local source into w. The source must lie
-// inside the import folder (a relative path is taken from there), and it
-// is opened through an os.Root on that folder, so neither ".." nor a link
-// can lead out of it.
-func (m *Manager) installLocal(source, wantSHA256 string, w *writer) error {
+// localSource is a local source that was found and looked at.
+type localSource struct {
+	root *os.Root
+	f    *os.File
+	rel  string
+	dir  bool
+	kind string // the archive kind, for a file
+}
+
+// Close closes what the source opened.
+func (l *localSource) Close() {
+	l.f.Close()
+	l.root.Close()
+}
+
+// localPath is the path that a local source names: a relative one is taken
+// from the import folder dir, any other is the path it names, which the
+// caller then finds inside dir or refuses. "Any other" is more than
+// filepath.IsAbs says on Windows, where "/etc" and "\etc" are no absolute
+// paths (they name the root of the current drive) and "C:etc" names a place
+// on a drive, none of them a name below the import folder: a path that
+// starts with a separator or has a volume name is made absolute, as the
+// system does it. On Linux such a path is absolute already. A UNC path
+// (\\server\share\x) is absolute and has a volume name.
+func localPath(dir, source string) (string, error) {
+	if filepath.IsAbs(source) || filepath.VolumeName(source) != "" || (source != "" && os.IsPathSeparator(source[0])) {
+		return filepath.Abs(source)
+	}
+	return filepath.Join(dir, source), nil
+}
+
+// openLocal finds a local source and checks what can be checked of it
+// without reading it: it must lie inside the import folder (a relative path
+// is taken from there; see localPath for what is not one), and it is opened
+// through an os.Root on that folder, so neither ".." nor a link can lead out
+// of it. What is outside the folder is refused as such, with no word of what
+// is there. It must be a folder, or a regular archive that is not above the
+// size limit.
+func (m *Manager) openLocal(source, wantSHA256 string) (*localSource, error) {
 	dir := m.opts.ImportDir
 	if dir == "" {
-		return m.notAllowed()
+		return nil, m.notAllowed()
 	}
-	abs := source
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(dir, abs)
+	abs, err := localPath(dir, source)
+	if err != nil {
+		return nil, m.notAllowed()
 	}
 	rel, err := filepath.Rel(dir, filepath.Clean(abs))
 	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
-		return m.notAllowed()
+		return nil, m.notAllowed()
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return fmt.Errorf("open the import folder: %w", err)
+		return nil, fmt.Errorf("open the import folder: %w", err)
 	}
-	defer root.Close()
 	f, err := root.Open(rel)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fault.Invalidf("there is no %s in the import folder %s", filepath.ToSlash(rel), dir)
+		root.Close()
+		return nil, fault.Invalidf("there is no %s in the import folder %s", filepath.ToSlash(rel), dir)
 	}
 	if err != nil {
-		return m.notAllowed()
+		root.Close()
+		return nil, m.notAllowed()
 	}
-	defer f.Close()
+	ls := &localSource{root: root, f: f, rel: rel}
 	fi, err := f.Stat()
 	if err != nil {
-		return m.notAllowed()
+		ls.Close()
+		return nil, m.notAllowed()
 	}
 	if fi.IsDir() {
 		if wantSHA256 != "" {
-			return fault.Invalidf("sha256 applies to archives and downloads, not folders")
+			ls.Close()
+			return nil, fault.Invalidf("sha256 applies to archives and downloads, not folders")
 		}
-		sub, err := root.OpenRoot(rel)
+		ls.dir = true
+		return ls, nil
+	}
+	ls.kind = archiveKind(rel)
+	if ls.kind == "" || !fi.Mode().IsRegular() {
+		ls.Close()
+		return nil, fault.Invalidf("source must be a folder, a .zip, .tar.gz or .tgz file, or an https URL")
+	}
+	if fi.Size() > m.opts.Limits.MaxBytes {
+		ls.Close()
+		return nil, fault.New(fault.Invalid, "too_large", "the archive is larger than %d bytes", m.opts.Limits.MaxBytes)
+	}
+	return ls, nil
+}
+
+// installLocal copies or unpacks a local source (see openLocal) into w.
+func (m *Manager) installLocal(source, wantSHA256 string, w *writer) error {
+	ls, err := m.openLocal(source, wantSHA256)
+	if err != nil {
+		return err
+	}
+	defer ls.Close()
+	if ls.dir {
+		sub, err := ls.root.OpenRoot(ls.rel)
 		if err != nil {
 			return m.notAllowed()
 		}
 		defer sub.Close()
 		return copyFolder(sub, w)
 	}
-	kind := archiveKind(rel)
-	if kind == "" || !fi.Mode().IsRegular() {
-		return fault.Invalidf("source must be a folder, a .zip, .tar.gz or .tgz file, or an https URL")
-	}
-	if fi.Size() > m.opts.Limits.MaxBytes {
-		return fault.New(fault.Invalid, "too_large", "the archive is larger than %d bytes", m.opts.Limits.MaxBytes)
-	}
 	if wantSHA256 != "" {
 		h := sha256.New()
-		if _, err := io.Copy(h, f); err != nil {
+		if _, err := io.Copy(h, ls.f); err != nil {
 			return err
 		}
 		if sum := hex.EncodeToString(h.Sum(nil)); sum != wantSHA256 {
 			return fault.New(fault.Invalid, "hash_mismatch", "the archive's sha256 is %s, not %s", sum, wantSHA256)
 		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil {
+		if _, err := ls.f.Seek(0, io.SeekStart); err != nil {
 			return err
 		}
 	}
-	return unpack(kind, f, w)
+	return unpack(ls.kind, ls.f, w)
 }
 
 // unpack extracts the archive in f into w.
@@ -423,7 +523,7 @@ func (m *Manager) download(ctx context.Context, u *url.URL, rel, wantSHA256 stri
 		return err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, m.opts.Limits.MaxBytes+1))
+	n, err := io.Copy(jobs.Writer(ctx, max(resp.ContentLength, 0), io.MultiWriter(f, h)), io.LimitReader(resp.Body, m.opts.Limits.MaxBytes+1))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -440,8 +540,11 @@ func (m *Manager) download(ctx context.Context, u *url.URL, rel, wantSHA256 stri
 	return nil
 }
 
-// finish checks the unpacked tree and moves it into builds/<version>.
-func (m *Manager) finish(tree string) (Build, error) {
+// finish checks the unpacked tree and moves it into builds/<version>. The
+// job of ctx, if any, is in its verify step until the tree is checked, and
+// in its place step from then on: it cannot be cancelled any more.
+func (m *Manager) finish(ctx context.Context, tree string) (Build, error) {
+	jobs.Step(ctx, "verify")
 	top := tree
 	if !m.st.Exists(tree + "/" + ManifestName) {
 		// Accept archives that wrap the build in one top folder.
@@ -466,8 +569,11 @@ func (m *Manager) finish(tree string) (Build, error) {
 	if err := man.Check(m.opts.GOOS); err != nil {
 		return Build{}, err
 	}
-	files, size, err := m.verify(top, man)
+	files, size, err := m.verify(ctx, top, man)
 	if err != nil {
+		return Build{}, err
+	}
+	if err := jobs.Commit(ctx, "place"); err != nil {
 		return Build{}, err
 	}
 	placed, err := m.placeSteamAppID(top, man)
@@ -535,7 +641,7 @@ func (m *Manager) placeSteamAppID(top string, man *Manifest) (bool, error) {
 // verify checks that the folder holds exactly the files the manifest lists
 // (plus the manifest) with matching hashes. It returns the file count and
 // total size of the listed files.
-func (m *Manager) verify(top string, man *Manifest) (files int, size int64, err error) {
+func (m *Manager) verify(ctx context.Context, top string, man *Manifest) (files int, size int64, err error) {
 	seen := make(map[string]bool, len(man.Files))
 	var walk func(rel string) error
 	walk = func(rel string) error {
@@ -566,6 +672,9 @@ func (m *Manager) verify(top string, man *Manifest) (files int, size int64, err 
 			want, ok := man.Files[name]
 			if !ok {
 				return fault.New(fault.Invalid, "bad_manifest", "%s is not listed in the manifest", name)
+			}
+			if err := jobs.Interrupted(ctx); err != nil {
+				return err
 			}
 			sum, n, err := m.hashFile(top + "/" + name)
 			if err != nil {

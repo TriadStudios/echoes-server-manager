@@ -17,6 +17,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/gameserver"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 )
 
 // Backup reasons.
@@ -54,9 +55,17 @@ func (m *Manager) alive(name string) bool {
 	return err == nil && pr.Running
 }
 
+// CheckBackup says whether Backup would take its request: the instance must
+// exist. It is what a call that starts the backup as a job answers at once.
+func (m *Manager) CheckBackup(name string) error {
+	_, err := m.get(name)
+	return err
+}
+
 // Backup copies the instance's save files into a new backup. If the server
 // is running it first waits (up to backup_save_wait) for its next world
-// save.
+// save. In a job its steps are wait_save (of a running server), copy and
+// prune.
 func (m *Manager) Backup(ctx context.Context, name, reason string) (Backup, error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -72,7 +81,9 @@ func (m *Manager) Backup(ctx context.Context, name, reason string) (Backup, erro
 
 // backupLocked makes a backup. With prune the instance's backups are then
 // pruned to its keep; protect names a backup that pruning must keep.
-// in.op must be held.
+// in.op must be held. The steps it tells (see Backup) are those of the job
+// of ctx; a caller for which the backup is one step of its own makes ctx
+// quiet (jobs.Quiet).
 func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect string, prune bool) (Backup, error) {
 	in.mu.Lock()
 	cfg := in.cfg.clone()
@@ -81,12 +92,14 @@ func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect stri
 	if m.alive(in.name) {
 		confirmed = false
 		if wait := m.cfg.BackupSaveWait.D(); wait > 0 {
+			jobs.Step(ctx, "wait_save")
 			confirmed = m.waitWorldSaved(ctx, in.name, wait)
 		}
 		if !confirmed {
 			m.log.Warn("no world save seen before the backup; copying the save files as they are", "instance", in.name)
 		}
 	}
+	jobs.Step(ctx, "copy")
 	dataAbs, err := m.st.Abs(dataDir(in.name))
 	if err != nil {
 		return Backup{}, err
@@ -121,6 +134,7 @@ func (m *Manager) backupLocked(ctx context.Context, in *rt, reason, protect stri
 	}
 	m.log.Info("backup made", "instance", in.name, "id", id, "files", len(b.Files), "save_confirmed", confirmed)
 	if prune {
+		jobs.Step(ctx, "prune")
 		m.pruneBackupsLogged(in.name, cfg.Backup.Keep, id, protect)
 	}
 	return b, nil
@@ -263,25 +277,45 @@ func (m *Manager) pruneBackups(name string, keep int, protect ...string) error {
 	return nil
 }
 
-// Restore replaces the instance's save files with those of a backup. A
-// running server is stopped first and started again afterwards; the
-// current save files are backed up first (reason pre-restore).
-func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) {
+// lookRestore finds the instance and the backup of a restore, and checks the
+// backup, before anything is stopped or replaced.
+func (m *Manager) lookRestore(name, id string) (*rt, Backup, error) {
 	in, err := m.get(name)
 	if err != nil {
-		return Status{}, err
+		return nil, Backup{}, err
 	}
 	if !ValidBackupID(id) {
-		return Status{}, fault.NotFoundf("backup %q of instance %s not found", id, name)
+		return nil, Backup{}, fault.NotFoundf("backup %q of instance %s not found", id, name)
 	}
 	var b Backup
 	if err := m.st.ReadJSON(backupDir(name, id)+"/meta.json", &b); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Status{}, fault.NotFoundf("backup %q of instance %s not found", id, name)
+			return nil, Backup{}, fault.NotFoundf("backup %q of instance %s not found", id, name)
 		}
-		return Status{}, err
+		return nil, Backup{}, err
 	}
 	if err := m.checkBackupFiles(name, id, b.Files); err != nil {
+		return nil, Backup{}, err
+	}
+	return in, b, nil
+}
+
+// CheckRestore says whether Restore would take its request: the instance and
+// the backup must exist, and the backup must be whole. It is what a call
+// that starts the restore as a job answers at once.
+func (m *Manager) CheckRestore(name, id string) error {
+	_, _, err := m.lookRestore(name, id)
+	return err
+}
+
+// Restore replaces the instance's save files with those of a backup. A
+// running server is stopped first and started again afterwards; the
+// current save files are backed up first (reason pre-restore). In a job its
+// steps are stop (of a running server), backup_current, put_in_place and,
+// for a server that ran, start and wait_ready.
+func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) {
+	in, b, err := m.lookRestore(name, id)
+	if err != nil {
 		return Status{}, err
 	}
 	ctx = context.WithoutCancel(ctx)
@@ -289,6 +323,7 @@ func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) 
 	defer in.op.Unlock()
 	wasRunning := m.alive(name)
 	if wasRunning {
+		jobs.Step(ctx, "stop")
 		if err := m.stopLocked(ctx, in, "stopped for a restore"); err != nil {
 			return m.mustStatus(name), err
 		}
@@ -297,16 +332,20 @@ func (m *Manager) Restore(ctx context.Context, name, id string) (Status, error) 
 		if !wasRunning {
 			return nil
 		}
+		jobs.Step(ctx, "start")
 		r, err := m.launch(ctx, in, "started after a restore", false)
 		if err != nil {
 			return err
 		}
+		jobs.Step(ctx, "wait_ready")
 		return waitRun(ctx, r)
 	}
-	if _, err := m.backupLocked(ctx, in, ReasonPreRestore, id, true); err != nil {
+	jobs.Step(ctx, "backup_current")
+	if _, err := m.backupLocked(jobs.Quiet(ctx), in, ReasonPreRestore, id, true); err != nil {
 		restart()
 		return m.mustStatus(name), fmt.Errorf("back up the current save files: %w", err)
 	}
+	jobs.Step(ctx, "put_in_place")
 	dataAbs, err := m.st.Abs(dataDir(name))
 	if err != nil {
 		return Status{}, err
@@ -360,9 +399,48 @@ func (m *Manager) checkBackupFiles(name, id string, files []string) error {
 // files are backed up first; a running server is stopped. The new build is
 // started and must become ready; if it does not, the old build is put back
 // and started, and the error says so. An instance that was stopped is
-// stopped again after the new build proved ready.
+// stopped again after the new build proved ready. In a job its steps are
+// backup, stop (of a running server), switch_build, start, wait_ready, then
+// stop again for a server that did not run, or rollback after a build that
+// did not get ready.
 func (m *Manager) Update(ctx context.Context, name, to string) (Status, error) {
 	return m.update(ctx, name, to, false)
+}
+
+// CheckUpdate says whether Update would take its request, as far as that can
+// be told without doing it: the instance and the build must exist, the build
+// must be another one of the instance's channel, and the instance must not be
+// starting or stopping. It is what a call that starts the update as a job
+// answers at once; Update itself looks again once it has the instance.
+func (m *Manager) CheckUpdate(name, to string) error {
+	in, err := m.get(name)
+	if err != nil {
+		return err
+	}
+	nb, err := m.buildToUpdateTo(to)
+	if err != nil {
+		return err
+	}
+	in.mu.Lock()
+	cfg := in.cfg.clone()
+	prev := in.status.State
+	in.mu.Unlock()
+	return updateConflict(name, to, cfg, nb, prev)
+}
+
+// updateConflict is what keeps an instance in the state prev, running cfg,
+// from being updated to the build nb (version to).
+func updateConflict(name, to string, cfg Instance, nb builds.Build, prev State) error {
+	if cfg.Build == to {
+		return fault.New(fault.Conflict, "same_build", "instance %s already runs build %s", name, to)
+	}
+	if nb.Channel != cfg.Channel {
+		return fault.New(fault.Invalid, "channel_mismatch", "build %s is a %s build but instance %s is on %s", to, nb.Channel, name, cfg.Channel)
+	}
+	if prev == Starting || prev == Stopping {
+		return fault.New(fault.Conflict, "busy", "instance %s is %s; try again when it is settled", name, prev)
+	}
+	return nil
 }
 
 // update is Update; auto marks an automatic update (see autoupdate.go).
@@ -400,14 +478,8 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 	cfg := in.cfg.clone()
 	prevState := in.status.State
 	in.mu.Unlock()
-	if cfg.Build == to {
-		return m.mustStatus(name), fault.New(fault.Conflict, "same_build", "instance %s already runs build %s", name, to)
-	}
-	if nb.Channel != cfg.Channel {
-		return m.mustStatus(name), fault.New(fault.Invalid, "channel_mismatch", "build %s is a %s build but instance %s is on %s", to, nb.Channel, name, cfg.Channel)
-	}
-	if prevState == Starting || prevState == Stopping {
-		return m.mustStatus(name), fault.New(fault.Conflict, "busy", "instance %s is %s; try again when it is settled", name, prevState)
+	if err := updateConflict(name, to, cfg, nb, prevState); err != nil {
+		return m.mustStatus(name), err
 	}
 	in.mu.Lock()
 	in.clearCrashesLocked()
@@ -428,7 +500,8 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 			return putOff(why)
 		}
 	}
-	b, err := m.backupLocked(ctx, in, ReasonPreUpdate, "", !auto)
+	jobs.Step(ctx, "backup")
+	b, err := m.backupLocked(jobs.Quiet(ctx), in, ReasonPreUpdate, "", !auto)
 	if err != nil {
 		in.mu.Lock()
 		m.setLocked(in, prevState, "update to "+to+" not started: backup failed")
@@ -455,20 +528,25 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 		}
 	}
 	if wasRunning {
+		jobs.Step(ctx, "stop")
 		if err := m.stopLocked(ctx, in, "stopped for an update to "+to); err != nil {
 			return m.mustStatus(name), err
 		}
 	}
 	old, oldPrev := cfg.Build, slices.Clone(cfg.PreviousBuilds)
+	jobs.Step(ctx, "switch_build")
 	if err := m.setBuild(in, to, append([]string{old}, oldPrev...)); err != nil {
 		return m.mustStatus(name), err
 	}
+	jobs.Step(ctx, "start")
 	r, err := m.launch(ctx, in, "updated from "+old+" to "+to, false)
 	if err == nil {
+		jobs.Step(ctx, "wait_ready")
 		err = waitRun(ctx, r)
 	}
 	if err == nil {
 		if !wasRunning {
+			jobs.Step(ctx, "stop")
 			if err := m.stopLocked(ctx, in, "stopped again after the update check"); err != nil {
 				return m.mustStatus(name), err
 			}
@@ -488,6 +566,7 @@ func (m *Manager) update(ctx context.Context, name, to string, auto bool) (Statu
 	}
 	cause := err
 	m.log.Warn("update failed; rolling back", "instance", name, "from", old, "to", to, "err", cause)
+	jobs.Step(ctx, "rollback")
 	if err := m.stopLocked(ctx, in, "stopped after a failed update"); err != nil {
 		return m.mustStatus(name), fault.Wrap(fault.Failed, "update_failed", err, "update to %s failed (%v) and the new build could not be stopped", to, cause)
 	}

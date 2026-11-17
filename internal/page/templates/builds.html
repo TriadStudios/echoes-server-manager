@@ -41,7 +41,7 @@
 <section class="panel" aria-labelledby="install-h">
 <h2 class="label" id="install-h">Install a build</h2>
 <p class="alert warn"><strong class="tag">Warning</strong> A build is a program that runs with ESM's own rights: it can read everything ESM keeps. Install only builds you trust.</p>
-{{if not $v.Admin}}<p class="note">Installing builds needs the admin role.</p>{{end}}
+{{if not $v.Admin}}<p class="note">Installing builds needs the admin role.</p>{{else}}<div class="actions"><button type="button" class="btn danger" data-act="cancel-job" data-job-cancel hidden>Cancel the install</button></div>{{end}}
 <fieldset class="bare tabset">
 <legend class="sr">Where the build comes from</legend>
 <input type="radio" name="from" id="from-folder" class="tabin t-folder" checked>
