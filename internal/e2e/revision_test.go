@@ -380,3 +380,81 @@ func TestSiteTokenAndIfMatch(t *testing.T) {
 		}
 	}
 }
+
+// The order of the checks of a change that carries If-Match, as the docs
+// give it: the form of the header (400), the instance (404), what is wrong
+// with the request whatever the instance is (422), the revision (412), and
+// then the change against the instance at that revision (422, 409). For the
+// site role the limits on the body (403) come before all of them.
+func TestChecksOfAChangeWithIfMatchRunInTheDocumentedOrder(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	site := h.token("site")
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	h.create("alpha", "1.0", fastRules(nil))
+	const path = "/api/v1/instances/alpha"
+	var v instances.View
+	h.must(http.StatusOK, "GET", path, nil, &v)
+	stale := ifMatch(fmt.Sprintf("%q", fmt.Sprint(v.Revision+5)))
+	current := ifMatch(fmt.Sprintf("%q", fmt.Sprint(v.Revision)))
+
+	type call struct {
+		what   string
+		token  string
+		method string
+		path   string
+		body   any
+		lines  http.Header
+		status int
+		code   string
+	}
+	for _, c := range []call{
+		// The form of the header comes before the instance and the request.
+		{"a malformed If-Match, an instance that is not there", h.admin, "PATCH", "/api/v1/instances/ghost", map[string]any{"display_name": "x"}, ifMatch("7"), 400, "bad_if_match"},
+		{"a malformed If-Match, a build", h.admin, "PATCH", path, map[string]any{"build": "1.0"}, ifMatch("7"), 400, "bad_if_match"},
+		{"a malformed If-Match, a short password", h.admin, "PUT", path + "/secrets", map[string]any{"server_password": "short"}, ifMatch("7"), 400, "bad_if_match"},
+		// The instance before the revision.
+		{"a stale If-Match, an instance that is not there", h.admin, "PATCH", "/api/v1/instances/ghost", map[string]any{"display_name": "x"}, stale, 404, "not_found"},
+		{"a stale If-Match, secrets of an instance that is not there", h.admin, "PUT", "/api/v1/instances/ghost/secrets", map[string]any{"server_password": "join me 7"}, stale, 404, "not_found"},
+		// What is wrong whatever the instance is, before the revision, for any revision.
+		{"a stale If-Match, a build", h.admin, "PATCH", path, map[string]any{"build": "1.0"}, stale, 422, "invalid"},
+		{"the current If-Match, a build", h.admin, "PATCH", path, map[string]any{"build": "1.0"}, current, 422, "invalid"},
+		{"a stale If-Match, a short password", h.admin, "PUT", path + "/secrets", map[string]any{"server_password": "short"}, stale, 422, "password_too_short"},
+		{"the current If-Match, a short password", h.admin, "PUT", path + "/secrets", map[string]any{"server_password": "short"}, current, 422, "password_too_short"},
+		{"a stale If-Match, a token with a space", h.admin, "PUT", path + "/secrets", map[string]any{"announcements_token": "has a space"}, stale, 422, "invalid"},
+		// The revision before what depends on the instance.
+		{"a stale If-Match, zero players", h.admin, "PATCH", path, map[string]any{"max_players": 0}, stale, 412, "changed"},
+		{"the current If-Match, zero players", h.admin, "PATCH", path, map[string]any{"max_players": 0}, current, 422, "invalid"},
+		{"a stale If-Match, a rule that is a switch of its own", h.admin, "PATCH", path, map[string]any{"rules": map[string]string{"MULTIHOME": "x"}}, stale, 412, "changed"},
+		{"the current If-Match, a rule that is a switch of its own", h.admin, "PATCH", path, map[string]any{"rules": map[string]string{"MULTIHOME": "x"}}, current, 422, "invalid"},
+		// The site role: its limits on the body come first.
+		{"site, a stale If-Match, a build", site, "PATCH", path, map[string]any{"build": "1.0"}, stale, 403, "forbidden"},
+		{"site, a malformed If-Match, a build", site, "PATCH", path, map[string]any{"build": "1.0"}, ifMatch("7"), 403, "forbidden"},
+		{"site, a stale If-Match, a field it may change", site, "PATCH", path, map[string]any{"display_name": "x"}, stale, 412, "changed"},
+		{"site, a malformed If-Match, a field it may change", site, "PATCH", path, map[string]any{"display_name": "x"}, ifMatch("7"), 400, "bad_if_match"},
+	} {
+		st, _, raw := h.callWith(c.token, c.method, c.path, c.body, c.lines)
+		if got := errorOf(t, raw); st != c.status || got.Code != c.code {
+			t.Errorf("%s: %d %s, want %d %s", c.what, st, raw, c.status, c.code)
+		}
+	}
+	// Nothing was changed by any of them.
+	var after instances.View
+	h.must(http.StatusOK, "GET", path, nil, &after)
+	if after.Revision != v.Revision || after.DisplayName != v.DisplayName || after.Secrets.ServerPasswordSet {
+		t.Fatalf("refused calls changed the instance: revision %d, was %d; %+v", after.Revision, v.Revision, after.Instance)
+	}
+
+	// A password that occurs in a setting: refused against the instance, so
+	// after the revision.
+	h.must(http.StatusOK, "PATCH", path, map[string]any{"display_name": "join me 7"}, nil)
+	h.must(http.StatusOK, "GET", path, nil, &v)
+	stale = ifMatch(fmt.Sprintf("%q", fmt.Sprint(v.Revision-1)))
+	current = ifMatch(fmt.Sprintf("%q", fmt.Sprint(v.Revision)))
+	if st, _, raw := h.callWith(h.admin, "PUT", path+"/secrets", map[string]any{"server_password": "join me 7"}, stale); st != http.StatusPreconditionFailed || errorOf(t, raw).Code != "changed" {
+		t.Errorf("a password in a setting, a stale If-Match: %d %s", st, raw)
+	}
+	if st, _, raw := h.callWith(h.admin, "PUT", path+"/secrets", map[string]any{"server_password": "join me 7"}, current); st != http.StatusUnprocessableEntity || errorOf(t, raw).Code != "password_in_settings" {
+		t.Errorf("a password in a setting, the current If-Match: %d %s", st, raw)
+	}
+}

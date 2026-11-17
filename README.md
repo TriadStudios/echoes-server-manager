@@ -464,8 +464,10 @@ curl -s --cacert api-listener.crt --pinnedpubkey "$PIN" -X PATCH \
 - A `site` token is held to its fields first: a body with a field it may
   not change is 403 whatever `If-Match` says, and the answer is the same
   whether the revision matches or not. Then the form of `If-Match` is
-  checked (400), then the revision (412), then the change itself (422 or
-  409).
+  checked (400), then the instance (404) and what is wrong with the
+  request whatever the instance is (a `build` field, the length of a
+  password: 422), then the revision (412), then the change itself against
+  the instance (422 or 409).
 - The web page's settings form sends the revision it showed, so two admins
   in two tabs cannot overwrite each other: the second save is refused with
   a notice that the settings changed meanwhile, and a button that loads

@@ -21,11 +21,12 @@ import (
 // A change call checks, in this order: the role of the route, then (for the
 // site role, which may send some fields only) the fields of the body, which
 // is 403 whatever the If-Match says, the body (400), the If-Match header's
-// form (400), the instance (404), the revision (412), and then the change
-// itself (422, 409), which is checked against the instance at that
-// revision. So a field the caller may not change is refused before the
-// revision is looked at, and a refused call tells nothing about whether
-// the revision matched.
+// form (400), the instance (404), what is wrong with the request whatever
+// the instance is (a build in a change, a password that is too short: 422),
+// the revision (412), and then the change itself (422, 409), which is
+// checked against the instance at that revision. So a field the caller may
+// not change is refused before the revision is looked at, and a refused
+// call tells nothing about whether the revision matched.
 
 // IfMatchHeader names the header of a change call that makes it conditional
 // on the revision.

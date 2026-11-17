@@ -326,20 +326,31 @@ from the web page, the command line or another client. An instance has a
   lock. The writers that switch the build hold it as well, so no change can
   come between the check and the write, and of any number of changes made
   for the same revision at the same time exactly one is made; the others
-  find the revision moved and are 412. A change that waits for the lock
+  find the revision moved and are 412. What the instance shows is one
+  state: its revision is shown in the same step as the settings it stands
+  for (for secrets, once the secrets file is written, which a view reads
+  after the revision), never before. A caller that read a revision together
+  with the settings from before its change could otherwise merge into them
+  and pass `If-Match` over that change. A change that waits for the lock
   behind a long operation (an update holds it for its whole run) finds
   the revision moved by that operation's build switch, and is refused if it
   was made for the revision read before.
 - **The order of the checks.** The role of the route; for a token of the
   site role its limits on the body of a `PATCH` (403, see [The site
   role](#the-site-role)), which come before everything else about the call;
-  the body (400); the form of `If-Match` (400); the instance (404); the
-  revision (412); then the change itself against the instance at that
-  revision (422, 409). So a field the site role may not change is refused
-  with the same 403 whether `If-Match` is right, old, malformed or absent,
-  and a refusal tells nothing about the revision. The change is checked after
-  the revision because it is checked against what is stored: a change for an
-  old revision is not worth validating.
+  the body (400); the form of `If-Match` (400); the instance (404); what the
+  request holds that is wrong whatever the instance is (a `build` in a
+  `PATCH`, 422 `invalid`; the length or the characters of a password or token
+  in secrets, 422 `password_too_short` or `invalid`); the revision (412); then
+  the change against the instance at that revision (422, 409: a value that
+  breaks the rules for the command line, a password that occurs in a setting,
+  `instance_running`, a port in use). So a field the site role may not change
+  is refused with the same 403 whether `If-Match` is right, old, malformed or
+  absent, and a refusal tells nothing about the revision. The checks that need
+  nothing of the instance come before the revision because their answer would
+  be the same after a read, and say nothing of it; the change is checked after
+  it because it is checked against what is stored: a change for an old
+  revision is not worth validating.
 - **Who sends it.** The web page's settings form does (below, in [The web
   page](#the-web-page)). A website's panel reads, merges and writes with
   it (README: Changing a server's settings without overwriting a change).

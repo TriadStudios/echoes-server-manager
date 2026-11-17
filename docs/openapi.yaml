@@ -78,8 +78,10 @@ info:
     The checks run in this order: the role of the route, then (for a `site`
     token on `PATCH`) its limits on the body, which are 403 whatever
     `If-Match` says and tell nothing about the revision; the JSON body (400);
-    the form of `If-Match` (400); the instance (404); the revision (412); and
-    last the change itself (422, 409), checked against the instance at that
+    the form of `If-Match` (400); the instance (404); what the request holds
+    that is wrong whatever the instance is (a `build` in a `PATCH`; the
+    length or characters of a password or token): 422; the revision (412);
+    and last the change itself (422, 409), checked against the instance at that
     revision. The revision and the check are in one lock with the change, so
     of several changes made for the same revision at the same time exactly
     one is made.
@@ -628,8 +630,11 @@ paths:
         `If-Match`, and on 412 reads again and retries. A `site` token's
         limits on the body (below) come first: a field it may not send is 403
         whatever `If-Match` is and whether it matches. The condition is
-        checked before the change itself is (a change that is invalid as well,
-        for an old revision, is 412).
+        checked before the change itself is: a change that breaks a rule that
+        depends on the instance (a value for the command line, a port, a
+        password in a setting), made for an old revision, is 412. A request
+        that is wrong whatever the instance is (a `build` field) is 422 for
+        any revision.
 
         A token of the `site` role may send only `display_name`,
         `max_players`, `listed`, `rules`, `auto_update`, `update_max_wait`,
@@ -733,9 +738,11 @@ paths:
         its `revision`, which the answer carries (and sends as `ETag`), so a
         caller that read the instance before it is stale. With
         `If-Match: "<revision>"` the secrets are set only if the instance is
-        at that revision, else 412 `changed` and nothing is done (checked
-        before the passwords' own rules, after the form of the body and of
-        the header).
+        at that revision, else 412 `changed` and nothing is done. The
+        length and characters of a password or token are checked before the
+        revision (422 `password_too_short` or `invalid`, for any revision);
+        the rules that depend on the instance (`password_in_settings`, the
+        command line) after it.
       parameters:
         - $ref: "#/components/parameters/Name"
         - $ref: "#/components/parameters/IfMatch"
