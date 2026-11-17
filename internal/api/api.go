@@ -744,6 +744,8 @@ func classify(err error) (int, string, string) {
 		return http.StatusConflict, code, err.Error()
 	case fault.Forbidden:
 		return http.StatusForbidden, code, err.Error()
+	case fault.Precondition:
+		return http.StatusPreconditionFailed, code, err.Error()
 	}
 	return http.StatusInternalServerError, "internal", err.Error()
 }

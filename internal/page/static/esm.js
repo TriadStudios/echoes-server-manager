@@ -50,10 +50,15 @@
   }
   // sessionEnded: end
 
-  // call sends one API request. Changes carry JSON and the CSRF token. It
-  // resolves with the decoded answer, or rejects with the API's message.
-  async function call(method, path, body) {
+  // call sends one API request. Changes carry JSON and the CSRF token, and
+  // the further headers given (an object, such as If-Match). It resolves
+  // with the decoded answer, or rejects with the API's message, its code
+  // and the HTTP status.
+  async function call(method, path, body, headers) {
     var opts = { method: method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
+    if (headers) {
+      Object.keys(headers).forEach(function (k) { opts.headers[k] = headers[k]; });
+    }
     if (method !== 'GET') {
       opts.headers['Content-Type'] = 'application/json';
       opts.headers['X-CSRF-Token'] = csrf;
@@ -328,6 +333,16 @@
       await call('DELETE', '/api/v1/tokens/' + enc(b.dataset.id));
       done('revoked');
     },
+    // reload-settings is the way out of the notice of a save that was
+    // refused because the settings changed meanwhile: the page is loaded
+    // anew, without the notice of an earlier save, and not as a reload,
+    // which a browser may answer with the values typed into the form (the
+    // form has autocomplete off as well).
+    'reload-settings': async function () {
+      var u = new URL(location.href);
+      u.searchParams.delete('done');
+      go(u.pathname + u.search);
+    },
     logout: async function () {
       await call('POST', '/api/v1/logout');
       location.assign('/setup');
@@ -428,6 +443,65 @@
     return rules;
   }
   // saveRules: end
+
+  // settingsSave: start
+  // ifMatch is the extra headers of a change made on what a form showed at
+  // revision rev (a number, or its text from the page): If-Match with the
+  // revision as a strong entity tag, as the API sends it in ETag. Without a
+  // revision there is nothing to name, and no header.
+  function ifMatch(rev) {
+    var n = parseInt(rev, 10);
+    return n >= 1 ? { 'If-Match': '"' + n + '"' } : undefined;
+  }
+
+  // settingsSave makes the changes of a settings form, in order: the
+  // settings (PATCH base, when parts.change has any) and then the passwords
+  // and tokens (PUT base/secrets, when parts.secrets has any), where base
+  // is the server's path in the API. Each is made only if the server's
+  // settings are still at the revision the form showed (If-Match): the
+  // second on the revision that the answer to the first gave, so the form's
+  // own save does not refuse itself, but a change by anyone else, an
+  // admin on the page or the command line, a website, another tab, does.
+  // io.call(method, path, body, headers) is the page's call: it resolves
+  // with the decoded answer, and rejects with an Error that has status and
+  // code. settingsSave resolves {changed, saved}: changed says that the
+  // API refused with 412 changed, so that nothing, or not all, was saved,
+  // and saved lists what was saved before that ('settings'). Any other
+  // failure is thrown as it is.
+  async function settingsSave(base, revision, parts, io) {
+    var saved = [];
+    var rev = revision;
+    try {
+      if (Object.keys(parts.change).length) {
+        var r = await io.call('PATCH', base, parts.change, ifMatch(rev));
+        rev = r && r.revision;
+        saved.push('settings');
+      }
+      if (Object.keys(parts.secrets).length) {
+        await io.call('PUT', base + '/secrets', parts.secrets, ifMatch(rev));
+        saved.push('passwords');
+      }
+    } catch (e) {
+      if (e && e.status === 412 && e.code === 'changed') { return { changed: true, saved: saved }; }
+      throw e;
+    }
+    return { changed: false, saved: saved };
+  }
+
+  // changedNotice shows, in box, the notice of a save that settingsSave
+  // said was refused because the settings changed: the paragraph for
+  // nothing saved (data-changed="all") or, when the settings were saved
+  // and the passwords were not, the one for that (data-changed="part").
+  // It returns the notice's button, for the page to focus.
+  function changedNotice(box, saved) {
+    var which = saved.length ? 'part' : 'all';
+    Array.prototype.forEach.call(box.querySelectorAll('[data-changed]'), function (p) {
+      p.hidden = p.getAttribute('data-changed') !== which;
+    });
+    box.hidden = false;
+    return box.querySelector('button');
+  }
+  // settingsSave: end
 
   var sf = document.querySelector('form[data-form="settings"]');
   if (sf) { settings(sf); }
@@ -587,9 +661,15 @@
 
     async function save(restart) {
       var name = f.dataset.name;
-      var parts = body();
-      if (Object.keys(parts.change).length) { await call('PATCH', inst(name), parts.change); }
-      if (Object.keys(parts.secrets).length) { await call('PUT', inst(name) + '/secrets', parts.secrets); }
+      var res = await settingsSave(inst(name), f.dataset.revision, body(), { call: call });
+      if (res.changed) {
+        var box = document.getElementById('changed-meanwhile');
+        if (!box) { throw new Error('The settings changed since this page was loaded. Reload the page.'); }
+        var reload = changedNotice(box, res.saved);
+        box.scrollIntoView({ block: 'center' });
+        if (reload) { reload.focus(); }
+        return;
+      }
       var pill = document.querySelector('[data-state-of]');
       var state = pill ? pill.dataset.state : '';
       if (restart && (state === 'running' || state === 'starting')) {

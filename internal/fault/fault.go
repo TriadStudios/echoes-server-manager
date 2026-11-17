@@ -29,6 +29,10 @@ const (
 	Failed
 	// Forbidden means the caller may not see or do what was asked for.
 	Forbidden
+	// Precondition means the caller made the request on the condition that
+	// the thing is as it read it (an If-Match revision), and it is not: it
+	// changed since. Nothing was done.
+	Precondition
 )
 
 // Error is an error with a kind and a machine code.
@@ -115,6 +119,8 @@ func (k Kind) DefaultCode() string {
 		return "failed"
 	case Forbidden:
 		return "forbidden"
+	case Precondition:
+		return "precondition_failed"
 	}
 	return "internal"
 }

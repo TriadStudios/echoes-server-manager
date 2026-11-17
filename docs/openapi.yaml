@@ -59,6 +59,33 @@ info:
     characters never get that far: the HTTP server answers a header that
     has one with a bare 400, to any caller.)
 
+    Every instance has a `revision`, a whole number from 1 that grows with
+    every stored change of its settings: a `PATCH` (also one that sets
+    nothing), a `PUT .../secrets`, and a switch of its build by an update, a
+    rollback or an automatic update. `GET /instances`, `GET /instances/{name}`
+    and every answer that carries an instance show it; the calls that give
+    one instance (and the ones that change it) also send it as a strong
+    `ETag: "<revision>"`. A panel that changes what it read (the `rules` of a
+    `PATCH` replace the whole map) reads the instance, merges its change into
+    it and sends it with `If-Match: "<revision>"`: the call is made only if
+    the instance is still at that revision, and is otherwise 412 `changed`,
+    which says the revision the instance is at, and does nothing, so the
+    panel reads again and retries. Without `If-Match`, or with
+    `If-Match: *`, the call is made as before. `If-Match` is read on
+    `PATCH /instances/{name}` and `PUT /instances/{name}/secrets` only, and
+    must be `*` or one revision in double quotes; a list, a weak tag
+    (`W/"3"`), a header sent twice and anything else is 400 `bad_if_match`.
+    The checks run in this order: the role of the route, then (for a `site`
+    token on `PATCH`) its limits on the body, which are 403 whatever
+    `If-Match` says and tell nothing about the revision; the JSON body (400);
+    the form of `If-Match` (400); the instance (404); what the request holds
+    that is wrong whatever the instance is (a `build` in a `PATCH`; the
+    length or characters of a password or token): 422; the revision (412);
+    and last the change itself (422, 409), checked against the instance at that
+    revision. The revision and the check are in one lock with the change, so
+    of several changes made for the same revision at the same time exactly
+    one is made.
+
     Server passwords, and the game's announcements and problem report
     tokens, are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
@@ -560,7 +587,9 @@ paths:
             schema: { $ref: "#/components/schemas/CreateInstance" }
       responses:
         "201":
-          description: Created.
+          description: Created, at revision 1.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/InstanceChange" }
@@ -575,7 +604,9 @@ paths:
         - $ref: "#/components/parameters/Name"
       responses:
         "200":
-          description: The instance.
+          description: The instance, with its `revision`, which is also the `ETag`.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Instance" }
@@ -587,6 +618,23 @@ paths:
         Only the fields sent change. The build is changed with an update,
         not here. Changes to a running instance take effect at its next
         start (restart_required is true).
+
+        Every change that is made adds 1 to the instance's `revision`, which
+        the answer carries (and sends as `ETag`). With `If-Match: "<revision>"`
+        the change is made only if the instance is at that revision: any
+        change since the caller read it, from the page, a website or a
+        script, makes it 412 `changed`, with the revision the instance is at
+        in the message, and nothing is done. Because `rules` replaces the
+        whole map, a caller that changes one rule reads the instance, puts its
+        change into the rules it read, sends them with the `ETag` it read as
+        `If-Match`, and on 412 reads again and retries. A `site` token's
+        limits on the body (below) come first: a field it may not send is 403
+        whatever `If-Match` is and whether it matches. The condition is
+        checked before the change itself is: a change that breaks a rule that
+        depends on the instance (a value for the command line, a port, a
+        password in a setting), made for an old revision, is 412. A request
+        that is wrong whatever the instance is (a `build` field) is 422 for
+        any revision.
 
         A token of the `site` role may send only `display_name`,
         `max_players`, `listed`, `rules`, `auto_update`, `update_max_wait`,
@@ -619,6 +667,7 @@ paths:
         replaces the state reason.
       parameters:
         - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
@@ -626,12 +675,17 @@ paths:
             schema: { $ref: "#/components/schemas/Settings" }
       responses:
         "200":
-          description: Changed.
+          description: Changed. The answer's `revision` and `ETag` are the instance's new revision.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/InstanceChange" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "412": { $ref: "#/components/responses/Changed" }
         "422": { $ref: "#/components/responses/Error" }
     delete:
       tags: [instances]
@@ -679,8 +733,19 @@ paths:
         command_line_too_long). Neither may occur, in any case, in the instance's name, display
         name, world, map, cluster, rule keys or values, or extra arguments
         (422 password_in_settings).
+
+        A change of secrets is a stored change of the instance: it adds 1 to
+        its `revision`, which the answer carries (and sends as `ETag`), so a
+        caller that read the instance before it is stale. With
+        `If-Match: "<revision>"` the secrets are set only if the instance is
+        at that revision, else 412 `changed` and nothing is done. The
+        length and characters of a password or token are checked before the
+        revision (422 `password_too_short` or `invalid`, for any revision);
+        the rules that depend on the instance (`password_in_settings`, the
+        command line) after it.
       parameters:
         - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
@@ -689,10 +754,14 @@ paths:
       responses:
         "200":
           description: Which secrets are set now.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SecretsResult" }
+        "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "412": { $ref: "#/components/responses/Changed" }
         "422": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/start:
     post:
@@ -1186,6 +1255,25 @@ components:
       in: query
       description: Return only when the server is running or has failed.
       schema: { type: boolean, default: false }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        Makes the change conditional on the instance's revision: `*` (any,
+        the same as leaving it out), or the revision the caller read in
+        double quotes, as the `ETag` of `GET /instances/{name}` gives it:
+        `"7"`. Only that one strong tag: a list, a weak tag, a header sent
+        twice, an empty one, a number without quotes and a revision with a
+        leading zero are 400 `bad_if_match`. An instance at another revision
+        is 412 `changed`, and nothing is done.
+      schema: { type: string, examples: ['"7"', "*"] }
+  headers:
+    ETag:
+      description: |
+        The instance's revision in double quotes, as a strong entity tag
+        (`"7"`): what to send back as `If-Match`.
+      schema: { type: string, examples: ['"7"'] }
   requestBodies:
     Empty:
       description: An empty object (or no body).
@@ -1198,6 +1286,19 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Changed:
+      description: |
+        The instance's settings changed since the caller read them: it is at
+        another revision than the `If-Match` names (code `changed`; the message
+        says the revision it is at). Nothing was done. Read the instance
+        again, make the change on what it shows now, and send it again.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: changed
+              message: "the settings of instance alpha changed since they were read: they are at revision 5 now, and this change was made for revision 3; read them again and make the change anew"
     RateLimited:
       description: Too many failed attempts from this client or for this user name, or too many failed authentications from this client address (calls without a valid login).
       headers:
@@ -1264,7 +1365,10 @@ components:
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
-                running), stop_failed, rate_limited, internal.
+                running), stop_failed, rate_limited, internal,
+                changed (412: a change made with If-Match for a revision the
+                instance is no longer at), bad_if_match (400: an If-Match that
+                is not "*" or one revision in double quotes).
             message: { type: string }
     Duration:
       description: A duration such as "90s" or "1h30m", or a number of seconds.
@@ -1937,6 +2041,19 @@ components:
           items: { type: string }
         created: { type: string, format: date-time }
         updated: { type: string, format: date-time }
+        revision:
+          type: integer
+          minimum: 1
+          description: |
+            Counts the stored changes of the instance's settings, from 1 when
+            it is made: every change (also one that sets nothing), every
+            change of secrets and every switch of the build (an update, a
+            rollback, an automatic update) adds 1. It is kept in a file of
+            its own beside the instance's settings, and one without it is at
+            1. Send it as `If-Match: "<revision>"`
+            on `PATCH` or `PUT .../secrets` to make the change only if nothing
+            changed since (see the description of this API); it is also the
+            `ETag` of the calls that give one instance. Never set by a request.
         secrets: { $ref: "#/components/schemas/SecretFlags" }
         status: { $ref: "#/components/schemas/Status" }
         live: { $ref: "#/components/schemas/Live" }
@@ -2085,6 +2202,7 @@ components:
       properties:
         secrets: { $ref: "#/components/schemas/SecretFlags" }
         restart_required: { type: boolean }
+        revision: { type: integer, minimum: 1, description: The instance's revision after this change (also the `ETag` of the answer). }
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }

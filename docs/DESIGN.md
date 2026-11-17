@@ -94,6 +94,7 @@ return the JSON 404 error.
   instances/
     <name>/
       instance.json            settings
+      revision                 the instance's revision, a number (none: 1)
       secrets.json             server and admin passwords (0600)
       data/                    the server's own folder (-UserDir)
         Saved/SaveGames/...    its world saves (what backups copy)
@@ -172,6 +173,7 @@ are refused, so typos are reported.
 | `extra_args`       | Extra server arguments, each starting with `-`. |
 | `secret_delivery`  | How the server gets its passwords: `file` (default) or `command_line` (unsafe on a shared box). See [Passwords](#passwords). |
 | `previous_builds`  | Builds this instance ran before, newest first. |
+| `revision`         | Not a field of `instance.json`: a file `revision` beside it counts the stored changes of the settings, from 1; set by ESM, never by a request. See [Revision and If-Match](#revision-and-if-match). |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
 names, `-SteamServerName` among them, passwords and tokens, the secrets
@@ -261,6 +263,100 @@ Ports given explicitly are checked the same way, and all ports are checked
 again before every start. The game port is reserved and given to the server
 although the server opens no socket on it (players join through Steam's
 relay); only the query port is reachable from outside.
+
+### Revision and If-Match
+
+`PATCH /instances/{name}` replaces the whole `rules` map (and every other
+field it names), so a client that reads an instance, merges its change into
+the rules and writes them back would overwrite a change made in between,
+from the web page, the command line or another client. An instance has a
+`revision` for that, and the two calls that change what is stored take an
+`If-Match` that makes the change conditional on it.
+
+- **The revision.** A whole number, 1 when the instance is made. Every
+  stored change of the instance adds 1: a `PATCH` (one that sets nothing
+  too, which stores the file as every `PATCH` does), a `PUT .../secrets`,
+  and a switch of the build (an update, the roll back of one that did not
+  get ready, an automatic update, the roll back of an unproven one).
+  Reading, a refused change and a change of state (start, stop, a crash) add
+  nothing. `GET /instances`, `GET /instances/{name}` and every answer that
+  carries an instance show it as `revision`, and a request cannot set it (it
+  is not a field of a create or a change, so a body that names it is refused
+  as any unknown field).
+- **Where it is kept.** In a file of its own, `instances/<name>/revision`
+  (a decimal number and a line break), not in `instance.json`: that file
+  keeps exactly the fields of the release before revisions, which refuses a
+  field it does not know, so an older ESM put back (by the rollback of a
+  self-update that did not come up, or by hand) still reads every instance.
+  Such a release reads the files of an instance's folder it knows by name,
+  and lists only the folders under `instances/`, so the extra file is
+  invisible to it. A test reads every `instance.json` this release stores,
+  after a change, secrets, an update and an automatic update, as that release
+  does (a copy of its struct, unknown fields refused). No file is made with
+  the instance: none is revision 1, and the first change writes 2. A file
+  that holds no revision (ESM never writes one, it replaces the file whole
+  and atomically) is read as 1, with a warning in the log.
+  The file is written under the instance's operation lock, before the file
+  the change is stored in (`instance.json`, `secrets.json`): a failure in
+  between can only leave a revision that no change was made for, which makes a
+  caller's condition fail, and never a change that no revision stands for.
+  Going back to an older release and forward again works, but what the older
+  one changes is not counted (see Known limits).
+- **The tag.** `GET /instances/{name}` and the answers of `POST /instances`,
+  `PATCH` and `PUT .../secrets` send the revision as a strong `ETag`
+  (`"7"`). The secrets' answer has `revision` as well, as it carries no
+  instance.
+- **The condition.** `If-Match` is read on `PATCH /instances/{name}` and
+  `PUT /instances/{name}/secrets`, and is opt-in: with no header, or `*`,
+  the call is made as it always was (the last change wins). With one
+  revision in double quotes (`"7"`) the call is made only if the instance is
+  at that revision, else it is 412 with the code `changed`, a message that
+  says the settings changed since they were read and which revision the
+  instance is at (and which the call was made for), and nothing is done.
+  Only that one strong tag is a condition: a list, a weak tag (`W/"7"`,
+  which a proxy may turn a tag into, and which could never match under the
+  strong comparison `If-Match` requires, so a client would be told to
+  retry for ever), a header sent twice, an empty one, a number without
+  quotes, a revision with a leading zero or none (`"0"`) or too long to be
+  one are 400 `bad_if_match`. The kind is `fault.Precondition`.
+- **Atomic.** `Manager.PatchIf` and `Manager.SetSecretsIf` take the
+  instance's operation lock (the one every change of an instance's stored
+  state holds: a change, a change of secrets, an update, a start, a stop),
+  read the revision under it, compare, and write the file under the same
+  lock. The writers that switch the build hold it as well, so no change can
+  come between the check and the write, and of any number of changes made
+  for the same revision at the same time exactly one is made; the others
+  find the revision moved and are 412. What the instance shows is one
+  state: its revision is shown in the same step as the settings it stands
+  for (for secrets, once the secrets file is written, which a view reads
+  after the revision), never before. A caller that read a revision together
+  with the settings from before its change could otherwise merge into them
+  and pass `If-Match` over that change. A change that waits for the lock
+  behind a long operation (an update holds it for its whole run) finds
+  the revision moved by that operation's build switch, and is refused if it
+  was made for the revision read before.
+- **The order of the checks.** The role of the route; for a token of the
+  site role its limits on the body of a `PATCH` (403, see [The site
+  role](#the-site-role)), which come before everything else about the call;
+  the body (400); the form of `If-Match` (400); the instance (404); what the
+  request holds that is wrong whatever the instance is (a `build` in a
+  `PATCH`, 422 `invalid`; the length or the characters of a password or token
+  in secrets, 422 `password_too_short` or `invalid`); the revision (412); then
+  the change against the instance at that revision (422, 409: a value that
+  breaks the rules for the command line, a password that occurs in a setting,
+  `instance_running`, a port in use). So a field the site role may not change
+  is refused with the same 403 whether `If-Match` is right, old, malformed or
+  absent, and a refusal tells nothing about the revision. The checks that need
+  nothing of the instance come before the revision because their answer would
+  be the same after a read, and say nothing of it; the change is checked after
+  it because it is checked against what is stored: a change for an old
+  revision is not worth validating.
+- **Who sends it.** The web page's settings form does (below, in [The web
+  page](#the-web-page)). A website's panel reads, merges and writes with
+  it (README: Changing a server's settings without overwriting a change).
+  The command line does not: `esm secret` and `esm update` make their
+  change as they always did, and each adds 1, so a panel that read before
+  it is told.
 
 ## Game settings
 
@@ -1329,7 +1425,7 @@ skipped.
   value: anything after it, a second value or a closing brace or bracket
   that nothing opened, is 400 `bad_request` and nothing is done.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
-  with 400, 401, 403, 404, 405, 408, 409, 413, 415, 421, 422, 429 or 500. (The
+  with 400, 401, 403, 404, 405, 408, 409, 412, 413, 415, 421, 422, 429 or 500. (The
   HTTP server itself answers malformed requests and request headers over
   the cap with a plain 400 or 431, without that shape or ESM's headers.)
 - **Limits.** Request headers: at most 64 KiB, within 10 seconds. A request
@@ -1353,6 +1449,12 @@ skipped.
   reading the audit log skips a line it cannot read. The entry of a call
   by a token of the site role also names the person the token says it acts
   for, `actor.acting_user` (see [The site role](#the-site-role)).
+- An instance carries a `revision` that grows with every stored change of
+  it, and the calls that give or change one send it as a strong `ETag`;
+  `PATCH /instances/{name}` and `PUT /instances/{name}/secrets` take
+  `If-Match: "<revision>"` and answer 412 `changed`, doing nothing, when
+  the instance is at another revision (see [Revision and
+  If-Match](#revision-and-if-match)).
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
   `secrets_unconfirmed` (both in [Passwords](#passwords)),
   `limits_not_enforced` (it has resource limits and the process supervisor
@@ -1712,6 +1814,14 @@ the box.
   fields by reflection and fails until each of them is classified, so that
   a new field is closed to the site role until someone decides otherwise.
   An admin is not limited.
+- **A change with `If-Match`.** A site token's change may carry `If-Match`
+  like an admin's (see [Revision and If-Match](#revision-and-if-match)); the
+  header is no field, so the list above does not know it. Both checks of
+  the body run first, so a field the site role may not change is 403
+  whatever `If-Match` says: the revision it names, an old one, `*`, a
+  malformed one, or none, with the same answer each time. Only after that is
+  the header's form checked (400) and the revision compared (412). Secrets
+  stay the admin's, with `If-Match` or without.
 - **Beside the ladder.** `site` is not a step between `operator` and
   `admin`. `auth.Role.Allows` says that it includes `read`, `operator` and
   itself and nothing more (`admin` includes it), so a route that needs
@@ -1823,6 +1933,26 @@ the box.
   (`saveRules`: a game setting left empty is left out, every other rule
   goes as it is unless it is removed), which the page tests run with node
   where node is installed.
+- **Saving settings is conditional.** The settings form carries the
+  `revision` of the server it was made from (`data-revision`) and sends it as
+  `If-Match` with its change: first the settings (`PATCH`), then the
+  passwords and tokens (`PUT .../secrets`, if any is typed), the second on
+  the revision the answer to the first gave, so a save does not refuse
+  itself but any other change that came between does. Two admins in two
+  tabs, the page and a website, or the page and a script, cannot overwrite
+  each other. When the API answers 412 `changed` nothing more is sent, no
+  restart is made, and the page shows a notice made of the page's usual
+  parts (a warning, a button; no inline style) that says plainly that the
+  settings changed meanwhile: that nothing was saved, or that the settings
+  were saved and the passwords were not, when they changed between the two
+  calls. Its button loads the page anew (not a reload, which a browser may
+  fill with the values typed before), and the form has `autocomplete="off"`
+  for the same reason: a stale value put back by the browser would be saved
+  over the other admin's change under the new revision. The two calls and
+  the notice's choice are `settingsSave` and `changedNotice` in the script,
+  which the page tests run with node where node is installed. The other forms
+  of the page that change settings (the backup policy and the timed
+  restarts, which send one small field each) send no `If-Match`.
 - **Updates, builds and backups.** What these screens show is made from
   what the API returns, with a few values worked out from it in
   `internal/page` (no endpoint, answer or action was added for them).
@@ -2253,7 +2383,21 @@ fake, and nowhere else.
   instance with an announcements or problem report token set has a
   `secrets.json` that older releases cannot read: clear its tokens first
   (`esm secret <name> announcements-token --clear`, and the same for
-  `problem-report-token`).
+  `problem-report-token`). Nothing of the revisions needs an edit: an
+  older release reads every `instance.json` this one writes.
+- **An older release does not count its changes.** A release from before
+  revisions ignores an instance's `revision` file and does not add to it, and
+  so does an edit of `instance.json` by hand. After going back to one and
+  forward again, an instance it changed has the revision it had, and a client
+  that kept a tag from before could name it. A panel that reads after ESM
+  was replaced is not caught by this.
+- **A revision starts again with a new instance.** An instance that is
+  deleted and made again with the same name is at revision 1 again, so a
+  client that kept a tag of the old one could name a revision the new
+  instance has. A panel that deletes and makes instances reads after it.
+- **A change without `If-Match` is not conditional.** The condition is
+  opt-in, so a client that does not send it overwrites as before, and the
+  command line sends none.
 - **A stop during a Steam install can take a while.** ESM ends a Steam
   install it is running when it stops, but the copy of the app's files
   into the install work folder only stops between files, so a stop may

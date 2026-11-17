@@ -1,6 +1,11 @@
 {{define "content"}}{{$v := .}}{{$s := .Data.S}}{{$r := .Data.More}}
 {{template "tabs" .}}
 {{if not $v.Admin}}<p class="alert info"><strong class="tag">Note</strong> Changing settings needs the admin role. You can look at them here.</p>{{end}}
+{{if $v.Admin}}<div class="alert warn stack" id="changed-meanwhile" role="alert" hidden>
+<p data-changed="all"><strong class="tag">Warning</strong> These settings changed while this page was open: another admin, a website or another tab saved a change. Nothing was saved, so that your save does not overwrite theirs. Reload to see the settings as they are now; what you typed here is lost.</p>
+<p data-changed="part" hidden><strong class="tag">Warning</strong> Your settings were saved, but the passwords were not: the settings changed again in between, by another admin, a website or another tab. Reload to see the settings as they are now, then set the passwords again.</p>
+<button type="button" class="btn" data-act="reload-settings">Reload the settings</button>
+</div>{{end}}
 <nav aria-label="Setting groups">
 <ul class="jump">
 <li><a href="#basics">Basics</a></li>
@@ -12,7 +17,7 @@
 </ul>
 </nav>
 <div class="split">
-<form class="groups grow" id="settings" data-form="settings" data-name="{{$s.Name}}" novalidate>
+<form class="groups grow" id="settings" data-form="settings" data-name="{{$s.Name}}" data-revision="{{$s.Revision}}" autocomplete="off" novalidate>
 <fieldset class="panel" id="basics"{{if not $v.Admin}} disabled{{end}}>
 <legend class="label">Basics</legend>
 <div class="grid two">
