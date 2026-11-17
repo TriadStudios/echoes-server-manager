@@ -1113,10 +1113,12 @@ service unit runs, because the new binary may not run at all:
 1. The update writes `<binary>.update.pending` (JSON `from`, `to`, `time`;
    a file of its own moved over the name) after it has kept the old binary
    as `<binary>.previous` and before the new binary goes in place, so a
-   pending file always has a `.previous` to go with it. The same call
-   removes the `.update.starts` and `.update.rolledback` of earlier updates.
-   It is written by the update itself, so `esm update-self` and the API
-   both do it; not on Windows, which has no unit.
+   pending file always has a `.previous` to go with it. Once the new binary
+   is in place (and not before: an update that fails first keeps the last
+   record), `release.Placed` removes the `.update.starts` and
+   `.update.rolledback` of earlier updates. It is written by the update
+   itself, so `esm update-self` and the API both do it; not on Windows,
+   which has no unit.
 2. The unit of `esm service install` has `ExecStartPre=-/bin/sh
    <binary>.update.sh <binary>` (and `StartLimitIntervalSec=0`, with
    `Restart=always` and `RestartSec=5`, so that systemd keeps starting a
@@ -1124,7 +1126,14 @@ service unit runs, because the new binary may not run at all:
    (plain POSIX sh, written next to the binary by `esm service install`,
    and not text inside the unit, whose quoting rules would make a script
    of several lines fragile), does nothing at all when the pending file is
-   missing. Otherwise it appends a line to `<binary>.update.starts` and
+   missing. If `.previous` is the binary that is there already (the same
+   file, tested with `-ef`, or a copy with the same bytes, tested with
+   `cmp -s`), the update never got its new binary in place; the mark is
+   stale, there is nothing to put back (a file cannot replace itself, and
+   GNU `mv` fails on it) and it must not outlive a binary put there by hand,
+   so the script removes the pending and start files at once, at any start,
+   and changes no binary. Otherwise it appends a line to
+   `<binary>.update.starts` and
    counts the lines. At the 3rd (`release.RollbackStarts`) it links the new
    binary to `<binary>.failed` (a copy if links fail), moves `.previous`
    over `<binary>` in one step, writes `<binary>.update.rolledback` (the
@@ -1140,7 +1149,15 @@ service unit runs, because the new binary may not run at all:
    in place itself (it is on its way out), and not one that is the
    `from` of the pending file while another version is its `to` (an ESM that
    was started a moment before `esm update-self` ran; its timer must not
-   confirm an update that has not run yet).
+   confirm an update that has not run yet). The same ESM, whatever it is,
+   also removes a stale mark: when `.previous` is the binary at the path
+   (`release.SameAsPrevious`: the same file, or the same bytes) the update
+   never got its new binary in place, as in step 2.
+   Every ESM start also rewrites `<binary>.update.sh` when it is there and
+   differs from the script built into the ESM
+   (`svcunit.RefreshScript`, atomically, never making one that is not
+   there), so a self-update, which replaces the binary only, also updates
+   the script that goes with it.
 4. The ESM that starts after a rollback finds `.update.rolledback`, writes
    one audit entry (`box.self_update_rollback`, actor `system`/`esm`, target
    `esm <failed version> to <restored version>`, `ok` true) and one warning
@@ -2104,10 +2121,12 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   end that process first.
   An update that is killed in the moment between keeping the old binary
   and moving the new one in place leaves the pending file (see
-  [Trust](#trust)) next to a `.previous` that is the running binary. The
-  ESM that goes on running is the old side of that update and does not
-  confirm it, so at the third start after that the script puts the
-  identical binary back and a rollback is reported that changed nothing.
+  [Trust](#trust)) next to a `.previous` that is the binary that is there.
+  That mark is stale, and it is removed without a rollback: by the
+  service unit's script at the next start, whichever start it is, and,
+  where there is no script, by an ESM that finds it 30 seconds after it
+  started. Until then the pending file stays; a service that has run for
+  days does not look at it again.
 - **A forced self-update takes an older release.** With `force` (admins
   only), ESM takes the release that the release list names as the newest
   even when it is older than the running ESM, as long as its signature
