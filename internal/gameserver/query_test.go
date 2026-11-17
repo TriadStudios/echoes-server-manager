@@ -279,17 +279,57 @@ func TestQueryInfoSlowServerAnswersEveryCopy(t *testing.T) {
 	}
 }
 
-func TestQueryInfoFailures(t *testing.T) {
-	// A server that only ever asks for a challenge is given up on.
+// A server that only ever asks for a challenge, a new one each time, is given
+// up on after two challenges answered: the request, and one more for each
+// challenge, three in all. Only a wait that lasted a resend interval can add
+// a request, so a query that took less than that sent exactly three; however
+// long it took, it sent three different ones.
+func TestQueryInfoEndlessChallenges(t *testing.T) {
 	port, seen := queryServer(t, func(_ []byte, n int) []byte { return ChallengeReply([4]byte{byte(n), 0, 0, 0}) })
-	if _, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port); !errors.Is(err, ErrQueryChallenges) {
+	start := time.Now()
+	_, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port)
+	took := time.Since(start)
+	if !errors.Is(err, ErrQueryChallenges) {
 		t.Fatalf("endless challenges: %v", err)
 	}
-	if n := len(seen()); n < maxChallenges+1 {
-		t.Fatalf("%d requests for endless challenges", n)
+	reqs := seen()
+	if n := len(distinct(reqs)); n != maxChallenges+1 {
+		t.Fatalf("%d different requests for endless challenges, want %d: %q", n, maxChallenges+1, reqs)
 	}
+	if took < maxResend && len(reqs) != maxChallenges+1 {
+		t.Fatalf("%d requests for endless challenges in %s, want %d: %q", len(reqs), took, maxChallenges+1, reqs)
+	}
+}
+
+// A slow server that only ever asks for a challenge is given up on too. The
+// copies of the request sent while it was slow allow a challenge more each,
+// and no more: the first request, each copy, and a request for every
+// challenge answered (the two, and one more for each copy) make at most
+// three plus twice the copies.
+func TestQueryInfoSlowEndlessChallenges(t *testing.T) {
+	port, seen := queryServer(t, func(_ []byte, n int) []byte {
+		if n == 1 {
+			// The copies of the request that follow wait in the socket.
+			time.Sleep(700 * time.Millisecond)
+		}
+		return ChallengeReply([4]byte{byte(n), 0, 0, 0})
+	})
+	if _, err := QueryInfo(queryCtx(t, 4*time.Second), "127.0.0.1", port); !errors.Is(err, ErrQueryChallenges) {
+		t.Fatalf("endless challenges from a slow server: %v", err)
+	}
+	reqs := seen()
+	resends := len(reqs) - len(distinct(reqs))
+	if resends < 1 {
+		t.Fatalf("the request was not sent again while the server was slow: %q", reqs)
+	}
+	if limit := maxChallenges + 1 + 2*resends; len(reqs) > limit {
+		t.Fatalf("%d requests for endless challenges with %d copies, at most %d allowed: %q", len(reqs), resends, limit, reqs)
+	}
+}
+
+func TestQueryInfoFailures(t *testing.T) {
 	// Garbage, a reply longer than a packet, and silence.
-	port, _ = queryServer(t, func([]byte, int) []byte { return []byte("PONG") })
+	port, _ := queryServer(t, func([]byte, int) []byte { return []byte("PONG") })
 	if _, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port); err == nil {
 		t.Fatal("garbage accepted")
 	}
