@@ -23,6 +23,7 @@ import (
 type jobRig struct {
 	*rig
 	tok map[auth.Role]string
+	ids map[auth.Role]string // the ids of the tokens
 
 	mu    sync.Mutex
 	calls int
@@ -36,7 +37,7 @@ type jobRig struct {
 
 func newJobRig(t *testing.T) *jobRig {
 	t.Helper()
-	jr := &jobRig{tok: map[auth.Role]string{}, gate: make(chan struct{}), started: make(chan struct{}, 64)}
+	jr := &jobRig{tok: map[auth.Role]string{}, ids: map[auth.Role]string{}, gate: make(chan struct{}), started: make(chan struct{}, 64)}
 	jr.rig = newRig(t, Options{
 		SelfUpdate: func(ctx context.Context, force, exitAnyway bool) (release.Result, bool, error) {
 			jobs.Step(ctx, "download")
@@ -49,7 +50,7 @@ func newJobRig(t *testing.T) *jobRig {
 			jr.mu.Lock()
 			jr.seen = append(jr.seen, ctx.Err())
 			jr.mu.Unlock()
-			return release.Result{From: "v1.0.0", To: "v1.1.0"}, true, nil
+			return release.Result{From: "v1.0.0", To: "v1.1.0", Binary: "/opt/esm/esm", Previous: "/opt/esm/esm.previous"}, true, nil
 		},
 		SelfUpdateCheck: func(exitAnyway bool) error {
 			if jr.check != nil {
@@ -59,11 +60,11 @@ func newJobRig(t *testing.T) *jobRig {
 		},
 	})
 	for _, r := range []auth.Role{auth.RoleRead, auth.RoleOperator, auth.RoleAdmin, auth.RoleSite} {
-		plain, _, err := jr.auth.CreateToken(string(r), r)
+		plain, tok, err := jr.auth.CreateToken(string(r), r)
 		if err != nil {
 			t.Fatal(err)
 		}
-		jr.tok[r] = plain
+		jr.tok[r], jr.ids[r] = plain, tok.ID
 	}
 	t.Cleanup(func() {
 		select {
@@ -75,10 +76,15 @@ func newJobRig(t *testing.T) *jobRig {
 	return jr
 }
 
-func (jr *jobRig) call(role auth.Role, method, target, body string) *httptest.ResponseRecorder {
+// call sends a request with the token of role, and the further headers named
+// in pairs.
+func (jr *jobRig) call(role auth.Role, method, target, body string, more ...string) *httptest.ResponseRecorder {
 	jr.t.Helper()
 	h := bearer(jr.tok[role])
 	h["Content-Type"] = "application/json"
+	for i := 0; i+1 < len(more); i += 2 {
+		h[more[i]] = more[i+1]
+	}
 	return jr.do(method, target, body, h)
 }
 
@@ -128,7 +134,6 @@ func TestAJobGoesOnWhenItsRequestEnds(t *testing.T) {
 	}
 	<-jr.started
 	cancel() // the client is gone
-	time.Sleep(30 * time.Millisecond)
 	if got := jr.job(j.ID); got.State != jobs.StateRunning || got.Step != "download" {
 		t.Fatalf("the job after its request ended: %+v", got)
 	}
@@ -311,5 +316,154 @@ func TestRedactJob(t *testing.T) {
 	b := redactJob(jobs.Job{Result: instances.Backup{ID: "x"}})
 	if _, ok := b.Result.(instances.Backup); !ok || b.Error != nil {
 		t.Fatalf("redacted backup job: %+v", b)
+	}
+}
+
+// installTargetKind keeps of the source of an install what the read role may
+// see: its kind, the host of an address, a Steam source as it is.
+func TestInstallTargetKind(t *testing.T) {
+	for in, want := range map[string]string{
+		"steam:main":                            "steam:main",
+		" steam:main ":                          "steam:main",
+		"/home/esm/imports/server-1.0":          "folder",
+		"server-1.0":                            "folder",
+		"imports/sub/server-1.0.zip":            "archive",
+		"/home/esm/imports/server.TAR.GZ":       "archive",
+		"build.tgz":                             "archive",
+		"C:\\imports\\server":                   "folder",
+		"STEAM:main":                            "folder",
+		"https://downloads.example.com/a/b.zip": "https://downloads.example.com",
+		"HTTPS://Example.com:8443/x/y.tgz":      "https://Example.com:8443",
+		"http://10.0.0.5/x.zip":                 "http://10.0.0.5",
+		"https:///nohost.zip":                   "url",
+		"":                                      "folder",
+	} {
+		if got := installTargetKind(in); got != want {
+			t.Errorf("installTargetKind(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// What a job carries of the call that started it is the operator role's and
+// above: the read role gets the kind and role of the actor but not its id nor
+// the person it acts for, the kind of source of an install, and no paths of a
+// self-update. The operator, admin and site roles get all of it. The same
+// goes for the events, live and from memory, and for the filter by target.
+func TestTheReadRoleSeesNoAuditDataInAJob(t *testing.T) {
+	jr := newJobRig(t)
+	const who = "jane@example.com"
+	live := jr.bus.Subscribe(events.Filter{Types: []string{events.TypeJob}, Public: true}, 64)
+	defer live.Close()
+	liveFull := jr.bus.Subscribe(events.Filter{Types: []string{events.TypeJob}}, 64)
+	defer liveFull.Close()
+
+	rec := jr.call(auth.RoleSite, "POST", "/api/v1/box/self-update?async=true", `{"force":true}`, ActingUserHeader, who)
+	var j jobs.Job
+	if rec.Code != http.StatusAccepted || json.Unmarshal(rec.Body.Bytes(), &j) != nil || j.Actor.ID != jr.ids[auth.RoleSite] || j.Actor.ActingUser != who {
+		t.Fatalf("start by the site role: %d %s", rec.Code, rec.Body)
+	}
+	<-jr.started
+	close(jr.gate)
+	jr.waitJob(j.ID)
+
+	// Every role reads it; what each sees of it.
+	for _, role := range []auth.Role{auth.RoleRead, auth.RoleOperator, auth.RoleAdmin, auth.RoleSite} {
+		full := role != auth.RoleRead
+		var one jobs.Job
+		rec := jr.call(role, "GET", "/api/v1/jobs/"+j.ID, "")
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &one) != nil {
+			t.Fatalf("%s reads the job: %d %s", role, rec.Code, rec.Body)
+		}
+		var list JobList
+		rec = jr.call(role, "GET", "/api/v1/jobs", "")
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &list) != nil || len(list.Jobs) != 1 {
+			t.Fatalf("%s lists the jobs: %d %s", role, rec.Code, rec.Body)
+		}
+		for where, got := range map[string]jobs.Job{"GET /jobs/{id}": one, "GET /jobs": list.Jobs[0]} {
+			var res SelfUpdateResult
+			if b, _ := json.Marshal(got.Result); json.Unmarshal(b, &res) != nil || res.To != "v1.1.0" || got.Actor.Kind != "token" || got.Actor.Role != "site" || got.Kind != jobs.KindSelfUpdate {
+				t.Errorf("%s, %s: %+v", role, where, got)
+				continue
+			}
+			wantID, wantUser, wantBin, wantPrev := "", "", "", ""
+			if full {
+				wantID, wantUser, wantBin, wantPrev = jr.ids[auth.RoleSite], who, "/opt/esm/esm", "/opt/esm/esm.previous"
+			}
+			if got.Actor.ID != wantID || got.Actor.ActingUser != wantUser || res.Binary != wantBin || res.Previous != wantPrev {
+				t.Errorf("%s, %s: actor %+v, binary %q, previous %q", role, where, got.Actor, res.Binary, res.Previous)
+			}
+		}
+	}
+	// A reader cannot ask for a job by what it hides: the filter by target is
+	// matched against the target as the caller sees it.
+	if rec := jr.call(auth.RoleRead, "GET", "/api/v1/jobs?target=esm", ""); !strings.Contains(rec.Body.String(), j.ID) {
+		t.Fatalf("the reader's list by target: %s", rec.Body)
+	}
+
+	// The events: live to a reader, and from memory, never have what a reader
+	// may not see; the others' have it all.
+	secrets := []string{jr.ids[auth.RoleSite], who, "/opt/esm"}
+	timeout := time.After(10 * time.Second)
+	var readerEvents, fullEvents int
+	for readerEvents < 4 || fullEvents < 4 {
+		select {
+		case e := <-live.C:
+			readerEvents++
+			for _, s := range secrets {
+				if strings.Contains(string(e.Data), s) {
+					t.Errorf("a live job event for a reader has %q: %s", s, e.Data)
+				}
+			}
+		case e := <-liveFull.C:
+			fullEvents++
+			for _, s := range secrets[:2] {
+				if !strings.Contains(string(e.Data), s) {
+					t.Errorf("a job event for the others lacks %q: %s", s, e.Data)
+				}
+			}
+		case <-timeout:
+			t.Fatalf("%d events for a reader, %d for the others", readerEvents, fullEvents)
+		}
+	}
+	replay, _ := jr.bus.Since(0, events.Filter{Types: []string{events.TypeJob}, Public: true})
+	replayFull, _ := jr.bus.Since(0, events.Filter{Types: []string{events.TypeJob}})
+	if len(replay) < 4 || len(replay) != len(replayFull) {
+		t.Fatalf("%d events for a reader in memory, %d for the others", len(replay), len(replayFull))
+	}
+	for i, e := range replay {
+		for _, s := range secrets {
+			if strings.Contains(string(e.Data), s) {
+				t.Errorf("a remembered job event for a reader has %q: %s", s, e.Data)
+			}
+			if !strings.Contains(string(replayFull[i].Data), s) && s != "/opt/esm" {
+				t.Errorf("a remembered job event for the others lacks %q: %s", s, replayFull[i].Data)
+			}
+		}
+		if !strings.Contains(string(e.Data), `"kind":"token"`) || !strings.Contains(string(e.Data), `"role":"site"`) {
+			t.Errorf("a job event for a reader lost the kind and role of the actor: %s", e.Data)
+		}
+	}
+}
+
+// The person that a site token says it acts for is a note that anyone could
+// have written anything in: it is cut and scrubbed as the audit log does it,
+// in the job as well.
+func TestTheActingUserOfAJobIsScrubbed(t *testing.T) {
+	jr := newJobRig(t)
+	close(jr.gate)
+	const secret = "esm_abcdefghijklmnopqrstuv"
+	rec := jr.call(auth.RoleSite, "POST", "/api/v1/box/self-update?async=true", `{"force":true}`, ActingUserHeader, "jane "+secret+" -ServerPassword=hunter2")
+	var j jobs.Job
+	if rec.Code != http.StatusAccepted || json.Unmarshal(rec.Body.Bytes(), &j) != nil {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body)
+	}
+	done := jr.waitJob(j.ID)
+	for what, body := range map[string]string{"the answer": rec.Body.String(), "the job": jr.call(auth.RoleAdmin, "GET", "/api/v1/jobs/"+j.ID, "").Body.String()} {
+		if strings.Contains(body, secret) || strings.Contains(body, "hunter2") || !strings.Contains(body, "esm_********") {
+			t.Errorf("%s has the acting user as written: %s", what, body)
+		}
+	}
+	if strings.Contains(done.Actor.ActingUser, "hunter2") || strings.Contains(jr.auditLog(), "hunter2") || strings.Contains(jr.auditLog(), secret) {
+		t.Errorf("acting user %q, audit log:\n%s", done.Actor.ActingUser, jr.auditLog())
 	}
 }

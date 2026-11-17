@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
+	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
@@ -71,17 +73,64 @@ func redactJob(j jobs.Job) jobs.Job {
 	return j
 }
 
-// showJob returns a job as the caller may see it.
-func (s *Server) showJob(c *call, j jobs.Job) jobs.Job {
-	if c.full() || !s.jobHidden(j) {
-		return j
+// installTargetKind is the target of an install job as the read role sees
+// it: what the audit log records (a folder or an archive in the import
+// folder, an address) is for the operator role and above, and the read role
+// gets the kind of source: "folder" or "archive" for a local one, the scheme
+// and host of an address, and a Steam source as it is (its name is in
+// GET /steam).
+func installTargetKind(target string) string {
+	t := strings.TrimSpace(target)
+	if strings.HasPrefix(t, steam.SourcePrefix) {
+		return t
 	}
-	return redactJob(j)
+	if lower := strings.ToLower(t); strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
+		if u, err := url.Parse(t); err == nil && u.Host != "" {
+			return strings.ToLower(u.Scheme) + "://" + u.Host
+		}
+		return "url"
+	}
+	if builds.IsArchive(t) {
+		return "archive"
+	}
+	return "folder"
 }
 
-// publishJob puts a change of a job on the event stream. Readers get a job
-// of a hidden instance in its redacted form.
-func (s *Server) publishJob(j jobs.Job, restricted bool) {
+// readView is the job as a caller without the operator role sees it. A job
+// carries what the audit log records of the call that started it: who (the
+// id of the login or token, and the person a site token acts for), the
+// source of an install, and, of ESM's own update, the paths of the binary.
+// That is for the operator role and above; the read role gets the kind and
+// role of the actor, the kind of source, and no paths.
+func readView(j jobs.Job) jobs.Job {
+	j.Actor.ID, j.Actor.ActingUser = "", ""
+	if j.Kind == jobs.KindInstall {
+		j.Target = installTargetKind(j.Target)
+	}
+	if r, ok := j.Result.(SelfUpdateResult); ok {
+		r.Binary, r.Previous = "", ""
+		j.Result = r
+	}
+	return j
+}
+
+// showJob returns a job as the caller may see it.
+func (s *Server) showJob(c *call, j jobs.Job) jobs.Job {
+	if c.full() {
+		return j
+	}
+	j = readView(j)
+	if s.jobHidden(j) {
+		j = redactJob(j)
+	}
+	return j
+}
+
+// publishJob puts a change of a job on the event stream. It is always a
+// restricted event: the read role gets the job as readView shows it, and,
+// when hidden says so, with the result and the error redacted too (see
+// redactJob), also when it asks for remembered events later.
+func (s *Server) publishJob(j jobs.Job, hidden bool) {
 	if s.o.Bus == nil {
 		return
 	}
@@ -89,11 +138,11 @@ func (s *Server) publishJob(j jobs.Job, restricted bool) {
 	if jobRunsOnInstance(j.Kind) {
 		instance = j.Target
 	}
-	if restricted {
-		s.o.Bus.PublishRestricted(events.TypeJob, instance, j, redactJob(j))
-		return
+	public := readView(j)
+	if hidden {
+		public = redactJob(public)
 	}
-	s.o.Bus.Publish(events.TypeJob, instance, j)
+	s.o.Bus.PublishRestricted(events.TypeJob, instance, j, public)
 }
 
 // jobEnded writes the audit entry of a job that ended. The call that started
@@ -130,7 +179,9 @@ func (s *Server) ShutdownJobs(ctx context.Context) error { return s.jobs.Close(c
 // startJob starts a job of the call and answers 202 with it. The call has
 // been checked: work is what it does, as a job.
 func (s *Server) startJob(w http.ResponseWriter, c *call, kind, target string, work jobs.Work) error {
-	j, err := s.jobs.Start(jobs.Spec{Kind: kind, Target: target, Actor: c.actor}, work)
+	// What a caller wrote (the name a site token acts for) and the source of
+	// an install are recorded as the audit log records them: cut and scrubbed.
+	j, err := s.jobs.Start(jobs.Spec{Kind: kind, Target: audit.Clean(target), Actor: audit.CleanActor(c.actor)}, work)
 	switch {
 	case errors.Is(err, jobs.ErrClosed):
 		return errStatus(http.StatusServiceUnavailable, "shutting_down", "ESM is shutting down; no job is started")
@@ -146,13 +197,18 @@ func (s *Server) startJob(w http.ResponseWriter, c *call, kind, target string, w
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, c *call) error {
 	q := r.URL.Query()
-	f := jobs.Filter{State: q.Get("state"), Target: q.Get("target")}
+	f := jobs.Filter{State: q.Get("state")}
 	if f.State != "" && !jobs.ValidState(f.State) {
 		return fault.Invalidf("state must be running, done, failed or cancelled")
 	}
-	out := JobList{Jobs: s.jobs.List(f)}
-	for i := range out.Jobs {
-		out.Jobs[i] = s.showJob(c, out.Jobs[i])
+	// The target is matched against the target as the caller sees it, so
+	// that the read role cannot ask whether a folder was installed.
+	target := q.Get("target")
+	out := JobList{Jobs: []jobs.Job{}}
+	for _, j := range s.jobs.List(f) {
+		if j = s.showJob(c, j); target == "" || j.Target == target {
+			out.Jobs = append(out.Jobs, j)
+		}
 	}
 	return writeJSON(w, http.StatusOK, out)
 }

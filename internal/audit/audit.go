@@ -101,6 +101,22 @@ func Scrub(s string) string {
 // clipMark ends a field that was cut.
 const clipMark = "..."
 
+// Clean returns text as an entry records it: cut to MaxField bytes, and
+// scrubbed of what looks like a token or a password. A mask can be longer
+// than what it hides, so it is cut again after scrubbing.
+func Clean(text string) string { return clip(Scrub(clip(text))) }
+
+// CleanActor returns a as an entry records it (see Clean): what a caller
+// wrote, the name a site token acts for among it, never reaches a log, an
+// event or an answer unscrubbed.
+func CleanActor(a Actor) Actor {
+	a.Kind = clip(a.Kind)
+	a.Role = clip(a.Role)
+	a.ID = Clean(a.ID)
+	a.ActingUser = Clean(a.ActingUser)
+	return a
+}
+
 // partialToken is what may be left of an ESM token at the end of a cut
 // field: too short for the token pattern, but still a piece of one.
 var partialToken = regexp.MustCompile(`esm_[A-Za-z0-9_-]*$`)
@@ -126,14 +142,10 @@ func (l *Log) Append(e Entry) error {
 	if e.Time.IsZero() {
 		e.Time = l.now().UTC()
 	}
-	e.Actor.Kind = clip(e.Actor.Kind)
-	e.Actor.Role = clip(e.Actor.Role)
+	e.Actor = CleanActor(e.Actor)
 	e.Action = clip(e.Action)
-	// A mask can be longer than what it hides: cut again after scrubbing.
-	e.Target = clip(Scrub(clip(e.Target)))
-	e.Error = clip(Scrub(clip(e.Error)))
-	e.Actor.ID = clip(Scrub(clip(e.Actor.ID)))
-	e.Actor.ActingUser = clip(Scrub(clip(e.Actor.ActingUser)))
+	e.Target = Clean(e.Target)
+	e.Error = Clean(e.Error)
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err

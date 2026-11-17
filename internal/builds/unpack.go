@@ -24,6 +24,10 @@ const (
 	kindTarGz = "tar.gz"
 )
 
+// IsArchive reports whether a file name is one of an archive that a build
+// is installed from (.zip, .tar.gz or .tgz).
+func IsArchive(name string) bool { return archiveKind(name) != "" }
+
 // archiveKind tells the archive type from a file name, or "".
 func archiveKind(name string) string {
 	n := strings.ToLower(name)
