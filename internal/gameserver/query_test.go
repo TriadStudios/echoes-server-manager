@@ -163,6 +163,19 @@ func queryCtx(t *testing.T, d time.Duration) context.Context {
 	return ctx
 }
 
+// distinct returns the requests without the copies a query sent again
+// right after the request: a server that is slow to answer, as on a busy
+// machine, gets a request more than once.
+func distinct(reqs [][]byte) [][]byte {
+	var out [][]byte
+	for _, r := range reqs {
+		if len(out) == 0 || !bytes.Equal(out[len(out)-1], r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // The probe answers the server's challenge by sending the request again
 // with the challenge appended.
 func TestQueryInfoChallenge(t *testing.T) {
@@ -178,7 +191,7 @@ func TestQueryInfoChallenge(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("info %+v %v", got, err)
 	}
-	reqs := seen()
+	reqs := distinct(seen())
 	if len(reqs) != 2 || !bytes.Equal(reqs[0], InfoRequest(nil)) || !bytes.Equal(reqs[1], InfoRequest(challenge[:])) {
 		t.Fatalf("requests %q", reqs)
 	}
@@ -192,8 +205,77 @@ func TestQueryInfoWithoutChallenge(t *testing.T) {
 	if got, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port); err != nil || got.Map != "TestMap" || got.MaxPlayers != 10 {
 		t.Fatalf("info %+v %v", got, err)
 	}
-	if n := len(seen()); n != 1 {
+	if n := len(distinct(seen())); n != 1 {
 		t.Fatalf("%d requests", n)
+	}
+}
+
+// A request or a reply that is lost does not end the query: the request is
+// sent again, within the time the query has.
+func TestQueryInfoSendsALostRequestAgain(t *testing.T) {
+	want := sampleInfo()
+	challenge := [4]byte{0xde, 0xad, 0xbe, 0xef}
+	withChallenge := func(req []byte) bool {
+		ch, ok := ParseInfoRequest(req)
+		return ok && bytes.Equal(ch, challenge[:])
+	}
+	for name, lost := range map[string]func(req []byte, n int) bool{
+		"the first request": func(req []byte, n int) bool { return n == 1 },
+		"the first two":     func(req []byte, n int) bool { return n <= 2 },
+		"the one with the challenge": func() func([]byte, int) bool {
+			dropped := false
+			return func(req []byte, n int) bool {
+				if withChallenge(req) && !dropped {
+					dropped = true
+					return true
+				}
+				return false
+			}
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			port, seen := queryServer(t, func(req []byte, n int) []byte {
+				switch {
+				case lost(req, n):
+					return nil
+				case withChallenge(req):
+					return InfoReply(want)
+				}
+				return ChallengeReply(challenge)
+			})
+			got, err := QueryInfo(queryCtx(t, 4*time.Second), "127.0.0.1", port)
+			if err != nil || got != want {
+				t.Fatalf("info %+v %v", got, err)
+			}
+			if reqs := seen(); len(reqs) <= len(distinct(reqs)) {
+				t.Fatalf("a lost request was not sent again: %q", reqs)
+			}
+		})
+	}
+}
+
+// A server that is slow answers every copy of a request it got more than
+// once, and those answers are not a server that never stops asking for
+// a challenge.
+func TestQueryInfoSlowServerAnswersEveryCopy(t *testing.T) {
+	want := sampleInfo()
+	challenge := [4]byte{1, 2, 3, 4}
+	port, seen := queryServer(t, func(req []byte, n int) []byte {
+		if n == 1 {
+			// The copies of the request that follow wait in the socket.
+			time.Sleep(700 * time.Millisecond)
+		}
+		if ch, ok := ParseInfoRequest(req); ok && bytes.Equal(ch, challenge[:]) {
+			return InfoReply(want)
+		}
+		return ChallengeReply(challenge)
+	})
+	got, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port)
+	if err != nil || got != want {
+		t.Fatalf("info %+v %v (requests %q)", got, err, seen())
+	}
+	if reqs := seen(); len(reqs) < 3 {
+		t.Fatalf("the request was not sent again while the server was slow: %q", reqs)
 	}
 }
 
@@ -203,7 +285,7 @@ func TestQueryInfoFailures(t *testing.T) {
 	if _, err := QueryInfo(queryCtx(t, 2*time.Second), "127.0.0.1", port); !errors.Is(err, ErrQueryChallenges) {
 		t.Fatalf("endless challenges: %v", err)
 	}
-	if n := len(seen()); n != maxChallenges+1 {
+	if n := len(seen()); n < maxChallenges+1 {
 		t.Fatalf("%d requests for endless challenges", n)
 	}
 	// Garbage, a reply longer than a packet, and silence.
