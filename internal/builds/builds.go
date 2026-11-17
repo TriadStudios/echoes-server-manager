@@ -379,19 +379,37 @@ func (l *localSource) Close() {
 	l.root.Close()
 }
 
+// localPath is the path that a local source names: a relative one is taken
+// from the import folder dir, any other is the path it names, which the
+// caller then finds inside dir or refuses. "Any other" is more than
+// filepath.IsAbs says on Windows, where "/etc" and "\etc" are no absolute
+// paths (they name the root of the current drive) and "C:etc" names a place
+// on a drive, none of them a name below the import folder: a path that
+// starts with a separator or has a volume name is made absolute, as the
+// system does it. On Linux such a path is absolute already. A UNC path
+// (\\server\share\x) is absolute and has a volume name.
+func localPath(dir, source string) (string, error) {
+	if filepath.IsAbs(source) || filepath.VolumeName(source) != "" || (source != "" && os.IsPathSeparator(source[0])) {
+		return filepath.Abs(source)
+	}
+	return filepath.Join(dir, source), nil
+}
+
 // openLocal finds a local source and checks what can be checked of it
 // without reading it: it must lie inside the import folder (a relative path
-// is taken from there), and it is opened through an os.Root on that folder,
-// so neither ".." nor a link can lead out of it. It must be a folder, or a
-// regular archive that is not above the size limit.
+// is taken from there; see localPath for what is not one), and it is opened
+// through an os.Root on that folder, so neither ".." nor a link can lead out
+// of it. What is outside the folder is refused as such, with no word of what
+// is there. It must be a folder, or a regular archive that is not above the
+// size limit.
 func (m *Manager) openLocal(source, wantSHA256 string) (*localSource, error) {
 	dir := m.opts.ImportDir
 	if dir == "" {
 		return nil, m.notAllowed()
 	}
-	abs := source
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(dir, abs)
+	abs, err := localPath(dir, source)
+	if err != nil {
+		return nil, m.notAllowed()
 	}
 	rel, err := filepath.Rel(dir, filepath.Clean(abs))
 	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {

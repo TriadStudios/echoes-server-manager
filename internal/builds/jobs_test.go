@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -116,7 +117,7 @@ func TestCheckInstallAnswersAsInstallDoes(t *testing.T) {
 		{"an address without sha256", "https://example.invalid/a.zip", "", "invalid"},
 		{"an address with user information", "https://u:p@example.invalid/a.zip", strings.Repeat("0", 64), "invalid"},
 		{"an address of no archive", "https://example.invalid/a.exe", strings.Repeat("0", 64), "invalid"},
-		{"outside the import folder", "/", "", "source_not_allowed"},
+		{"outside the import folder", filepath.Join(t.TempDir(), "outside"), "", "source_not_allowed"},
 		{"a folder that is not there", "nothing-here", "", "invalid"},
 		{"a sha256 for a folder", folder, strings.Repeat("0", 64), "invalid"},
 		{"a file that is no archive", folder + "/manifest.json", "", "invalid"},

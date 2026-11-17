@@ -21,6 +21,45 @@ import (
 // decodeJob reads the job that a job event carries.
 func decodeJob(e events.Event, j *jobs.Job) bool { return json.Unmarshal(e.Data, j) == nil }
 
+// jobStrings are all the strings of a JSON text, decoded: the keys and the
+// values at any depth. A path is looked for in them, not in the text of the
+// JSON, where a path of Windows has each of its backslashes doubled.
+func jobStrings(raw []byte) []string {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(x any)
+	walk = func(x any) {
+		switch t := x.(type) {
+		case string:
+			out = append(out, t)
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range t {
+				out = append(out, k)
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+// anyHas says that one of the strings holds sub.
+func anyHas(strs []string, sub string) bool {
+	for _, s := range strs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // tokenID is the id of a token, as the token itself says it.
 func (h *harness) tokenID(token string) string {
 	h.t.Helper()
@@ -155,8 +194,12 @@ func TestTheReadRoleSeesNoAuditDataInJobs(t *testing.T) {
 				continue
 			}
 			n++
+			// What the events say is looked at as the strings that the JSON
+			// holds, not as its text: a path with backslashes (Windows) is
+			// written in it with each of them doubled.
+			strs := jobStrings(e.Data)
 			for _, s := range hidden {
-				if strings.Contains(string(e.Data), s) {
+				if anyHas(strs, s) {
 					t.Errorf("a job event on the %s stream has %q: %s", name, s, e.Data)
 				}
 			}
@@ -168,14 +211,14 @@ func TestTheReadRoleSeesNoAuditDataInJobs(t *testing.T) {
 			t.Errorf("%d job events on the %s stream", n, name)
 		}
 	}
-	var all strings.Builder
+	var all []string
 	for _, e := range admins.all() {
 		if e.Type == events.TypeJob {
-			all.Write(e.Data)
+			all = append(all, jobStrings(e.Data)...)
 		}
 	}
 	for _, s := range []string{siteID, adminID, who, dir, exe, "three.tar.gz", address.Path} {
-		if !strings.Contains(all.String(), s) {
+		if !anyHas(all, s) {
 			t.Errorf("the admin's job events lack %q", s)
 		}
 	}

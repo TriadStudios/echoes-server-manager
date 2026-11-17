@@ -112,8 +112,11 @@ func TestTheReadRoleSeesNoPathInTheErrorOfAFailedInstallOrSelfUpdate(t *testing.
 			if e.Type != events.TypeJob {
 				continue
 			}
+			// As the strings the JSON holds, not as its text, where a path of
+			// Windows has each backslash doubled.
+			strs := jobStrings(e.Data)
 			for _, c := range cases {
-				if strings.Contains(string(e.Data), c.path) {
+				if anyHas(strs, c.path) {
 					t.Errorf("an event on the %s stream names %q: %s", name, c.path, e.Data)
 				}
 			}

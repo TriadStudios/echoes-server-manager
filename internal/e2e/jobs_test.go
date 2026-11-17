@@ -515,7 +515,13 @@ func TestAsyncInstallOfAFolder(t *testing.T) {
 		{"plain http", api.InstallRequest{Source: "http://example.invalid/b.tar.gz", SHA256: strings.Repeat("0", 64)}, "invalid"},
 		{"an address with no sha256", api.InstallRequest{Source: "https://example.invalid/b.tar.gz"}, "invalid"},
 		{"an address of no archive", api.InstallRequest{Source: "https://example.invalid/b.exe", SHA256: strings.Repeat("0", 64)}, "invalid"},
-		{"a place outside the import folder", api.InstallRequest{Source: "/etc"}, "source_not_allowed"},
+		// What is outside the import folder, as this system writes it: an
+		// absolute path elsewhere, a path that starts with a slash (an absolute
+		// path on Linux, the root of the drive on Windows, where it is no
+		// absolute path), and a path that goes up.
+		{"an absolute path outside the import folder", api.InstallRequest{Source: filepath.Join(t.TempDir(), "outside")}, "source_not_allowed"},
+		{"a path that starts with a slash", api.InstallRequest{Source: "/etc"}, "source_not_allowed"},
+		{"a path that goes up", api.InstallRequest{Source: filepath.Join("..", "outside")}, "source_not_allowed"},
 		{"a folder that is not there", api.InstallRequest{Source: "nothing-here"}, "invalid"},
 		{"a sha256 for a folder", api.InstallRequest{Source: "2.0", SHA256: strings.Repeat("0", 64)}, "invalid"},
 		{"a file that is no archive", api.InstallRequest{Source: "2.0/manifest.json"}, "invalid"},
