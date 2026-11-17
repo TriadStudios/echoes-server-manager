@@ -371,7 +371,10 @@ and four calls more:
   `channel`. A call that names any other field (`extra_args`, `limits`,
   `bind_ip`, `ports`, `secret_delivery`, `build`, or one added later) is
   403 naming it, and changes nothing: those reach the server's command line
-  or the box, and stay the admin's;
+  or the box, and stay the admin's. To change the rules without
+  overwriting a change made meanwhile, send the call with `If-Match` (see
+  [Changing a server's settings without overwriting a
+  change](#changing-a-servers-settings-without-overwriting-a-change));
 - install a build from a Steam source of `esm.json`, and only from one:
   `{"source": "steam:<name>"}` (`POST /api/v1/builds`). A folder, an archive
   or an https address is a program that runs with ESM's own rights, and
@@ -405,6 +408,73 @@ a `site` token (from any other caller the header is not looked at). A name
 that is too long or has a control character is refused with 400, and the
 call is not made. The website must keep the token to itself and enforce its
 employees' rights itself; whoever has the token has the site role.
+
+### Changing a server's settings without overwriting a change
+
+`PATCH /api/v1/instances/<name>` replaces the whole `rules` map with the one
+it is sent. A panel that reads the rules, adds one and writes them all back
+would overwrite a rule that someone set on the web page, or from another
+panel, in between. To rule that out, every server has a `revision`: a
+whole number, 1 when the server is made, that grows by 1 with every stored
+change of its settings: a `PATCH` (also one that sets nothing), new
+passwords or tokens, and a switch of the build by an update, a rollback or
+an automatic update. `GET /api/v1/instances` and `GET
+/api/v1/instances/<name>` show it as `revision`; the calls that give or
+change one server also send it as the `ETag` header (`"7"`, a strong tag).
+A `PATCH`, or a `PUT .../secrets`, sent with `If-Match: "<revision>"` is
+made only if the server is still at that revision. That is the way for a
+panel to change the rules safely:
+
+1. **Read** the server (`GET /api/v1/instances/<name>`). Keep its `ETag` and
+   its `rules`.
+2. **Merge**: put your change into the rules you read, and keep all the
+   others as they are (the map replaces the one stored).
+3. **Write** the whole merged map with the `ETag` as `If-Match`.
+4. On **412**, with the error code `changed`, someone changed the server's
+   settings after step 1. Nothing was done, and the message says the
+   revision it is at now. Go back to step 1: read, merge on what is there
+   now, write. On 200 the change is made, and its answer has the new
+   `revision` and `ETag`, so the next change can go on from it without
+   reading again.
+
+```sh
+# 1. read: the ETag header and the rules
+curl -si --cacert api-listener.crt --pinnedpubkey "$PIN" -H "Authorization: Bearer $ESM_TOKEN" \
+  https://esm.example.com:8743/api/v1/instances/alpha
+# HTTP/1.1 200 OK
+# ETag: "7"
+# {"name":"alpha", ..., "rules":{"HarvestRate":"2","MOTD":"Welcome"}, ..., "revision":7, ...}
+
+# 3. write the merged map, if the server is still at revision 7
+curl -s --cacert api-listener.crt --pinnedpubkey "$PIN" -X PATCH \
+  -H "Authorization: Bearer $ESM_TOKEN" -H "Content-Type: application/json" -H 'If-Match: "7"' \
+  -d '{"rules": {"HarvestRate": "2", "MOTD": "Welcome", "PvP": "True"}}' \
+  https://esm.example.com:8743/api/v1/instances/alpha
+# 412: {"error":{"code":"changed","message":"the settings of instance alpha changed since they were read: they are at revision 8 now, and this change was made for revision 7; read them again and make the change anew"}}
+```
+
+- Without `If-Match` a call is made as before (the last one wins), and
+  `If-Match: *` means any revision. `If-Match` is read on these two calls
+  only; it must be `*` or one revision in double quotes, and anything else
+  (a list, a weak tag, the header twice, a number without quotes) is 400
+  `bad_if_match`.
+- The check and the change are made under the one lock of the server, so of
+  several changes made for the same revision at the same time exactly one
+  is made and the others are 412.
+- A `site` token is held to its fields first: a body with a field it may
+  not change is 403 whatever `If-Match` says, and the answer is the same
+  whether the revision matches or not. Then the form of `If-Match` is
+  checked (400), then the revision (412), then the change itself (422 or
+  409).
+- The web page's settings form sends the revision it showed, so two admins
+  in two tabs cannot overwrite each other: the second save is refused with
+  a notice that the settings changed meanwhile, and a button that loads
+  them again. The command line does not send `If-Match`: `esm secret` and
+  `esm update` make their change as they always did, and each adds 1 to the
+  revision, so a panel that read before it is told with 412.
+- An ESM from before revisions does not read an `instance.json` that holds
+  a `revision` (it refuses unknown fields): remove that line from the
+  instance files before going back to one.
 
 ### Linux: keep servers running
 
@@ -666,7 +736,11 @@ whether players can reach the box from outside), the page says so. A
 server's settings screen has a field for every game setting ESM knows by
 name (see [Game settings](#game-settings)), grouped, each with a one-line
 help and, under "More", the rest of it with its range and default; an
-empty field leaves the setting to the game. A server's Overview has an
+empty field leaves the setting to the game. Saving is made on the revision
+the screen showed (see [Changing a server's settings without overwriting a
+change](#changing-a-servers-settings-without-overwriting-a-change)): when
+the settings were changed meanwhile, nothing is saved and the screen says so,
+with a button to load them again. A server's Overview has an
 Update card (its build, the newer one when its Steam source has one, and
 one status: up to date, update available, waiting, failed, or a new build
 checked at the next start), and the Dashboard shows the same status for
