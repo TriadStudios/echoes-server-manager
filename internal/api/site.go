@@ -1,7 +1,12 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -70,4 +75,84 @@ func (c *call) adminOnlyIf(asked bool, msg string) error {
 		return errStatus(http.StatusForbidden, "forbidden", "%s", msg)
 	}
 	return nil
+}
+
+// sitePatchFields are the fields of a change call (PATCH
+// /instances/{name}) that the site role may send: what a panel needs to
+// look after a server. It is an allow list, so a field added to the change
+// request later is refused to the site role until it is put here (a test
+// fails until every field of the request is classified). The fields that
+// reach the server's command line or its host (extra_args, limits,
+// bind_ip, ports, secret_delivery) and the build (changed by an update)
+// are not on it. Names are the JSON keys exactly as written; admins are
+// not limited by it.
+var sitePatchFields = map[string]bool{
+	"display_name":     true,
+	"max_players":      true,
+	"listed":           true,
+	"rules":            true,
+	"auto_update":      true,
+	"update_max_wait":  true,
+	"autostart":        true,
+	"restart_on_crash": true,
+	"schedule":         true,
+	"backup":           true,
+	"map":              true,
+	"world":            true,
+	"cluster":          true,
+	"channel":          true,
+}
+
+// limitPatch refuses with 403 a change call that names a field the site
+// role may not change, whatever its value (null too), before anything is
+// decoded or changed. It looks at the keys the caller wrote, exactly: a
+// key that is not on sitePatchFields is refused, also when it would only
+// differ in case, or is not a field at all. The body is left to be read
+// again. A caller with the admin role is not limited; a body that is not a
+// JSON object is left to decode, which answers 400.
+func (c *call) limitPatch(r *http.Request) error {
+	if c.role.Allows(auth.RoleAdmin) {
+		return nil
+	}
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(b, &keys) != nil {
+		return nil
+	}
+	var no []string
+	for k := range keys {
+		if !sitePatchFields[k] {
+			no = append(no, k)
+		}
+	}
+	if len(no) == 0 {
+		return nil
+	}
+	slices.Sort(no)
+	const most = 5
+	if len(no) > most {
+		no = append(no[:most], "...")
+	}
+	for i, k := range no {
+		no[i] = shorten(k, 40)
+	}
+	may := make([]string, 0, len(sitePatchFields))
+	for k := range sitePatchFields {
+		may = append(may, k)
+	}
+	slices.Sort(may)
+	return errStatus(http.StatusForbidden, "forbidden",
+		"the site role may not change %s; it may change %s", strings.Join(no, ", "), strings.Join(may, ", "))
+}
+
+// shorten cuts s to at most n characters, and marks the cut.
+func shorten(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "..."
 }

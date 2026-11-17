@@ -452,3 +452,73 @@ func TestCLITokenCreateSite(t *testing.T) {
 		t.Fatalf("token create without a role: %d %q %q", code, out, errOut)
 	}
 }
+
+// A site token changes what a panel needs of a server (its name, players,
+// rules, update and backup settings, the schedule and the like) and
+// nothing that reaches the server's command line or its host: the call
+// that names such a field, whatever the value, is refused with 403 that
+// names it, and changes nothing, not even the fields beside it. An admin
+// still changes them.
+func TestSiteTokenChangesOnlyWhatAPanelNeeds(t *testing.T) {
+	t.Parallel()
+	h := newESM(t)
+	site := h.token("site")
+	h.install(testkit.BuildOptions{Version: "1.0"})
+	h.create("alpha", "1.0", fastRules(nil))
+	const path = "/api/v1/instances/alpha"
+	raw := func() string {
+		var b json.RawMessage
+		h.must(http.StatusOK, "GET", path, nil, &b)
+		return string(b)
+	}
+
+	for _, body := range []map[string]any{
+		{"display_name": "Alpha Realm"}, {"max_players": 15}, {"listed": false}, {"rules": fastRules(map[string]string{"Banner": "Hello"})},
+		{"auto_update": "install"}, {"update_max_wait": "2h"}, {"autostart": true}, {"restart_on_crash": false},
+		{"schedule": map[string]any{"restart_at": []string{"04:00"}}}, {"backup": map[string]any{"every": "1h", "keep": 5}},
+		{"map": testkit.DefaultMap}, {"world": "alpha2"}, {"cluster": "main"}, {"channel": "live"},
+	} {
+		var out api.InstanceChange
+		if st := h.call("PATCH", path, site, body, &out); st != http.StatusOK {
+			t.Errorf("site token changes %v: %d", body, st)
+		}
+	}
+	var v instances.View
+	h.must(http.StatusOK, "GET", path, nil, &v)
+	if v.DisplayName != "Alpha Realm" || v.MaxPlayers != 15 || v.Listed || v.Rules["Banner"] != "Hello" || v.AutoUpdate != "install" ||
+		v.UpdateMaxWait.D() != 2*time.Hour || !v.Autostart || v.RestartOnCrash || len(v.Schedule.RestartAt) != 1 || v.Backup.Keep != 5 ||
+		v.Backup.Every.D() != time.Hour || v.Map != testkit.DefaultMap || v.World != "alpha2" || v.Cluster != "main" || v.Channel != "live" {
+		t.Fatalf("after the changes: %+v", v)
+	}
+
+	before := raw()
+	for _, body := range []map[string]any{
+		{"extra_args": []string{"-Verbose"}}, {"limits": map[string]any{"memory_max": "4G"}}, {"bind_ip": "127.0.0.1"},
+		{"ports": map[string]any{"game": 30500, "query": 31500}}, {"secret_delivery": "command_line"}, {"build": "1.0"},
+		{"extra_args": nil}, {"display_name": "Hijacked", "extra_args": []string{"-Verbose"}},
+	} {
+		var eb api.ErrorBody
+		st := h.call("PATCH", path, site, body, &eb)
+		var field string
+		for k := range body {
+			if k != "display_name" {
+				field = k
+			}
+		}
+		if st != http.StatusForbidden || eb.Error.Code != "forbidden" || !strings.Contains(eb.Error.Message, "may not change "+field) ||
+			strings.Contains(eb.Error.Message, "may not change display_name") {
+			t.Errorf("site token changes %v: %d %+v", body, st, eb)
+		}
+	}
+	if after := raw(); after != before {
+		t.Fatalf("a refused change changed the instance:\n%s\n%s", before, after)
+	}
+
+	// An admin is not limited.
+	var out api.InstanceChange
+	h.must(http.StatusOK, "PATCH", path, map[string]any{"extra_args": []string{"-Verbose"}, "bind_ip": "127.0.0.1",
+		"limits": map[string]any{"memory_max": "4G"}}, &out)
+	if len(out.ExtraArgs) != 1 || out.BindIP != "127.0.0.1" || out.Limits.MemoryMax != "4G" {
+		t.Fatalf("admin change: %+v", out.View)
+	}
+}

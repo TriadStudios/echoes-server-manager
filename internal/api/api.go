@@ -173,7 +173,7 @@ type route struct {
 	// of the site role as well, and to that role only (see allows). A route
 	// that needs the operator role or less is open to the site role without
 	// it. A call that is open to the site role in part says so in its
-	// handler (see call.adminOnlyIf).
+	// handler (see call.adminOnlyIf, call.limitPatch).
 	site bool
 }
 
@@ -187,7 +187,7 @@ type Route struct {
 	SocketOnly bool
 	// Site says that a token of the site role passes the endpoint's role
 	// check (a few calls then refuse some of what they are asked for: see
-	// call.adminOnlyIf).
+	// call.adminOnlyIf and call.limitPatch).
 	Site bool
 }
 
@@ -258,6 +258,7 @@ func init() {
 	r("GET", p+"/instances", required, read, "instance.list", (*Server).listInstances)
 	r("POST", p+"/instances", required, admin, "instance.create", (*Server).createInstance)
 	r("GET", p+"/instances/{name}", required, read, "instance.get", (*Server).getInstance)
+	// The site role changes the fields of a panel only (see limitPatch).
 	rs("PATCH", p+"/instances/{name}", required, admin, "instance.change", (*Server).patchInstance)
 	r("DELETE", p+"/instances/{name}", required, admin, "instance.delete", (*Server).deleteInstance)
 	r("PUT", p+"/instances/{name}/secrets", required, admin, "instance.secrets", (*Server).putSecrets)

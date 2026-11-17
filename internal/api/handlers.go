@@ -506,6 +506,9 @@ func (s *Server) getInstance(w http.ResponseWriter, r *http.Request, c *call) er
 func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request, c *call) error {
 	name := r.PathValue("name")
 	c.target = name
+	if err := c.limitPatch(r); err != nil {
+		return err
+	}
 	var req instances.PatchRequest
 	if err := decode(r, &req); err != nil {
 		return err
