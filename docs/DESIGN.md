@@ -1580,15 +1580,14 @@ the box.
   `POST /api/v1/box/release-check`; start, stop, restart, update an
   instance to an installed build, back up, restore, download a backup,
   logs, events) and four calls more: `PATCH /api/v1/instances/{name}`
-  (settings, world rules, `auto_update` and the rest of what an admin
-  changes there), `POST /api/v1/builds` with a Steam source only,
-  `POST /api/v1/builds/prune` and `POST /api/v1/box/self-update` without
-  `exit_anyway`.
+  with the fields of a panel only (below), `POST /api/v1/builds` with a
+  Steam source only, `POST /api/v1/builds/prune` and
+  `POST /api/v1/box/self-update` without `exit_anyway`.
 - **What it may not (403).** Tokens (list, make, revoke), logins, the audit
   log and its events, creating and deleting instances, secrets (passwords
   and tokens of a server), a Steam password, deleting a build, the health
-  check, and the call that only the unix socket answers. Two of the four
-  are open in part. `POST /api/v1/builds` with a folder, an archive or an
+  check, and the call that only the unix socket answers. Three of the four
+  are open in part: `PATCH` (next bullet), `POST /api/v1/builds` with a folder, an archive or an
   https address, which is a program that runs with ESM's own rights (see
   [Builds](#builds)), is refused: only a source `steam:<name>` goes on, and
   that one names a source the admin put in `esm.json`; the check reads the
@@ -1596,8 +1595,25 @@ the box.
   for a folder or an address passes it. And `POST /api/v1/box/self-update`
   with `exit_anyway` true is refused, so that ESM never stays down because
   of the site: the check is on the request that the update then runs with.
-  Both refusals are audit entries (`build.install`, `box.self_update`)
-  like any refused call.
+  Each refusal is an audit entry (`instance.change`, `build.install`,
+  `box.self_update`) like any refused call.
+- **What it may change of a server.** `PATCH /api/v1/instances/{name}` takes
+  these fields from it: `display_name`, `max_players`, `listed`, `rules`,
+  `auto_update`, `update_max_wait`, `autostart`, `restart_on_crash`,
+  `schedule`, `backup`, `map`, `world`, `cluster` and `channel`. A body
+  that has any other key is refused with 403, which names the key (up to
+  five of them) and lists the fields it may change, and nothing in it is
+  changed, those it may change included: `extra_args`, `limits`,
+  `bind_ip`, `ports`, `secret_delivery`, `build` (which is changed by an
+  update), and every field added to the call later. Those reach the
+  server's command line or the box, and stay the admin's. The list is an
+  allow list, `sitePatchFields` in `internal/api/site.go`, matched against
+  the keys exactly as the caller wrote them: a key that only differs in
+  case, is a null, or is no field at all is refused as well, and the
+  check is made before anything is decoded. A test reads the JSON names
+  of the request's fields by reflection and fails until each of them is
+  classified, so that a new field is closed to the site role until
+  someone decides otherwise. An admin is not limited.
 - **Beside the ladder.** `site` is not a step between `operator` and
   `admin`. `auth.Role.Allows` says that it includes `read`, `operator` and
   itself and nothing more (`admin` includes it), so a route that needs
@@ -1605,7 +1621,9 @@ the box.
   the route table (`rs` in `internal/api/api.go`, `Route.Site` in
   `api.Routes()`), and a new route is closed to it unless it needs no more
   than `operator`. A test calls every route with a site token and lists
-  what each answers, so that a new route has to be decided on.
+  what each answers, so that a new route has to be decided on. The Box
+  screen's form that makes a token offers the role, with a hint of what it
+  is for.
 - **The acting user.** A site token may send `X-ESM-Acting-User: <name>`,
   the employee the call is for. ESM writes it in the audit entry of the
   call, refused calls included, as `actor.acting_user` beside the token's

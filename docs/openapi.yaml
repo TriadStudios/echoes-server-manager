@@ -35,7 +35,9 @@ info:
     between `operator` and `admin`: it may do everything `operator` may
     (looking for a newer release with `POST /box/release-check` among it),
     and four calls more, each named `site` in its summary below: `PATCH
-    /instances/{name}`, `POST /builds` with a Steam source only
+    /instances/{name}` with the settings of a panel only (a body with any
+    other key is 403 `forbidden`, naming it), `POST /builds` with a Steam
+    source only
     (`"source": "steam:<name>"`; a folder, an archive or an https source is
     403 `forbidden`), `POST /builds/prune` and `POST /box/self-update`,
     which with `exit_anyway` true is 403 `forbidden`. Everything else that
@@ -569,7 +571,18 @@ paths:
       summary: Change settings (admin or site)
       description: |
         Only the fields sent change. The build is changed with an update,
-        not here. Changes to a running instance take effect at its next
+        not here.
+
+        A token of the `site` role may send only `display_name`,
+        `max_players`, `listed`, `rules`, `auto_update`, `update_max_wait`,
+        `autostart`, `restart_on_crash`, `schedule`, `backup`, `map`,
+        `world`, `cluster` and `channel`. A body that has any other key
+        (`extra_args`, `limits`, `bind_ip`, `ports`, `secret_delivery` and
+        `build` among them, and every field added later; a null, or a key
+        that only differs in case, counts too) is refused with 403
+        `forbidden`, which names the key and lists the fields it may
+        change; nothing is changed, the allowed fields beside it
+        included. An admin may send them all. Changes to a running instance take effect at its next
         start (restart_required is true).
 
         A rule key or an extra argument that looks like a secret is refused

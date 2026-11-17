@@ -314,8 +314,14 @@ update to an installed build, back up, restore, download a backup, read
 logs and events, and looking for a newer ESM release, as every role may),
 and four calls more:
 
-- change an instance's settings, world rules and `auto_update`
-  (`PATCH /api/v1/instances/<name>`);
+- change what a panel needs of an instance (`PATCH /api/v1/instances/<name>`):
+  `display_name`, `max_players`, `listed`, `rules` (the world rules),
+  `auto_update`, `update_max_wait`, `autostart`, `restart_on_crash`,
+  `schedule`, `backup` (the policy), `map`, `world`, `cluster` and
+  `channel`. A call that names any other field (`extra_args`, `limits`,
+  `bind_ip`, `ports`, `secret_delivery`, `build`, or one added later) is
+  403 naming it, and changes nothing: those reach the server's command line
+  or the box, and stay the admin's;
 - install a build from a Steam source of `esm.json`, and only from one:
   `{"source": "steam:<name>"}` (`POST /api/v1/builds`). A folder, an archive
   or an https address is a program that runs with ESM's own rights, and
