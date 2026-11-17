@@ -81,6 +81,9 @@ type Options struct {
 	// RestartedBy says what starts ESM again after it ends, "" for nothing
 	// (default: restartedBy).
 	RestartedBy func() string
+	// UpdateConfirmAfter is how long ESM has to be up before it confirms a
+	// self-update that waits for it (default release.ConfirmAfter).
+	UpdateConfirmAfter time.Duration
 }
 
 // Service is a running ESM.
@@ -122,6 +125,10 @@ type Service struct {
 	releaseOff string
 	// restartedBy says what starts ESM again after it ends ("" nothing).
 	restartedBy func() string
+	// confirm fires confirmAfter after the start: ESM has stayed up, and a
+	// self-update that waits for that is confirmed (see confirmUpdate).
+	confirm      *time.Timer
+	confirmAfter time.Duration
 }
 
 // Start opens the root and starts serving. It fails when the listen rule
@@ -164,9 +171,12 @@ func Start(o Options) (_ *Service, err error) {
 		log.Info("wrote the default config", "path", config.FileName)
 	}
 	s := &Service{cfg: cfg, st: st, log: log, errc: make(chan error, 3), exit: make(chan struct{}), exe: o.Executable, version: o.Version,
-		restartedBy: o.RestartedBy}
+		restartedBy: o.RestartedBy, confirmAfter: o.UpdateConfirmAfter}
 	if s.restartedBy == nil {
 		s.restartedBy = restartedBy
+	}
+	if s.confirmAfter <= 0 {
+		s.confirmAfter = release.ConfirmAfter
 	}
 
 	if s.audit, err = audit.Open(st); err != nil {
@@ -191,6 +201,7 @@ func Start(o Options) (_ *Service, err error) {
 	}
 	s.bus = events.NewBus(4096)
 	s.audit.SetNotify(func(e audit.Entry) { s.bus.Publish(events.TypeAudit, "", e) })
+	lastUpdate := s.noteRollback()
 
 	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, Logger: log}); err != nil {
 		return nil, err
@@ -260,7 +271,7 @@ func Start(o Options) (_ *Service, err error) {
 		Started: time.Now(), KeepAlive: o.KeepAlive, PortHost: o.PortHost,
 		BodyTimeout: o.BodyTimeout, WriteTimeout: o.WriteTimeout, FailDelay: o.FailDelay,
 		Listen: s.tcp.Addr().String(), PublicHosts: cfg.PublicHosts, APIListener: s.apiInfo,
-		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate,
+		Steam: s.steam, Release: checker, SelfUpdate: s.selfUpdate, LastSelfUpdate: lastUpdate,
 		Page: func(apiHandler http.Handler) http.Handler { return page.NewWithLogger(apiHandler, log) },
 	})
 	errLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
@@ -286,7 +297,98 @@ func Start(o Options) (_ *Service, err error) {
 	if !s.sup.LimitsEnforced() {
 		log.Warn("memory and CPU limits are not enforced in process mode")
 	}
+	// Listeners are bound and serving: once ESM has stayed up for a while, a
+	// self-update that waits for it is confirmed.
+	s.confirm = time.AfterFunc(s.confirmAfter, s.confirmUpdate)
 	return s, nil
+}
+
+// executable is the binary a self-update replaces: Options.Executable, or
+// the running one with its symbolic links resolved (like esm update-self, so
+// both use the same lock and marker files).
+func (s *Service) executable() (string, error) {
+	if s.exe != "" {
+		return s.exe, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exe)
+}
+
+// confirmUpdate runs when ESM has been up for confirmAfter. If a self-update
+// waits for that (the pending file next to the binary; see release.MarkPending),
+// it is confirmed: the pending file and the start lines are removed, and the
+// service unit no longer puts the old binary back. It does nothing in an ESM
+// that put a new binary in place itself, which is the old side of that
+// update, nor when the pending file names an update that this ESM is the
+// old side of (see release.ConfirmUpdate).
+func (s *Service) confirmUpdate() {
+	s.updating.Lock()
+	updated := s.updated
+	s.updating.Unlock()
+	if updated {
+		return
+	}
+	exe, err := s.executable()
+	if err != nil {
+		return
+	}
+	switch cleared, err := release.ConfirmUpdate(exe, s.version); {
+	case err != nil:
+		s.log.Warn("cannot confirm the self-update: the old binary may be put back at a later start", "err", err)
+	case cleared:
+		s.log.Info("ESM stayed up; the self-update to this version is confirmed", "version", s.version)
+	}
+}
+
+// rollbackSeenFile (in the root) remembers which rollback was reported, so
+// that each is written to the audit log once, however often ESM starts.
+const rollbackSeenFile = "self-update.json"
+
+type rollbackSeen struct {
+	RolledBackAt string `json:"rolled_back_at"`
+}
+
+// noteRollback looks for the record the service unit leaves when it put the
+// old binary back after a self-update that did not come up (see
+// release.ReadRolledBack). The first start after a rollback writes the audit
+// entry and a warning to the log; every start returns the record for GET /box
+// (nil when there is none).
+func (s *Service) noteRollback() *api.SelfUpdateRecord {
+	exe, err := s.executable()
+	if err != nil {
+		return nil
+	}
+	rb, ok, err := release.ReadRolledBack(exe)
+	if !ok {
+		return nil
+	}
+	if err != nil {
+		s.log.Warn("cannot read the record of a rolled back self-update", "err", err)
+	}
+	rec := &api.SelfUpdateRecord{From: rb.From, To: rb.To, Time: rb.When().UTC(), RolledBack: true}
+	key := rec.Time.Format(time.RFC3339)
+	var seen rollbackSeen
+	if s.st.ReadJSON(rollbackSeenFile, &seen) == nil && seen.RolledBackAt == key {
+		return rec
+	}
+	target := "esm"
+	if rec.To != "" && rec.From != "" {
+		target = "esm " + rec.To + " to " + rec.From
+	}
+	s.log.Warn("a self-update did not come up and was rolled back: the old binary is back", "from", rec.From, "to", rec.To,
+		"rolled_back_at", key, "failed_binary", exe+release.FailedSuffix)
+	e := audit.Entry{Actor: audit.Actor{Kind: audit.ActorSystem, ID: "esm"}, Action: "box.self_update_rollback", Target: target, OK: true}
+	if aerr := s.audit.Append(e); aerr != nil {
+		s.log.Error("cannot write the audit log", "err", aerr)
+		return rec
+	}
+	if werr := s.st.WriteJSON(rollbackSeenFile, rollbackSeen{RolledBackAt: key}, 0o600); werr != nil {
+		s.log.Warn("cannot remember that the rollback was reported", "err", werr)
+	}
+	return rec
 }
 
 // steamInstalled runs after a Steam source installed a new build. The
@@ -450,15 +552,9 @@ func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res r
 	if s.updated {
 		return release.Result{}, false, fmt.Errorf("%w: ESM was updated already and ends in a moment", release.ErrBusy)
 	}
-	exe := s.exe
-	if exe == "" {
-		if exe, err = os.Executable(); err != nil {
-			return release.Result{}, false, err
-		}
-		// Like esm update-self, so both use the same lock file.
-		if exe, err = filepath.EvalSymlinks(exe); err != nil {
-			return release.Result{}, false, err
-		}
+	exe, err := s.executable()
+	if err != nil {
+		return release.Result{}, false, err
 	}
 	res, err = s.rel.Update(ctx, s.version, exe, runtime.GOOS, runtime.GOARCH, force)
 	if err != nil {
@@ -488,6 +584,9 @@ func (s *Service) selfUpdate(ctx context.Context, force, exitAnyway bool) (res r
 func (s *Service) Shutdown(ctx context.Context) error {
 	var err error
 	s.once.Do(func() {
+		if s.confirm != nil {
+			s.confirm.Stop()
+		}
 		s.bus.Close()
 		// All listeners stop taking requests at once, and each waits for
 		// its own requests to end.

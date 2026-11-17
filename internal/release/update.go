@@ -24,7 +24,8 @@ type Result struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	// Binary is the path of the replaced binary, Previous where the old one
-	// was kept (to roll back: move it back over Binary).
+	// was kept (to roll back by hand: move it back over Binary; the service
+	// unit does that when the new ESM does not come up).
 	Binary   string `json:"binary"`
 	Previous string `json:"previous"`
 }
@@ -55,7 +56,10 @@ const LockStale = 15 * time.Minute
 // goos/goarch. The release's SHA256SUMS must carry a valid signature by the
 // built-in key and list that binary with the hash it has. The new binary is
 // written next to exe and moved in place; the old one is kept as
-// exe+".previous". Unless force is set, only a newer release is taken.
+// exe+".previous". Unless force is set, only a newer release is taken. On
+// Linux the update is also marked as not confirmed yet (MarkPending): the
+// new ESM confirms it once it has been up for ConfirmAfter, and the service
+// unit puts the old binary back when it does not come up.
 //
 // While it runs, the update holds the lock file exe+LockSuffix, so a second
 // update of the same binary, from this process or another (the command line
@@ -126,8 +130,16 @@ func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, 
 	if err != nil {
 		return Result{}, fmt.Errorf("release %s: %w", r.Tag, err)
 	}
-	prev := exe + ".previous"
-	if err := swap(exe, tmp, prev); err != nil {
+	prev := exe + PreviousSuffix
+	// On Linux the update is marked pending just before the new binary goes
+	// in place (see MarkPending): the service unit puts the old binary back
+	// when the new one does not come up. Not on Windows, which has no such
+	// unit.
+	var mark func() error
+	if goos == "linux" {
+		mark = func() error { return MarkPending(exe, Marker{From: current, To: list.Version, Time: time.Now().UTC()}) }
+	}
+	if err := swap(exe, tmp, prev, mark); err != nil {
 		os.Remove(tmp)
 		return Result{}, err
 	}
@@ -173,7 +185,13 @@ func (c *Client) download(ctx context.Context, raw, exe, want string) (string, e
 // exe, so exe never goes missing. Windows cannot replace a running
 // program's file but can rename it, so there the old one is renamed to
 // prev first (and back again if the second step fails).
-func swap(exe, tmp, prev string) error {
+//
+// mark, when set, runs on Linux after the old binary is kept and before the
+// new one goes in place: the update is marked pending only when the old
+// binary is there to be put back, and not at all when the new one never
+// gets in place (a failing mark ends the update with the old binary where it
+// was).
+func swap(exe, tmp, prev string, mark func() error) error {
 	if err := os.Remove(prev); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove the old %s: %w", prev, err)
 	}
@@ -183,7 +201,15 @@ func swap(exe, tmp, prev string) error {
 				return fmt.Errorf("keep the old binary as %s: %w", prev, err)
 			}
 		}
+		if mark != nil {
+			if err := mark(); err != nil {
+				return fmt.Errorf("mark the update as not confirmed yet: %w", err)
+			}
+		}
 		if err := os.Rename(tmp, exe); err != nil {
+			if mark != nil {
+				os.Remove(exe + PendingSuffix)
+			}
 			return fmt.Errorf("move the new binary in place: %w", err)
 		}
 		return nil
