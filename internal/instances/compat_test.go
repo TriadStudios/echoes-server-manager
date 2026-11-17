@@ -115,7 +115,9 @@ func TestCommandLineDelivery(t *testing.T) {
 	}
 	all, _ := r.bus.Since(0, events.Filter{})
 	allRaw, _ := json.Marshal(all)
-	if !strings.Contains(string(allRaw), "Command line: ") || !strings.Contains(string(allRaw), `"reason":"ready (status_file)"`) ||
+	// The reason says which ready source confirmed first; the fake gives
+	// all three at once, so which one that was is up to the timing.
+	if !strings.Contains(string(allRaw), "Command line: ") || !strings.Contains(string(allRaw), `"reason":"ready (`) ||
 		strings.Contains(string(allRaw), serverPW) || strings.Contains(string(allRaw), adminPW) {
 		t.Fatalf("events for an operator: %s", allRaw)
 	}

@@ -66,14 +66,17 @@
 // The query port answers A2S_INFO, the Source server query, only once the
 // server is ready: a request without the server's challenge gets the
 // challenge reply, one with it the info reply (name, map, players, max
-// players). The name there stands for the name the game gives Steam, and
-// the fake takes it from -SteamServerName=, not from -ServerName=, as the
-// game does (gameserver.SteamServerNameSwitch). Without that switch the
-// fake answers with no name: the game would fall back to its engine
-// configuration, which the fake does not have. -ServerName= names its
-// session, in the ready line. Only for tests it also says whether a
-// password is the right one: "JOIN <server password>" and "ADMIN <admin
-// password>" are answered with OK or DENIED.
+// players). A request before that gets no answer at all, so the server
+// reports ready (status file, ready line) only once the port answers:
+// whoever reads either may ask at once. The name in the info reply stands
+// for the name the game gives Steam, and the fake takes it from
+// -SteamServerName=, not from -ServerName=, as the game does
+// (gameserver.SteamServerNameSwitch). Without that switch the fake answers
+// with no name: the game would fall back to its engine configuration,
+// which the fake does not have. -ServerName= names its session, in the
+// ready line. Only for tests it also says whether a password is the right
+// one: "JOIN <server password>" and "ADMIN <admin password>" are answered
+// with OK or DENIED.
 package main
 
 import (
@@ -387,6 +390,11 @@ type server struct {
 	status  gameserver.Status
 	ready   atomic.Bool // the query port answers only once ready
 	players atomic.Int32
+
+	// statusHook, when set, is called with every status just before it is
+	// written, so that a test can look at the server at the moment its
+	// status file starts to say what it says.
+	statusHook func(gameserver.Status)
 }
 
 // logf writes one log line the way the engine does: time and frame in
@@ -509,14 +517,7 @@ func run(args []string) int {
 
 	becomeReady := func() {
 		ready = nil
-		s.status.State = gameserver.StateReady
-		s.writeStatus()
-		s.ready.Store(true)
-		if o.noReadyLine {
-			s.logf("Ready (no ready line on purpose)")
-			return
-		}
-		s.logf("%s", gameserver.ReadyLine(o.serverName, shortMap(o.mapName), o.maxPlayers))
+		s.reportReady()
 	}
 
 	for {
@@ -580,6 +581,22 @@ func run(args []string) int {
 			stop(got.String(), code)
 		}
 	}
+}
+
+// reportReady makes the server ready. The query port starts to answer
+// first: whoever reads the status file or the ready line, ESM or a test,
+// asks the query port at once, and a request that comes before the port
+// answers is lost (the port does not answer it), which leaves a client that
+// asks once without an answer.
+func (s *server) reportReady() {
+	s.ready.Store(true)
+	s.status.State = gameserver.StateReady
+	s.writeStatus()
+	if s.o.noReadyLine {
+		s.logf("Ready (no ready line on purpose)")
+		return
+	}
+	s.logf("%s", gameserver.ReadyLine(s.o.serverName, shortMap(s.o.mapName), s.o.maxPlayers))
 }
 
 // newServerID returns a made-up Steam server id: 17 digits, new each time.
@@ -738,6 +755,9 @@ func copyFile(src, dst string) {
 }
 
 func (s *server) writeStatus() {
+	if s.statusHook != nil {
+		s.statusHook(s.status)
+	}
 	if s.o.noStatusFile {
 		return
 	}
