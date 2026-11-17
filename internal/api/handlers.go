@@ -450,7 +450,11 @@ type Deleted struct {
 type SecretsResult struct {
 	Secrets         instances.SecretFlags `json:"secrets"`
 	RestartRequired bool                  `json:"restart_required"`
-	Warnings        []string              `json:"warnings"`
+	// Revision is the instance's revision after the change (a change of
+	// secrets is one; see instances.Instance.Revision). It is also the
+	// ETag of the answer.
+	Revision int64    `json:"revision"`
+	Warnings []string `json:"warnings"`
 	// UnsafeStoredSettings names the settings of the warning
 	// unsafe_stored_settings.
 	UnsafeStoredSettings []string `json:"unsafe_stored_settings,omitempty"`
@@ -515,6 +519,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request, c *call)
 	if err != nil {
 		return err
 	}
+	setETag(w, v.Revision)
 	return writeJSON(w, http.StatusCreated, InstanceChange{View: c.show(v)})
 }
 
@@ -523,6 +528,7 @@ func (s *Server) getInstance(w http.ResponseWriter, r *http.Request, c *call) er
 	if err != nil {
 		return err
 	}
+	setETag(w, v.Revision)
 	return writeJSON(w, http.StatusOK, c.show(v))
 }
 
@@ -539,10 +545,17 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request, c *call) 
 	if err := c.limitPatched(&req); err != nil {
 		return err
 	}
-	v, restart, err := s.o.Instances.Patch(name, req)
+	// After the checks of what the caller may change (403), so that a
+	// refused field is refused whatever the revision (see revision.go).
+	cond, err := ifMatch(r)
 	if err != nil {
 		return err
 	}
+	v, restart, err := s.o.Instances.PatchIf(name, req, cond)
+	if err != nil {
+		return err
+	}
+	setETag(w, v.Revision)
 	return writeJSON(w, http.StatusOK, InstanceChange{View: c.show(v), RestartRequired: restart})
 }
 
@@ -566,7 +579,11 @@ func (s *Server) putSecrets(w http.ResponseWriter, r *http.Request, c *call) err
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	flags, restart, err := s.o.Instances.SetSecrets(name, req)
+	cond, err := ifMatch(r)
+	if err != nil {
+		return err
+	}
+	flags, revision, restart, err := s.o.Instances.SetSecretsIf(name, req, cond)
 	if err != nil {
 		return err
 	}
@@ -574,7 +591,8 @@ func (s *Server) putSecrets(w http.ResponseWriter, r *http.Request, c *call) err
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Warnings: v.Warnings, UnsafeStoredSettings: v.UnsafeStoredSettings})
+	setETag(w, revision)
+	return writeJSON(w, http.StatusOK, SecretsResult{Secrets: flags, RestartRequired: restart, Revision: revision, Warnings: v.Warnings, UnsafeStoredSettings: v.UnsafeStoredSettings})
 }
 
 // action reads the target instance and an optional JSON body.

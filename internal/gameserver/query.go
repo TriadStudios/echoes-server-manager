@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ const (
 	maxQueryString = 256
 	// maxChallenges is how many challenges ESM answers before it gives up.
 	maxChallenges = 2
+	// minResend and maxResend bound how long a query waits for a reply
+	// before it sends its request again (see QueryInfo).
+	minResend = 50 * time.Millisecond
+	maxResend = 250 * time.Millisecond
 )
 
 // Info is what ESM reads from an A2S_INFO reply.
@@ -227,6 +232,14 @@ func (r *queryReader) string() string {
 // up to two challenges, and returns what it says. A server on all
 // interfaces (host empty, 0.0.0.0 or ::) is asked on 127.0.0.1. The whole
 // exchange ends with ctx (one second when ctx has no deadline).
+//
+// The query port is UDP, and a datagram, the request or its reply, may be
+// lost, or a server too busy to read it. A request that gets no reply is
+// therefore sent again, as clients of the protocol do, after a quarter of
+// the time the query has (at least 50 ms, at most 250 ms), until the time
+// is up. The server may answer the first copy late, so it may answer
+// every copy: each one sent allows one more challenge reply than the two
+// the query would answer otherwise.
 func QueryInfo(ctx context.Context, host string, port int) (Info, error) {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -249,13 +262,24 @@ func QueryInfo(ctx context.Context, host string, port int) (Info, error) {
 	}
 	stop := context.AfterFunc(ctx, func() { c.SetDeadline(time.Now()) })
 	defer stop()
+	resend := min(max(time.Until(deadline)/4, minResend), maxResend)
 	buf := make([]byte, MaxQueryPacket+1)
 	var challenge []byte
-	for range maxChallenges + 1 {
+	// answered counts the challenges answered, allowed is how many may be.
+	answered, allowed := 0, maxChallenges
+	for {
 		if _, err := c.Write(InfoRequest(challenge)); err != nil {
 			return Info{}, err
 		}
-		n, err := c.Read(buf)
+		n, err := readReply(ctx, c, buf, resend, deadline)
+		for errors.Is(err, os.ErrDeadlineExceeded) && time.Now().Before(deadline) && ctx.Err() == nil {
+			// No reply in time: send the same request again.
+			if _, err := c.Write(InfoRequest(challenge)); err != nil {
+				return Info{}, err
+			}
+			allowed++
+			n, err = readReply(ctx, c, buf, resend, deadline)
+		}
 		if err != nil {
 			return Info{}, err
 		}
@@ -266,9 +290,31 @@ func QueryInfo(ctx context.Context, host string, port int) (Info, error) {
 		if ch == nil {
 			return info, nil
 		}
+		if answered == allowed {
+			return Info{}, ErrQueryChallenges
+		}
+		answered++
 		challenge = ch
 	}
-	return Info{}, ErrQueryChallenges
+}
+
+// readReply reads one datagram into buf, waiting for it at most wait and
+// never beyond deadline or the end of ctx. A wait that ends with no reply is
+// an error that is os.ErrDeadlineExceeded.
+func readReply(ctx context.Context, c net.Conn, buf []byte, wait time.Duration, deadline time.Time) (int, error) {
+	until := time.Now().Add(wait)
+	if until.After(deadline) {
+		until = deadline
+	}
+	if err := c.SetReadDeadline(until); err != nil {
+		return 0, err
+	}
+	// After the deadline is set: a ctx that ends brings the connection's
+	// deadline forward, which must not be undone by this one.
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.Read(buf)
 }
 
 // Probe reports whether the server behind the query port answers A2S_INFO
