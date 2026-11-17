@@ -136,10 +136,12 @@ func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, 
 	// when the new one does not come up. Not on Windows, which has no such
 	// unit.
 	var mark func() error
+	var placed func()
 	if goos == "linux" {
 		mark = func() error { return MarkPending(exe, Marker{From: current, To: list.Version, Time: time.Now().UTC()}) }
+		placed = func() { Placed(exe) }
 	}
-	if err := swap(exe, tmp, prev, mark); err != nil {
+	if err := swap(exe, tmp, prev, mark, placed); err != nil {
 		os.Remove(tmp)
 		return Result{}, err
 	}
@@ -190,8 +192,10 @@ func (c *Client) download(ctx context.Context, raw, exe, want string) (string, e
 // new one goes in place: the update is marked pending only when the old
 // binary is there to be put back, and not at all when the new one never
 // gets in place (a failing mark ends the update with the old binary where it
-// was).
-func swap(exe, tmp, prev string, mark func() error) error {
+// was). placed, when set, runs once the new binary is in place; it forgets
+// what an earlier update left, which an update that fails first must not
+// have taken away.
+func swap(exe, tmp, prev string, mark func() error, placed func()) error {
 	if err := os.Remove(prev); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove the old %s: %w", prev, err)
 	}
@@ -211,6 +215,9 @@ func swap(exe, tmp, prev string, mark func() error) error {
 				os.Remove(exe + PendingSuffix)
 			}
 			return fmt.Errorf("move the new binary in place: %w", err)
+		}
+		if placed != nil {
+			placed()
 		}
 		return nil
 	}

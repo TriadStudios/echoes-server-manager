@@ -232,6 +232,97 @@ func TestRollbackScriptInAFolderItCannotWriteTo(t *testing.T) {
 	}
 }
 
+// killed turns the rig into what an update leaves when it is killed after it
+// kept the old binary and marked itself, but before the new binary went in
+// place: the binary is still the old one, and .previous is that same binary,
+// as a second name of the same file or as a copy with the same bytes.
+func (r *rig) killed(copyInstead bool) {
+	r.t.Helper()
+	os.Remove(r.exe)
+	os.Remove(r.exe + ".previous")
+	if err := os.WriteFile(r.exe, []byte("old binary"), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if copyInstead {
+		if err := os.WriteFile(r.exe+".previous", []byte("old binary"), 0o755); err != nil {
+			r.t.Fatal(err)
+		}
+	} else if err := os.Link(r.exe, r.exe+".previous"); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// handInstall puts a binary there the way an owner does: a new file moved
+// over the old name.
+func (r *rig) handInstall(content string) {
+	r.t.Helper()
+	tmp := filepath.Join(r.dir, "esm.new")
+	if err := os.WriteFile(tmp, []byte(content), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.Rename(tmp, r.exe); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// An update that was killed before its new binary went in place leaves the
+// pending file next to a .previous that is the binary itself: the same file,
+// or a copy with the same bytes. There is nothing to put back (a file cannot
+// replace itself, and GNU mv says so), so the script drops the mark at once,
+// whichever start it is, says so, changes no binary and ends with status 0.
+// Dropped, it cannot roll back a binary that is put there by hand later,
+// however often ESM starts after that.
+func TestRollbackScriptDropsAMarkThatNeverGotItsBinaryInPlace(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		copyInstead bool
+		earlier     int // start lines there before this start
+	}{
+		{"the same file, first start", false, 0},
+		{"the same file, third start", false, release.RollbackStarts - 1},
+		{"a copy with the same bytes, first start", true, 0},
+		{"a copy with the same bytes, third start", true, release.RollbackStarts - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.killed(tc.copyInstead)
+			r.pending()
+			if tc.earlier > 0 {
+				os.WriteFile(r.exe+release.StartsSuffix, []byte(strings.Repeat("2026-11-16T10:00:00Z\n", tc.earlier)), 0o644)
+			}
+			out := r.start()
+			if !strings.Contains(out, "never got its new binary in place") || !strings.Contains(out, "the mark is dropped") {
+				t.Fatalf("output %q", out)
+			}
+			for _, suffix := range []string{release.PendingSuffix, release.StartsSuffix, release.RolledBackSuffix, release.FailedSuffix} {
+				if r.has(suffix) {
+					t.Errorf("%s is there", suffix)
+				}
+			}
+			if r.read("") != "old binary" || r.read(".previous") != "old binary" {
+				t.Fatalf("binaries changed: %q, %q", r.read(""), r.read(".previous"))
+			}
+
+			// The owner puts a newer binary there by hand. No mark is left to
+			// roll it back, however many starts follow.
+			r.handInstall("a newer binary put there by hand")
+			for n := range 2 * release.RollbackStarts {
+				if out := r.start(); out != "" {
+					t.Fatalf("start %d after the hand-installed binary printed %q", n+1, out)
+				}
+			}
+			if r.read("") != "a newer binary put there by hand" || r.read(".previous") != "old binary" {
+				t.Fatalf("the hand-installed binary was rolled back: %q, previous %q", r.read(""), r.read(".previous"))
+			}
+			for _, suffix := range []string{release.RolledBackSuffix, release.FailedSuffix, release.StartsSuffix} {
+				if r.has(suffix) {
+					t.Errorf("%s is there after the hand-installed binary", suffix)
+				}
+			}
+		})
+	}
+}
+
 // The script is plain POSIX sh: it parses, and uses nothing of bash.
 func TestRollbackScriptIsPlainSh(t *testing.T) {
 	s := string(Script())

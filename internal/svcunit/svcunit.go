@@ -159,13 +159,60 @@ func WriteScript(exe string) (string, error) {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, rollbackScript) {
 		return path, nil
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, rollbackScript, 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := putScript(path); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// RefreshScript brings an existing rollback script up to date: when the
+// script next to the binary exe is there and differs from the one built into
+// this ESM, it is replaced (a file of its own is written and moved over the
+// name), so that a self-update, which replaces the binary only, also brings
+// the script its new binary expects. It never makes a script that is not
+// there: a box without the unit stays as clean as it was, and one whose unit
+// has no script (esm service install could not write it) is the owner's to
+// fix. changed says whether it wrote one.
+func RefreshScript(exe string) (changed bool, err error) {
+	path := ScriptPath(exe)
+	old, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, err
+	case bytes.Equal(old, rollbackScript):
+		return false, nil
+	}
+	if err := putScript(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// putScript writes the script atomically: to a file of its own in the same
+// folder, moved over path, so the shell never reads half of it.
+func putScript(path string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".esm-script-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(rollbackScript)
+	if err == nil {
+		err = f.Chmod(0o644)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }

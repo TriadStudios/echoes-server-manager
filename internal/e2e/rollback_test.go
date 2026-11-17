@@ -14,6 +14,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
 	"github.com/TriadStudios/echoes-server-manager/internal/service"
+	"github.com/TriadStudios/echoes-server-manager/internal/svcunit"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
@@ -105,9 +106,12 @@ func TestARolledBackSelfUpdateIsReported(t *testing.T) {
 		t.Fatalf("audit entries after a second rollback: %+v", got)
 	}
 
-	// The record goes when the next self-update marks itself pending (see
-	// release.MarkPending): the next start shows none.
+	// The record goes when the next self-update has its new binary in place
+	// (release.MarkPending, then release.Placed): the next start shows none.
 	if err := release.MarkPending(exe, release.Marker{From: "v1.0.0", To: "v1.2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := release.Placed(exe); err != nil {
 		t.Fatal(err)
 	}
 	h.stopService()
@@ -115,6 +119,37 @@ func TestARolledBackSelfUpdateIsReported(t *testing.T) {
 	h.must(http.StatusOK, "GET", "/api/v1/box", nil, &raw)
 	if string(raw["last_self_update"]) != "null" {
 		t.Fatalf("last_self_update after the next update was put in place: %s", raw["last_self_update"])
+	}
+}
+
+// A self-update replaces the binary only, so ESM brings the rollback script
+// next to it up to date when it starts: a script that differs from the one
+// built into this ESM is rewritten, and one that is not there is not made
+// (only esm service install makes it).
+func TestESMRefreshesTheRollbackScriptAtStart(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "esm-under-test")
+	script := svcunit.ScriptPath(exe)
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n# the script of an older ESM\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newESMTuned(t, "process", func(o *service.Options) { o.Executable = exe })
+	if got, _ := os.ReadFile(script); string(got) != string(svcunit.Script()) {
+		t.Fatalf("the script after the start:\n%s", got)
+	}
+	if !strings.Contains(h.stderr.String(), "rollback script next to the binary was rewritten") {
+		t.Errorf("the service log does not say so:\n%s", h.stderr.String())
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(exe)); len(entries) != 1 {
+		t.Fatalf("files next to the binary: %v", entries)
+	}
+
+	// No script: none is made, at the first start or any later one.
+	bare := filepath.Join(t.TempDir(), "esm-under-test")
+	h2 := newESMTuned(t, "process", func(o *service.Options) { o.Executable = bare })
+	h2.stopService()
+	h2.startService()
+	if entries, _ := os.ReadDir(filepath.Dir(bare)); len(entries) != 0 {
+		t.Fatalf("ESM made files next to a binary that has no script: %v", entries)
 	}
 }
 
@@ -149,10 +184,13 @@ func TestARollbackRecordWithoutVersionsIsStillReported(t *testing.T) {
 // the old binary back. Before that, and in an ESM that is the old side of the
 // update, they stay.
 func TestASelfUpdateIsConfirmedWhenESMStaysUp(t *testing.T) {
-	start := func(t *testing.T, version string, after time.Duration, m release.Marker) string {
+	start := func(t *testing.T, version string, after time.Duration, m release.Marker, prep ...func(exe string)) string {
 		t.Helper()
 		exe := filepath.Join(t.TempDir(), "esm-under-test")
 		os.WriteFile(exe, []byte("binary"), 0o755)
+		for _, p := range prep {
+			p(exe)
+		}
 		if err := release.MarkPending(exe, m); err != nil {
 			t.Fatal(err)
 		}
@@ -181,6 +219,18 @@ func TestASelfUpdateIsConfirmedWhenESMStaysUp(t *testing.T) {
 		if !has(exe+release.PendingSuffix) || !has(exe+release.StartsSuffix) {
 			t.Fatal("an ESM that is not the new version confirmed the update")
 		}
+	})
+	// An update killed after it kept the old binary and marked itself, but
+	// before the new binary went in place: the ESM that goes on running is the
+	// old side, and its binary is the kept one, so the mark is stale and goes.
+	t.Run("an update that never got its binary in place", func(t *testing.T) {
+		exe := start(t, "v1.0.0", 300*time.Millisecond, marker, func(exe string) {
+			if err := os.Link(exe, exe+release.PreviousSuffix); err != nil {
+				t.Fatal(err)
+			}
+		})
+		testkit.Eventually(t, 10*time.Second, func() bool { return !has(exe+release.PendingSuffix) && !has(exe+release.StartsSuffix) },
+			"the stale pending file and the start lines are still there")
 	})
 }
 

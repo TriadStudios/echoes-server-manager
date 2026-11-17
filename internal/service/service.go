@@ -39,6 +39,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/store"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
+	"github.com/TriadStudios/echoes-server-manager/internal/svcunit"
 )
 
 // Options configure Start. Only Root is required.
@@ -202,6 +203,7 @@ func Start(o Options) (_ *Service, err error) {
 	s.bus = events.NewBus(4096)
 	s.audit.SetNotify(func(e audit.Entry) { s.bus.Publish(events.TypeAudit, "", e) })
 	lastUpdate := s.noteRollback()
+	s.refreshScript()
 
 	if s.sup, err = supervisor.New(st, supervisor.Options{Kind: cfg.Supervisor, Logger: log}); err != nil {
 		return nil, err
@@ -340,6 +342,23 @@ func (s *Service) confirmUpdate() {
 		s.log.Warn("cannot confirm the self-update: the old binary may be put back at a later start", "err", err)
 	case cleared:
 		s.log.Info("ESM stayed up; the self-update to this version is confirmed", "version", s.version)
+	}
+}
+
+// refreshScript rewrites the rollback script next to the binary when it is
+// there and differs from the one built into this ESM: a self-update replaces
+// the binary only, and the script belongs to the binary. A box with no such
+// script gets none (only esm service install makes one).
+func (s *Service) refreshScript() {
+	exe, err := s.executable()
+	if err != nil {
+		return
+	}
+	switch changed, err := svcunit.RefreshScript(exe); {
+	case err != nil:
+		s.log.Warn("cannot bring the rollback script up to date", "path", svcunit.ScriptPath(exe), "err", err)
+	case changed:
+		s.log.Info("the rollback script next to the binary was rewritten to the one built into this ESM", "path", svcunit.ScriptPath(exe))
 	}
 }
 

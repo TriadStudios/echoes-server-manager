@@ -17,8 +17,12 @@
 # ESM reads the rolledback file when it starts, writes the audit entry and
 # shows the rollback on GET /api/v1/box and on the Box page.
 #
+# If the old binary is the binary that is there already (the update was killed
+# before the new one went in place), the mark is stale and is dropped without
+# putting anything back.
+#
 # The new binary may not run at all, so this uses nothing of it: /bin/sh and
-# the usual small tools (date, ln, cp, mv, rm, sed). Plain POSIX sh.
+# the usual small tools (date, ln, cp, mv, rm, sed, cmp). Plain POSIX sh.
 #
 # It never stops ESM from starting. With no pending file it does nothing.
 # Whatever else goes wrong, it says so on standard output (the service log)
@@ -42,6 +46,25 @@ say() {
 # No update waits for its confirmation: a normal start.
 [ -f "$pending" ] || exit 0
 
+info=
+IFS= read -r info < "$pending"
+
+# A stale mark: an update that was killed after it kept the old binary and
+# marked itself, but before the new binary went in place, leaves $previous as
+# the binary that is there already: the same file, or a copy with the same
+# bytes. There is nothing to put back, a file cannot replace itself, and the
+# mark would outlive a binary put there by hand later and roll it back to the
+# old one. So the mark goes at once, whatever the start count. (-ef is no
+# POSIX test, but dash and busybox have it; a shell that does not answers
+# with status 2, and cmp decides.)
+if [ -f "$previous" ]; then
+	if [ "$previous" -ef "$exe" ] 2>/dev/null || cmp -s "$previous" "$exe" 2>/dev/null; then
+		say "the update $info never got its new binary in place: $previous is $exe itself; the mark is dropped"
+		rm -f "$pending" "$starts"
+		exit 0
+	fi
+fi
+
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if ! printf '%s\n' "$now" >> "$starts"; then
 	say "cannot write $starts; this update is not watched"
@@ -51,8 +74,6 @@ n=0
 while IFS= read -r _line; do
 	n=$((n + 1))
 done < "$starts"
-info=
-IFS= read -r info < "$pending"
 
 if [ "$n" -lt "$starts_allowed" ]; then
 	say "the update $info is not confirmed yet; this is start $n, the old binary is put back at start $starts_allowed"

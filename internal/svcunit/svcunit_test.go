@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func abs(p string) string {
@@ -118,7 +119,7 @@ func TestWriteScript(t *testing.T) {
 	if got, _ := os.ReadFile(path); string(got) != string(Script()) {
 		t.Fatalf("an older script was not replaced:\n%s", got)
 	}
-	if left, _ := filepath.Glob(exe + "*.tmp"); len(left) != 0 {
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), ".esm-script-*")); len(left) != 0 {
 		t.Fatalf("left behind: %v", left)
 	}
 	// A folder that cannot be written to is an error the caller can report
@@ -131,6 +132,56 @@ func TestWriteScript(t *testing.T) {
 	s[0] = 'X'
 	if Script()[0] != '#' {
 		t.Fatal("Script shares its bytes")
+	}
+}
+
+// ESM brings the script next to its binary up to date when it starts: one
+// that differs from the built-in one is replaced (atomically, 0644), one that
+// is the same is left alone, and one that is not there is never made, so a
+// box that does not run as the unit stays as clean as it was.
+func TestRefreshScript(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "esm")
+	if changed, err := RefreshScript(exe); changed || err != nil {
+		t.Fatalf("no script: %v, %v", changed, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("RefreshScript made files: %v", entries)
+	}
+
+	old := []byte("#!/bin/sh\n# an older script\nexit 0\n")
+	os.WriteFile(ScriptPath(exe), old, 0o600)
+	changed, err := RefreshScript(exe)
+	if !changed || err != nil {
+		t.Fatalf("an older script: %v, %v", changed, err)
+	}
+	if got, _ := os.ReadFile(ScriptPath(exe)); string(got) != string(Script()) {
+		t.Fatalf("the older script was not replaced:\n%s", got)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(ScriptPath(exe)); err != nil || fi.Mode().Perm() != 0o644 {
+			t.Fatalf("mode of the new script: %v, %v", fi, err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("files next to the binary after the refresh: %v", entries)
+	}
+
+	// The same script: nothing is written (it keeps its time).
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	os.Chtimes(ScriptPath(exe), stamp, stamp)
+	if changed, err := RefreshScript(exe); changed || err != nil {
+		t.Fatalf("the same script: %v, %v", changed, err)
+	}
+	if fi, _ := os.Stat(ScriptPath(exe)); !fi.ModTime().Equal(stamp) {
+		t.Fatal("the same script was written again")
+	}
+
+	// Something that cannot be read as a script is an error, not a rewrite.
+	odd := filepath.Join(t.TempDir(), "esm")
+	os.MkdirAll(ScriptPath(odd), 0o755)
+	if changed, err := RefreshScript(odd); changed || err == nil {
+		t.Fatalf("a folder in the script's place: %v, %v", changed, err)
 	}
 }
 

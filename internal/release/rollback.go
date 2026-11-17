@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -77,17 +78,13 @@ func (r RolledBack) When() time.Time {
 // maxMarker bounds how much of a marker file is read.
 const maxMarker = 4096
 
-// MarkPending records that the update m was put in place and is not confirmed
-// yet: it removes the start lines and the record of an earlier rollback, then
-// writes the pending file atomically (a file of its own is written and moved
-// over the name, so a reader sees all of it or none). exe is the path of the
-// binary.
+// MarkPending records that the update m is about to be put in place and is
+// not confirmed yet: it writes the pending file atomically (a file of its own
+// is written and moved over the name, so a reader sees all of it or none).
+// exe is the path of the binary. The start lines and the record of an earlier
+// rollback are left alone: they go in Placed, once the new binary really is in
+// place, so an update that fails before that keeps the last record.
 func MarkPending(exe string, m Marker) error {
-	for _, suffix := range []string{StartsSuffix, RolledBackSuffix} {
-		if err := os.Remove(exe + suffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove the old %s: %w", exe+suffix, err)
-		}
-	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -117,6 +114,20 @@ func MarkPending(exe string, m Marker) error {
 	return nil
 }
 
+// Placed says that the new binary of the update marked by MarkPending is in
+// place: the start lines of an earlier update, which would shorten this one's
+// tries, and the record of an earlier rollback go. The update does not depend
+// on it; the first error is returned for the caller to report.
+func Placed(exe string) error {
+	var first error
+	for _, suffix := range []string{StartsSuffix, RolledBackSuffix} {
+		if err := os.Remove(exe + suffix); err != nil && !errors.Is(err, fs.ErrNotExist) && first == nil {
+			first = fmt.Errorf("remove the old %s: %w", exe+suffix, err)
+		}
+	}
+	return first
+}
+
 // ReadPending reads the pending file of the binary exe. fs.ErrNotExist
 // (testable with errors.Is) when no update waits for its confirmation.
 func ReadPending(exe string) (Marker, error) {
@@ -137,13 +148,18 @@ func ReadPending(exe string) (Marker, error) {
 // when the pending file belongs to an update that this ESM is the old side
 // of: it names another version as the one it updated to, and this ESM is
 // the one it updated from (an ESM that was started shortly before a command
-// line update, and is not the one the update is waiting for). It returns
-// whether it removed the pending file; a missing file is not an error.
+// line update, and is not the one the update is waiting for). It removes
+// them whatever this ESM is when the update never got its new binary in
+// place (see SameAsPrevious): the mark is stale, and there is nothing to put
+// back. It returns whether it removed the pending file; a missing file is
+// not an error.
 func ConfirmUpdate(exe, running string) (bool, error) {
 	m, err := ReadPending(exe)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
+	case err == nil && SameAsPrevious(exe):
+		// Stale: fall through to the removal.
 	case err == nil && !sameVersion(m.To, running) && sameVersion(m.From, running):
 		return false, nil
 	}
@@ -156,6 +172,61 @@ func ConfirmUpdate(exe, running string) (bool, error) {
 		return true, err
 	}
 	return true, nil
+}
+
+// SameAsPrevious reports whether the binary at exe is the very file kept as
+// exe+PreviousSuffix, or a copy of it with the same bytes. With a pending
+// file next to them that means the update was killed after it kept the old
+// binary and marked itself, but before the new binary went in place: there is
+// nothing to roll back to, and the marker (which the service unit's script
+// would act on at the third start, or fail on, as a file cannot replace
+// itself) is a leftover. It is also true of a forced update to a binary that
+// is the same as the running one. False when either file is missing.
+func SameAsPrevious(exe string) bool {
+	a, err := os.Stat(exe)
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(exe + PreviousSuffix)
+	if err != nil {
+		return false
+	}
+	if os.SameFile(a, b) {
+		return true
+	}
+	if a.Size() != b.Size() {
+		return false
+	}
+	return sameBytes(exe, exe+PreviousSuffix)
+}
+
+// sameBytes reports whether two files of the same size have the same bytes.
+func sameBytes(a, b string) bool {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false
+	}
+	defer fb.Close()
+	ba, bb := make([]byte, 64<<10), make([]byte, 64<<10)
+	for {
+		na, erra := io.ReadFull(fa, ba)
+		nb, errb := io.ReadFull(fb, bb)
+		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
+			return false
+		}
+		if erra != nil || errb != nil {
+			// Both ended together (a short read or EOF on each), or one
+			// failed: equal only when both ended.
+			endA := errors.Is(erra, io.EOF) || errors.Is(erra, io.ErrUnexpectedEOF)
+			endB := errors.Is(errb, io.EOF) || errors.Is(errb, io.ErrUnexpectedEOF)
+			return endA && endB
+		}
+	}
 }
 
 // sameVersion compares two versions, ignoring a leading "v".

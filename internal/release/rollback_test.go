@@ -26,7 +26,8 @@ func exists(path string) bool {
 }
 
 // MarkPending writes the pending file as one JSON line, atomically, and
-// forgets the start lines and the rollback record of an earlier update.
+// touches nothing else: the start lines and the rollback record of an
+// earlier update go only when the new binary is in place (Placed).
 func TestMarkPending(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "esm")
 	os.WriteFile(exe+StartsSuffix, []byte("2026-11-16T10:00:00Z\n"), 0o644)
@@ -46,13 +47,28 @@ func TestMarkPending(t *testing.T) {
 	if err != nil || m.From != "v1.0.0" || m.To != "v1.1.0" || !m.Time.Equal(when) {
 		t.Fatalf("ReadPending: %+v, %v", m, err)
 	}
-	for _, gone := range []string{exe + StartsSuffix, exe + RolledBackSuffix} {
-		if exists(gone) {
-			t.Errorf("%s is still there", gone)
+	for _, kept := range []string{exe + StartsSuffix, exe + RolledBackSuffix} {
+		if !exists(kept) {
+			t.Errorf("MarkPending removed %s before the new binary was in place", kept)
 		}
 	}
 	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), ".esm-update-*")); len(left) != 0 {
 		t.Fatalf("left behind: %v", left)
+	}
+	// Placed forgets what an earlier update left, and only that.
+	if err := Placed(exe); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{exe + StartsSuffix, exe + RolledBackSuffix} {
+		if exists(gone) {
+			t.Errorf("%s is still there after Placed", gone)
+		}
+	}
+	if !exists(exe + PendingSuffix) {
+		t.Error("Placed removed the pending file")
+	}
+	if err := Placed(exe); err != nil {
+		t.Fatalf("Placed with nothing to remove: %v", err)
 	}
 	// A second update replaces the first one's marker.
 	if err := MarkPending(exe, Marker{From: "v1.1.0", To: "v1.2.0", Time: when}); err != nil {
@@ -75,10 +91,17 @@ func TestUpdateMarksPending(t *testing.T) {
 	_, c := fr.start(t)
 	c.Key = pub
 	exe := oldBinary(t)
+	// What an earlier update left: its start lines and a rollback record. The
+	// new update starts from nothing.
+	os.WriteFile(exe+StartsSuffix, []byte("2026-11-16T10:00:00Z\n"), 0o644)
+	os.WriteFile(exe+RolledBackSuffix, []byte(`{"from":"v0.9.0","to":"v1.0.0"}`), 0o644)
 	before := time.Now().Add(-time.Second)
 	res, err := c.Update(context.Background(), "v1.0.0", exe, runtime.GOOS, runtime.GOARCH, false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if exists(exe + RolledBackSuffix) {
+		t.Error("the record of an earlier rollback is still there once the new binary is in place")
 	}
 	m, err := ReadPending(exe)
 	if err != nil || m.From != "v1.0.0" || m.To != "v1.1.0" || m.Time.Before(before) || m.Time.After(time.Now().Add(time.Second)) {
@@ -114,6 +137,8 @@ func TestUpdateWithoutAMarkerChangesNothing(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(exe+PendingSuffix, "x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	os.WriteFile(exe+StartsSuffix, []byte("2026-11-16T10:00:00Z\n"), 0o644)
+	os.WriteFile(exe+RolledBackSuffix, []byte(`{"from":"v0.9.0","to":"v1.0.0"}`), 0o644)
 	_, err := c.Update(context.Background(), "v1.0.0", exe, runtime.GOOS, runtime.GOARCH, false)
 	if err == nil || !strings.Contains(err.Error(), "not confirmed yet") {
 		t.Fatalf("update: %v", err)
@@ -123,6 +148,79 @@ func TestUpdateWithoutAMarkerChangesNothing(t *testing.T) {
 	}
 	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), ".esm-update-*")); len(left) != 0 {
 		t.Fatalf("left behind: %v", left)
+	}
+	// The last record stays: the update that failed before its new binary was
+	// in place did not replace anything.
+	if !exists(exe+RolledBackSuffix) || !exists(exe+StartsSuffix) {
+		t.Error("a failed update removed the last rollback record or the start lines")
+	}
+}
+
+// An update whose new binary cannot be moved in place (here: the file it was
+// downloaded to is gone) keeps the last rollback record and the start lines,
+// and leaves no pending file behind.
+func TestSwapThatFailsKeepsTheLastRecord(t *testing.T) {
+	linuxOnly(t)
+	exe := oldBinary(t)
+	os.WriteFile(exe+StartsSuffix, []byte("2026-11-16T10:00:00Z\n"), 0o644)
+	os.WriteFile(exe+RolledBackSuffix, []byte(`{"from":"v0.9.0","to":"v1.0.0"}`), 0o644)
+	mark := func() error { return MarkPending(exe, Marker{From: "v1.0.0", To: "v1.1.0"}) }
+	placed := func() { Placed(exe) }
+	err := swap(exe, filepath.Join(filepath.Dir(exe), ".esm-update-missing"), exe+PreviousSuffix, mark, placed)
+	if err == nil || !strings.Contains(err.Error(), "move the new binary in place") {
+		t.Fatalf("swap: %v", err)
+	}
+	if !exists(exe+RolledBackSuffix) || !exists(exe+StartsSuffix) {
+		t.Error("the record or the start lines went although the new binary never got in place")
+	}
+	if exists(exe + PendingSuffix) {
+		t.Error("the pending file of an update that did not happen is still there")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "old binary" {
+		t.Fatalf("binary %q", b)
+	}
+}
+
+// SameAsPrevious tells that the binary is the kept old binary itself: the
+// same file, or the same bytes, however long.
+func TestSameAsPrevious(t *testing.T) {
+	big := func(last byte) []byte {
+		b := make([]byte, 200<<10+17)
+		for i := range b {
+			b[i] = byte(i * 7)
+		}
+		b[len(b)-1] = last
+		return b
+	}
+	dir := t.TempDir()
+	write := func(name string, b []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func(exe string)
+		want  bool
+	}{
+		{"the same file under two names", func(exe string) { os.Link(exe, exe+PreviousSuffix) }, true},
+		{"a copy with the same bytes", func(exe string) { os.WriteFile(exe+PreviousSuffix, big('a'), 0o755) }, true},
+		{"a copy that differs in its last byte", func(exe string) { os.WriteFile(exe+PreviousSuffix, big('b'), 0o755) }, false},
+		{"a file of another size", func(exe string) { os.WriteFile(exe+PreviousSuffix, []byte("old binary"), 0o755) }, false},
+		{"no previous", func(exe string) {}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exe := write(strings.ReplaceAll(tc.name, " ", "-"), big('a'))
+			tc.setup(exe)
+			if got := SameAsPrevious(exe); got != tc.want {
+				t.Fatalf("SameAsPrevious: %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if SameAsPrevious(filepath.Join(dir, "no-binary")) {
+		t.Error("a binary that is not there is the same as its previous")
 	}
 }
 
@@ -145,6 +243,32 @@ func TestConfirmUpdate(t *testing.T) {
 		{"a development build, which updated from itself", "dev", func(exe string) { MarkPending(exe, Marker{From: "dev", To: "v1.1.0"}) }, false},
 		{"a pending file nobody can read", "v1.1.0", func(exe string) { os.WriteFile(exe+PendingSuffix, []byte("not json"), 0o644) }, true},
 		{"no pending file", "v1.1.0", func(exe string) {}, false},
+		// An update killed after it kept the old binary and marked itself, but
+		// before the new binary went in place: the old ESM runs on, with its
+		// own binary as .previous. It is the old side of the update, and
+		// still the mark is stale and goes.
+		{"a killed update: previous is the same file", "v1.0.0", func(exe string) {
+			os.WriteFile(exe, []byte("old binary"), 0o755)
+			os.Link(exe, exe+PreviousSuffix)
+			MarkPending(exe, marker)
+		}, true},
+		{"a killed update: previous is a copy", "v1.0.0", func(exe string) {
+			os.WriteFile(exe, []byte("old binary"), 0o755)
+			os.WriteFile(exe+PreviousSuffix, []byte("old binary"), 0o755)
+			MarkPending(exe, marker)
+		}, true},
+		// The same mark, and a newer binary put there by hand: its ESM is not
+		// the old side either.
+		{"a killed update, then a binary put there by hand", "v3.0.0", func(exe string) {
+			os.WriteFile(exe+PreviousSuffix, []byte("old binary"), 0o755)
+			os.WriteFile(exe, []byte("a newer binary"), 0o755)
+			MarkPending(exe, marker)
+		}, true},
+		{"the old side, with the old binary kept next to a new one", "v1.0.0", func(exe string) {
+			os.WriteFile(exe+PreviousSuffix, []byte("old binary"), 0o755)
+			os.WriteFile(exe, []byte("new binary"), 0o755)
+			MarkPending(exe, marker)
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exe := filepath.Join(t.TempDir(), "esm")
