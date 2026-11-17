@@ -29,6 +29,36 @@ info:
     instances; `admin` may do everything, installing builds included (a
     build is a program that runs with ESM's own rights).
 
+    `site` is a fourth role, for the token of a website's admin panel. Only
+    an API token has it (`POST /api/v1/tokens` with `"role": "site"`, or
+    `esm token create --role site`); a login cannot. It is not a step
+    between `operator` and `admin`: it may do everything `operator` may
+    (looking for a newer release with `POST /box/release-check` among it),
+    and four calls more, each named `site` in its summary below:
+    `PATCH /instances/{name}` with the settings of a panel only (a body
+    with any other key is 403 `forbidden`, naming it), `POST /builds` with
+    a Steam source only (`"source": "steam:<name>"`; a folder, an archive
+    or an https source is 403 `forbidden`), `POST /builds/prune` and
+    `POST /box/self-update`, which with `exit_anyway` true is 403
+    `forbidden`. Everything else that needs `admin` is 403 for it: tokens,
+    logins, the audit log (and the `audit` events), creating and deleting
+    instances, secrets, a Steam password, deleting a build, the health
+    check.
+
+    A token of the `site` role may send `X-ESM-Acting-User: <name>`, the
+    person the call is made for, such as an employee of the website. The
+    audit entry of the call (refused calls too) carries it as
+    `actor.acting_user`. It is a note, never used to decide anything, and
+    read from tokens of the `site` role only: from any other caller it is
+    ignored, whatever it holds. It is at most 64 printable characters
+    (letters, marks, numbers, punctuation, symbols and plain spaces; UTF-8,
+    taken as written), sent once; an empty value is none. A longer value,
+    one with a control character (a line break and a tab included) or a
+    character that does not print, one that is not UTF-8, or one sent twice
+    is 400 `bad_acting_user`, and the call is not made. (Most control
+    characters never get that far: the HTTP server answers a header that
+    has one with a bare 400, to any caller.)
+
     Server passwords, and the game's announcements and problem report
     tokens, are set with `PUT /api/v1/instances/{name}/secrets`
     and nowhere else. By default a server gets them in a private file
@@ -87,15 +117,16 @@ info:
     has a minute to read a reply, counted from its first byte, and in an
     event stream a minute for each event. Calls that change something are
     POST, PUT, PATCH or DELETE with a JSON body (an empty body counts as
-    `{}`); each writes an audit entry, refused or not, as does every call
-    refused for lack of a role (403). A read refused for a missing login
-    (401) or another host name (421) is not recorded. Of a client address
-    without a valid login, a minute holds at most 22 entries: 20 of its
-    calls (of its failed authentications only the first the log would
-    take; its failed logins, logouts without a session, changes to
-    unknown paths, and so on), one `audit.quiet` entry after them, and
-    one `auth.limited` entry when the address is limited. A login or setup
-    that works is always recorded.
+    `{}`; a body is exactly one JSON value, and anything after it is 400
+    `bad_request`); each writes an audit entry, refused or not, as does
+    every call refused for lack of a role (403). A read refused for a
+    missing login (401) or another host name (421) is not recorded. Of a
+    client address without a valid login, a minute holds at most 22 entries:
+    20 of its calls (of its failed authentications only the first the log
+    would take; its failed logins, logouts without a session, changes to
+    unknown paths, and so on), one `audit.quiet` entry after them, and one
+    `auth.limited` entry when the address is limited. A login or setup that
+    works is always recorded.
 
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks
@@ -336,7 +367,7 @@ paths:
   /api/v1/box/self-update:
     post:
       tags: [box]
-      summary: Replace ESM's binary with the newest release (admin)
+      summary: Replace ESM's binary with the newest release (admin; site without exit_anyway)
       description: |
         Looks up the newest release on GitHub (https), downloads
         SHA256SUMS and SHA256SUMS.sig, checks the signature with the
@@ -421,7 +452,7 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
     post:
       tags: [builds]
-      summary: Install a build (admin)
+      summary: Install a build (admin; site, from a Steam source only)
       description: |
         The source is a folder or a .zip, .tar.gz or .tgz file inside the
         import folder on the box (`build_import_dir`, by default
@@ -481,7 +512,7 @@ paths:
   /api/v1/builds/prune:
     post:
       tags: [builds]
-      summary: Remove every build no instance uses (admin)
+      summary: Remove every build no instance uses (admin or site)
       description: An instance uses its current build and its newest keep_previous_builds previous builds.
       requestBody: { $ref: "#/components/requestBodies/Empty" }
       responses:
@@ -551,11 +582,23 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
     patch:
       tags: [instances]
-      summary: Change settings (admin)
+      summary: Change settings (admin or site)
       description: |
         Only the fields sent change. The build is changed with an update,
         not here. Changes to a running instance take effect at its next
         start (restart_required is true).
+
+        A token of the `site` role may send only `display_name`,
+        `max_players`, `listed`, `rules`, `auto_update`, `update_max_wait`,
+        `autostart`, `restart_on_crash`, `schedule`, `backup`, `map`,
+        `world`, `cluster` and `channel`. A body that has any other key is
+        refused with 403 `forbidden`. That counts `extra_args`, `limits`,
+        `bind_ip`, `ports`, `secret_delivery` and `build`, every field added
+        later, a null, and a key that only differs in case. The answer
+        names the key and lists the fields the role may change, and
+        nothing is changed, the allowed fields beside it included. A body
+        that is not exactly one JSON object is 400 for it. An admin may send
+        every field.
 
         A rule key or an extra argument that looks like a secret is refused
         with 422 `looks_like_secret`, and a change that would put one of the
@@ -1241,10 +1284,18 @@ components:
       type: object
       properties:
         username: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+        role: { $ref: "#/components/schemas/LoginRole" }
     Role:
       type: string
+      enum: [read, operator, admin, site]
+      description: |
+        The role of a token. `site` is for the token of a website's admin
+        panel (see the description of this API) and is not a step of the
+        ladder read, operator, admin.
+    LoginRole:
+      type: string
       enum: [read, operator, admin]
+      description: The role of a login. A login never has the `site` role.
     LoginRequest:
       type: object
       required: [username, password]
@@ -1255,7 +1306,7 @@ components:
       type: object
       properties:
         username: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+        role: { $ref: "#/components/schemas/LoginRole" }
         csrf_token: { type: string }
     LoggedOut:
       type: object
@@ -1288,7 +1339,7 @@ components:
       type: object
       properties:
         username: { type: string }
-        role: { $ref: "#/components/schemas/Role" }
+        role: { $ref: "#/components/schemas/LoginRole" }
         created: { type: string, format: date-time }
         last_login: { type: string, format: date-time, description: Missing when the login has never logged in. }
         sessions: { type: integer, minimum: 0, description: Sessions of the login open now. }
@@ -1436,7 +1487,7 @@ components:
         force: { type: boolean, description: Take the newest release even when it is not newer. }
         exit_anyway:
           type: boolean
-          description: Update and end ESM also when nothing starts it again (it then has to be started by hand). Without it, such an update is refused with 409 no_service_manager.
+          description: Update and end ESM also when nothing starts it again (it then has to be started by hand). Without it, such an update is refused with 409 no_service_manager. A token of the site role may not set it (403 forbidden), so that ESM never stays down because of the site.
     SelfUpdateRecord:
       type: object
       description: A self-update that did not come up and was rolled back.
@@ -1574,7 +1625,7 @@ components:
       type: object
       required: [source]
       properties:
-        source: { type: string, description: A folder or archive path on the box, or an https URL. }
+        source: { type: string, description: "A folder or archive path on the box, or an https URL; or steam:<name>, a Steam source of esm.json. A token of the site role may give a Steam source only (403 forbidden otherwise)." }
         sha256: { type: string, description: Required for URLs. }
     Removed:
       type: object
@@ -2163,6 +2214,10 @@ components:
         kind: { type: string, enum: [user, token, socket, system, anonymous] }
         id: { type: string }
         role: { type: string }
+        acting_user:
+          type: string
+          maxLength: 64
+          description: The person a token of the site role said it acted for (the X-ESM-Acting-User header). Only a note; missing for every other caller and when the header was not sent.
     AuditEntry:
       type: object
       properties:

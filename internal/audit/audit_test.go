@@ -212,3 +212,38 @@ func TestRecentSkipsOverlongLines(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+// The person a site token acts for is written beside the token, as given
+// but for the same scrubbing and cut as every other text field, and an entry
+// without one has no such field.
+func TestActingUserIsRecordedScrubbedAndCut(t *testing.T) {
+	l, st := openLog(t)
+	tok := "esm_" + strings.Repeat("a1B2", 11)
+	long := strings.Repeat("é", 200)
+	for _, who := range []string{"jane", "Zoë Ångström", tok, long, ""} {
+		if err := l.Append(Entry{Actor: Actor{Kind: ActorToken, ID: "tok_1", Role: "site", ActingUser: who}, Action: "instance.start", OK: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := l.Recent(10)
+	if err != nil || len(got) != 5 {
+		t.Fatalf("%v %+v", err, got)
+	}
+	if got[0].Actor.ActingUser != "jane" || got[1].Actor.ActingUser != "Zoë Ångström" || got[0].Actor.ID != "tok_1" {
+		t.Fatalf("recorded as %+v / %+v", got[0].Actor, got[1].Actor)
+	}
+	if got[2].Actor.ActingUser != "esm_********" {
+		t.Fatalf("a token in the acting user: %q", got[2].Actor.ActingUser)
+	}
+	if u := got[3].Actor.ActingUser; len(u) > MaxField || !utf8.ValidString(u) || !strings.HasSuffix(u, clipMark) {
+		t.Fatalf("a long acting user: %d bytes, %q", len(u), u)
+	}
+	b, _ := st.ReadFile(FileName)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if strings.Contains(lines[4], "acting_user") || !strings.Contains(lines[0], `"acting_user":"jane"`) {
+		t.Fatalf("lines:\n%s", b)
+	}
+	if strings.Contains(string(b), tok) {
+		t.Fatal("the token is in the audit log")
+	}
+}

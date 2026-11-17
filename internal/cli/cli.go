@@ -112,7 +112,10 @@ Steam:
   steam password <name> [--clear]   set a branch password, read from standard input
 
 Tokens:
-  token create --role read|operator|admin [--name NAME]
+  token create --role read|operator|admin|site [--name NAME]
+                                site is for a website's admin panel: what an
+                                operator may do, a few calls more, and no token,
+                                user, audit, secret or instance create/delete
 
 Logins:
   user list                     the logins: name, role, last login, open sessions

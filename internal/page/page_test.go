@@ -485,6 +485,29 @@ func TestEveryScreen(t *testing.T) {
 	if !strings.Contains(admin["/box"], `data-act="revoke"`) || !strings.Contains(rd["/box"], "need the admin role") || strings.Contains(op["/box"], `data-form="token"`) {
 		t.Error("tokens are for admins only")
 	}
+	// The form that makes a token offers the four roles a token may have,
+	// each with a hint of what it may do; a login's role is not among
+	// them by another name.
+	sel := regexp.MustCompile(`(?s)<select name="role">(.*?)</select>`).FindStringSubmatch(admin["/box"])
+	if sel == nil {
+		t.Fatal("the Box screen has no role choice for a new token")
+	}
+	var roles []string
+	for _, m := range regexp.MustCompile(`<option value="([a-z]+)">([^<]+)</option>`).FindAllStringSubmatch(sel[1], -1) {
+		roles = append(roles, m[1])
+		if !strings.HasPrefix(m[2], m[1]+": ") {
+			t.Errorf("the role %q has the hint %q", m[1], m[2])
+		}
+		if m[1] == "site" && (!strings.Contains(m[2], "website") || !strings.Contains(m[2], "Steam")) {
+			t.Errorf("the hint of the site role does not say what it is for: %q", m[2])
+		}
+	}
+	if strings.Join(roles, " ") != "read operator admin site" {
+		t.Errorf("the roles of a new token: %v", roles)
+	}
+	if !strings.Contains(admin["/box"], "site: for a website's admin panel") && !strings.Contains(admin["/box"], "site: for a website&#39;s admin panel") {
+		t.Error("the Box screen does not describe the site role")
+	}
 	if !strings.Contains(admin["/audit"], "instance.backup") || !strings.Contains(rd["/audit"], "needs the admin role") {
 		t.Error("the audit log is for admins only")
 	}

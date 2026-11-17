@@ -44,6 +44,10 @@ type Actor struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
 	Role string `json:"role,omitempty"`
+	// ActingUser is the person a site token says it acts for (the
+	// X-ESM-Acting-User header): what the caller wrote, recorded and never
+	// used to decide anything.
+	ActingUser string `json:"acting_user,omitempty"`
 }
 
 // Entry is one audit record.
@@ -129,6 +133,7 @@ func (l *Log) Append(e Entry) error {
 	e.Target = clip(Scrub(clip(e.Target)))
 	e.Error = clip(Scrub(clip(e.Error)))
 	e.Actor.ID = clip(Scrub(clip(e.Actor.ID)))
+	e.Actor.ActingUser = clip(Scrub(clip(e.Actor.ActingUser)))
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err

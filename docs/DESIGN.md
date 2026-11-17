@@ -900,7 +900,10 @@ secrets files with users, token hashes and every instance's passwords
 included, and connect to the unix socket, which acts as admin. Installing
 a build is therefore as much as being admin, and only the `admin` role may
 do it (`POST /api/v1/builds`). The `operator` role can still update an
-instance to a build an admin installed. Keeping game servers away from
+instance to a build an admin installed, and the `site` role can also run
+a Steam source of `esm.json` (`"source": "steam:<name>"`), which is a
+program the admin chose to trust, never a folder, an archive or an address
+(see [The site role](#the-site-role)). Keeping game servers away from
 ESM's files is an open item (see [Open items](#open-items)).
 
 Everything is unpacked into `tmp/`, the manifest and every hash are checked,
@@ -1315,7 +1318,9 @@ skipped.
 - JSON in and out, snake_case field names, no polymorphic fields, no
   integers above 2^53.
 - Reads are GET. Every change is POST, PUT, PATCH or DELETE with a JSON body
-  (an empty body counts as `{}`), at most 1 MiB.
+  (an empty body counts as `{}`), at most 1 MiB. A body is exactly one JSON
+  value: anything after it, a second value or a closing brace or bracket
+  that nothing opened, is 400 `bad_request` and nothing is done.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
   with 400, 401, 403, 404, 405, 408, 409, 413, 415, 421, 422, 429 or 500. (The
   HTTP server itself answers malformed requests and request headers over
@@ -1338,7 +1343,9 @@ skipped.
   bounds of [Failed authentications](#logins-and-exposure), so that no
   client fills the disk without one. Audit entries and logs never contain
   passwords or tokens. Each text field of an entry is cut to 256 bytes, and
-  reading the audit log skips a line it cannot read.
+  reading the audit log skips a line it cannot read. The entry of a call
+  by a token of the site role also names the person the token says it acts
+  for, `actor.acting_user` (see [The site role](#the-site-role)).
 - An instance carries `warnings`, a list of codes: `secrets_on_command_line`,
   `secrets_unconfirmed` (both in [Passwords](#passwords)),
   `limits_not_enforced` (it has resource limits and the process supervisor
@@ -1372,10 +1379,11 @@ skipped.
 
 - Steam and updates: `GET /api/v1/steam` lists the Steam sources (never a
   password); `PUT /api/v1/steam/{name}/password` sets one (admin); `POST
-  /api/v1/builds` with `{"source": "steam:<name>"}` runs a source (admin;
-  200 when its build is installed already). `GET /api/v1/box` carries
-  `update_available`, `release` and `last_self_update` (the last self-update
-  that did not come up and was rolled back, else null); `POST
+  /api/v1/builds` with `{"source": "steam:<name>"}` runs a source (admin or
+  [site](#the-site-role); 200 when its build is installed already).
+  `GET /api/v1/box` carries `update_available`, `release` and
+  `last_self_update` (the last self-update that did not come up and was
+  rolled back, else null); `POST
   /api/v1/box/release-check` (read
   role, CSRF token from a browser session) looks for a newer release at
   once and answers with that `release` status (see
@@ -1534,8 +1542,9 @@ See [openapi.yaml](openapi.yaml) for every endpoint.
   instances that pass their passwords on the command line; `operator` sees
   those too and also starts, stops, restarts, updates, backs up, restores
   and downloads backups; `admin` does everything else (install builds,
-  create, change, delete, secrets, tokens, pruning). Tokens are never
-  accepted in URLs.
+  create, change, delete, secrets, tokens, pruning). A fourth role, `site`,
+  is for the token of a website's admin panel and stands beside that ladder
+  (see [The site role](#the-site-role)). Tokens are never accepted in URLs.
 - **Page headers.** Every reply ESM writes, of the page and of the API,
   errors and the router's own redirects included, carries a strict
   Content-Security-Policy (no inline scripts or styles, nothing from other
@@ -1639,6 +1648,96 @@ by hand:
 - **Shutdown.** When ESM ends, every listener stops taking requests at
   once; event streams end first, and each listener then waits for its own
   open requests, the API listener as the main one.
+
+### The site role
+
+`site` is the role of the one token of a website's admin panel: a separate
+app, on this box or another machine, that manages ESM through the
+[API listener](#the-api-listener). The website signs its employees in
+itself and decides what each may do; ESM sees only its token. So the role
+holds what such a panel needs and nothing that amounts to full control of
+the box.
+
+- **Tokens only.** An admin makes one with `esm token create --role site
+  --name panel` or `POST /api/v1/tokens`. A login cannot have the role: it
+  cannot be made with it, and a login that `users.json` names with it
+  (made by hand) is refused at login (403) and gets no session.
+- **What it may do.** Everything the operator role may (every call the read
+  role may, among them looking for a newer ESM release with
+  `POST /api/v1/box/release-check`; start, stop, restart, update an
+  instance to an installed build, back up, restore, download a backup,
+  logs, events) and four calls more: `PATCH /api/v1/instances/{name}`
+  with the fields of a panel only (below), `POST /api/v1/builds` with a
+  Steam source only, `POST /api/v1/builds/prune` and
+  `POST /api/v1/box/self-update` without `exit_anyway`.
+- **What it may not (403).** Tokens (list, make, revoke), logins, the audit
+  log and its events, creating and deleting instances, secrets (passwords
+  and tokens of a server), a Steam password, deleting a build, the health
+  check, and the call that only the unix socket answers. Three of the four
+  are open in part: `PATCH` (next bullet), `POST /api/v1/builds` with a folder, an archive or an
+  https address, which is a program that runs with ESM's own rights (see
+  [Builds](#builds)), is refused: only a source `steam:<name>` goes on, and
+  that one names a source the admin put in `esm.json`; the check reads the
+  source the way the install does, so nothing that the install would take
+  for a folder or an address passes it. And `POST /api/v1/box/self-update`
+  with `exit_anyway` true is refused, so that ESM never stays down because
+  of the site: the check is on the request that the update then runs with.
+  Each refusal is an audit entry (`instance.change`, `build.install`,
+  `box.self_update`) like any refused call.
+- **What it may change of a server.** `PATCH /api/v1/instances/{name}` takes
+  these fields from it: `display_name`, `max_players`, `listed`, `rules`,
+  `auto_update`, `update_max_wait`, `autostart`, `restart_on_crash`,
+  `schedule`, `backup`, `map`, `world`, `cluster` and `channel`. A body
+  that has any other key is refused with 403, which names the key (up to
+  five of them) and lists the fields it may change, and nothing in it is
+  changed, those it may change included: `extra_args`, `limits`,
+  `bind_ip`, `ports`, `secret_delivery`, `build` (which is changed by an
+  update), and every field added to the call later. Those reach the
+  server's command line or the box, and stay the admin's. The list is an
+  allow list, `sitePatchFields` in `internal/api/site.go`, checked twice.
+  First on the keys exactly as the caller wrote them, before anything is
+  decoded: a key that only differs in case, is a null, or is no field at
+  all is refused as well, and so is a body that is not exactly one JSON
+  object (400), never left to the decoder. Then on the request that was
+  decoded, the one that is applied: a field that is set and not on the
+  list is refused. So whatever way a body is read, nothing off the list
+  reaches the instance. A test reads the JSON names of the request's
+  fields by reflection and fails until each of them is classified, so that
+  a new field is closed to the site role until someone decides otherwise.
+  An admin is not limited.
+- **Beside the ladder.** `site` is not a step between `operator` and
+  `admin`. `auth.Role.Allows` says that it includes `read`, `operator` and
+  itself and nothing more (`admin` includes it), so a route that needs
+  `admin` stays closed to it; the four calls above are opened by name in
+  the route table (`rs` in `internal/api/api.go`, `Route.Site` in
+  `api.Routes()`), and a new route is closed to it unless it needs no more
+  than `operator`. A test calls every route with a site token and lists
+  what each answers, so that a new route has to be decided on. The Box
+  screen's form that makes a token offers the role, with a hint of what it
+  is for.
+- **The acting user.** A site token may send `X-ESM-Acting-User: <name>`,
+  the employee the call is for. ESM writes it in the audit entry of the
+  call, refused calls included, as `actor.acting_user` beside the token's
+  id (`"actor": {"kind": "token", "id": "tok_...", "role": "site",
+  "acting_user": "jane"}`), and in the event stream's audit events, which
+  only admins get. It is a note and nothing else: it is never used to
+  decide anything, and ESM does not know whether the website told the
+  truth. It is read from tokens of the site role only; for any other
+  caller (the other roles' tokens, a login, the socket) it is not looked
+  at and not an error. From a site token, up to 64 characters (not bytes)
+  of letters, marks, numbers, punctuation, symbols and plain spaces are
+  taken as written (no decoding); an empty value is none; a longer value,
+  a control character (a line break and a tab too), a character that
+  does not print (a no-break space, a mark that turns the text around),
+  bytes that are not UTF-8, or the header sent twice are refused with 400
+  `bad_acting_user` before the call is made. Like any call refused after
+  the token was known, a call that would change something is recorded as
+  failed, with the token and nobody to act for; a read is not recorded. A
+  refused header is not a failed authentication: the token was valid.
+  (Most control characters, and the delete character, never get that far:
+  the HTTP server answers a header with one with a bare 400, to any
+  caller.) Like any text of an entry it is scrubbed of what looks like a
+  token or a password switch.
 
 ## The web page
 
@@ -1816,7 +1915,7 @@ steam list | steam password <name> [--clear]   (the password on standard input)
 update <name> --to <version>
 backup <name>
 restore <name> <backup-id>
-token create --role read|operator|admin [--name NAME]
+token create --role read|operator|admin|site [--name NAME]
 user list | user passwd <name>   (asked twice without echo, or one line of standard input)
 ```
 

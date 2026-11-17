@@ -123,6 +123,7 @@
 <option value="read">read: look only</option>
 <option value="operator">operator: also start, stop, update, back up</option>
 <option value="admin">admin: everything</option>
+<option value="site">site: a website's admin panel (operator, settings, Steam installs, ESM updates)</option>
 </select></label>
 <button type="submit" class="btn primary">Create token</button>
 </div>
@@ -132,7 +133,7 @@
 <p class="note">Copy it now. ESM keeps only a hash of it.</p>
 </div>
 </form>
-<p class="note">admin: everything, installing builds included. operator: start, stop, restart, update, back up, restore, download backups. read: look only. ESM has one login, made at setup; more people use tokens for now.</p>
+<p class="note">admin: everything, installing builds included. operator: start, stop, restart, update, back up, restore, download backups. read: look only. site: for a website's admin panel, tokens only: what an operator may, changing a server's settings (not its command line, ports or limits), installing from a Steam source and updating ESM. ESM has one login, made at setup; more people use tokens for now.</p>
 {{else}}<p class="panel empty">Logins and tokens need the admin role.</p>{{end}}
 {{if eq $v.Session.Kind "user"}}<form class="panel stack" data-form="password" aria-labelledby="password-h">
 <h3 class="sub" id="password-h">Change your password</h3>
