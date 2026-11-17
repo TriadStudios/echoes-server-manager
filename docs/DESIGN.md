@@ -94,6 +94,7 @@ return the JSON 404 error.
   instances/
     <name>/
       instance.json            settings
+      revision                 the instance's revision, a number (none: 1)
       secrets.json             server and admin passwords (0600)
       data/                    the server's own folder (-UserDir)
         Saved/SaveGames/...    its world saves (what backups copy)
@@ -172,7 +173,7 @@ are refused, so typos are reported.
 | `extra_args`       | Extra server arguments, each starting with `-`. |
 | `secret_delivery`  | How the server gets its passwords: `file` (default) or `command_line` (unsafe on a shared box). See [Passwords](#passwords). |
 | `previous_builds`  | Builds this instance ran before, newest first. |
-| `revision`         | Counts the stored changes of the settings, from 1; set by ESM, never by a request. See [Revision and If-Match](#revision-and-if-match). |
+| `revision`         | Not a field of `instance.json`: a file `revision` beside it counts the stored changes of the settings, from 1; set by ESM, never by a request. See [Revision and If-Match](#revision-and-if-match). |
 
 Rules and extra arguments may not repeat a switch ESM sets itself (ports,
 names, `-SteamServerName` among them, passwords and tokens, the secrets
@@ -272,20 +273,35 @@ from the web page, the command line or another client. An instance has a
 `revision` for that, and the two calls that change what is stored take an
 `If-Match` that makes the change conditional on it.
 
-- **The revision.** A whole number, 1 when the instance is made, stored in
-  `instance.json` with the rest. Every stored change of the instance adds
-  1: a `PATCH` (one that sets nothing too, which stores the file as every
-  `PATCH` does), a `PUT .../secrets`, and a switch of the build (an update,
-  the roll back of one that did not get ready, an automatic update, the roll
-  back of an unproven one). Reading, a refused change and a change of state
-  (start, stop, a crash) add nothing. An instance stored before there were
-  revisions has none in its file and is read as 1; its first change stores 2.
-  `GET /instances`, `GET /instances/{name}` and every answer that carries an
-  instance show it as `revision`, and a request cannot set it (it is not a
-  field of a create or a change, so a body that names it is refused as any
-  unknown field). A change of secrets writes `instance.json` first and
-  `secrets.json` after it: a failure in between can only make a caller's
-  condition fail without a change, never let one pass after a change.
+- **The revision.** A whole number, 1 when the instance is made. Every
+  stored change of the instance adds 1: a `PATCH` (one that sets nothing
+  too, which stores the file as every `PATCH` does), a `PUT .../secrets`,
+  and a switch of the build (an update, the roll back of one that did not
+  get ready, an automatic update, the roll back of an unproven one).
+  Reading, a refused change and a change of state (start, stop, a crash) add
+  nothing. `GET /instances`, `GET /instances/{name}` and every answer that
+  carries an instance show it as `revision`, and a request cannot set it (it
+  is not a field of a create or a change, so a body that names it is refused
+  as any unknown field).
+- **Where it is kept.** In a file of its own, `instances/<name>/revision`
+  (a decimal number and a line break), not in `instance.json`: that file
+  keeps exactly the fields of the release before revisions, which refuses a
+  field it does not know, so an older ESM put back (by the rollback of a
+  self-update that did not come up, or by hand) still reads every instance.
+  Such a release reads the files of an instance's folder it knows by name,
+  and lists only the folders under `instances/`, so the extra file is
+  invisible to it. A test reads every `instance.json` this release stores,
+  after a change, secrets, an update and an automatic update, as that release
+  does (a copy of its struct, unknown fields refused). No file is made with
+  the instance: none is revision 1, and the first change writes 2. A file
+  that holds no revision (ESM never writes one, it replaces the file whole
+  and atomically) is read as 1, with a warning in the log.
+  The file is written under the instance's operation lock, before the file
+  the change is stored in (`instance.json`, `secrets.json`): a failure in
+  between can only leave a revision that no change was made for, which makes a
+  caller's condition fail, and never a change that no revision stands for.
+  Going back to an older release and forward again works, but what the older
+  one changes is not counted (see Known limits).
 - **The tag.** `GET /instances/{name}` and the answers of `POST /instances`,
   `PATCH` and `PUT .../secrets` send the revision as a strong `ETag`
   (`"7"`). The secrets' answer has `revision` as well, as it carries no
@@ -2346,9 +2362,14 @@ wrong, it changes in the adapter and the fake, and nowhere else.
   instance with an announcements or problem report token set has a
   `secrets.json` that older releases cannot read: clear its tokens first
   (`esm secret <name> announcements-token --clear`, and the same for
-  `problem-report-token`). An instance changed by a release that has
-  revisions has a `revision` line in its `instance.json`, which older
-  releases refuse: remove it before going back.
+  `problem-report-token`). Nothing of the revisions needs an edit: an
+  older release reads every `instance.json` this one writes.
+- **An older release does not count its changes.** A release from before
+  revisions ignores an instance's `revision` file and does not add to it, and
+  so does an edit of `instance.json` by hand. After going back to one and
+  forward again, an instance it changed has the revision it had, and a client
+  that kept a tag from before could name it. A panel that reads after ESM
+  was replaced is not caught by this.
 - **A revision starts again with a new instance.** An instance that is
   deleted and made again with the same name is at revision 1 again, so a
   client that kept a tag of the old one could name a revision the new

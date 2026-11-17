@@ -472,9 +472,12 @@ curl -s --cacert api-listener.crt --pinnedpubkey "$PIN" -X PATCH \
   them again. The command line does not send `If-Match`: `esm secret` and
   `esm update` make their change as they always did, and each adds 1 to the
   revision, so a panel that read before it is told with 412.
-- An ESM from before revisions does not read an `instance.json` that holds
-  a `revision` (it refuses unknown fields): remove that line from the
-  instance files before going back to one.
+- Going back to an older release keeps working, also by the rollback of a
+  self-update that did not come up: `instance.json` has no new field, and
+  the revision is kept in a file of its own beside it,
+  `instances/<name>/revision`, which an older ESM does not look at (none
+  is revision 1). What an older ESM changes is not counted in it, so after
+  going back and forth a panel reads again before it changes anything.
 
 ### Linux: keep servers running
 

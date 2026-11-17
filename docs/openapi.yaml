@@ -2041,8 +2041,9 @@ components:
             Counts the stored changes of the instance's settings, from 1 when
             it is made: every change (also one that sets nothing), every
             change of secrets and every switch of the build (an update, a
-            rollback, an automatic update) adds 1. One stored before this
-            field existed is at 1 when read. Send it as `If-Match: "<revision>"`
+            rollback, an automatic update) adds 1. It is kept in a file of
+            its own beside the instance's settings, and one without it is at
+            1. Send it as `If-Match: "<revision>"`
             on `PATCH` or `PUT .../secrets` to make the change only if nothing
             changed since (see the description of this API); it is also the
             `ETag` of the calls that give one instance. Never set by a request.
