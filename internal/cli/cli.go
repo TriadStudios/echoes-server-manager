@@ -97,6 +97,13 @@ Instances:
   backup <name>
   restore <name> <backup-id>
 
+Jobs (long calls that the web page or a website starts with async=true; the
+commands of this program always wait for their own):
+  jobs [--state running|done|failed|cancelled] [--target T]
+                                list them, newest first
+  job <id>                      one job: its state, its steps and how long each took,
+                                and why it failed
+
 Builds:
   build install <folder|archive|https-url> [--sha256 HEX]   (local sources from the import folder)
   build install steam:<source>  download the source's branch with SteamCMD and
@@ -183,6 +190,10 @@ func MainIn(args []string, stdin io.Reader, stdout, stderr io.Writer, version st
 		err = e.backup(rest)
 	case "restore":
 		err = e.restore(rest)
+	case "jobs":
+		err = e.jobsCmd(rest)
+	case "job":
+		err = e.jobCmd(rest)
 	case "build":
 		err = e.build(rest)
 	case "token":
