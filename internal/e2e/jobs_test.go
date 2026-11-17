@@ -906,12 +906,26 @@ func TestJobEventsAreSentToReaders(t *testing.T) {
 	if n != len(seen) {
 		t.Errorf("the admin got %d job events, the reader %d", n, len(seen))
 	}
-	// Both streams were fed by the same publications, and the admin's has them
-	// all: nothing of the job of alpha is on the stream for beta.
-	select {
-	case e := <-only.events:
-		t.Fatalf("an event of a job of alpha on a stream for beta: %+v", e)
-	default:
+	// Nothing of the job of alpha is on the stream for beta. An event still on
+	// its way cannot be told from none, so a job of beta is run after it: the
+	// events of the stream come in the order they were published, and every
+	// event that the stream got before the end of that job is looked at.
+	marker := h.jobEnds(h.startAsync(h.admin, "/api/v1/instances/beta/backup", nil).ID)
+	var onlyBeta int
+	only.next(t, 20*time.Second, func(e events.Event) bool {
+		var ev jobs.Job
+		if e.Type != events.TypeJob || !decodeJob(e, &ev) {
+			t.Errorf("an event that is no job event on a stream for jobs: %+v", e)
+			return false
+		}
+		if e.Instance != "beta" || ev.Target != "beta" || ev.ID == j.ID {
+			t.Errorf("an event of a job of %q on a stream for beta: %+v", ev.Target, e)
+		}
+		onlyBeta++
+		return ev.ID == marker.ID && ev.State == jobs.StateDone
+	})
+	if onlyBeta < 3 {
+		t.Errorf("the stream for beta got %d events of the job of beta", onlyBeta)
 	}
 	if a := h.raw("GET", "/api/v1/events?types=nonsense", rd, nil); a.status != http.StatusUnprocessableEntity {
 		t.Fatalf("a type that is none: %d %s", a.status, a.body)

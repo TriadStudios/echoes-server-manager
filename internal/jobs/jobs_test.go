@@ -579,6 +579,9 @@ func TestCloseWaitsForJobsThenStopsThem(t *testing.T) {
 	}()
 	// Close has begun once the runner takes no more jobs (a job that is taken
 	// before that ends at once); the job that is held keeps it from ending.
+	// The loop has a limit of its own: Close that never begins fails the test
+	// here, not at the time limit of the whole run.
+	begun := time.Now().Add(30 * time.Second)
 	for {
 		_, err := r.Start(Spec{Kind: KindBackup, Target: "b"}, func(context.Context) (any, error) { return nil, nil })
 		if errors.Is(err, ErrClosed) {
@@ -586,6 +589,9 @@ func TestCloseWaitsForJobsThenStopsThem(t *testing.T) {
 		}
 		if err != nil && !errors.Is(err, ErrBusy) {
 			t.Fatalf("a job started while closing: %v", err)
+		}
+		if time.Now().After(begun) {
+			t.Fatal("Close did not stop the runner taking jobs")
 		}
 		runtime.Gosched()
 	}

@@ -35,7 +35,11 @@ func TestMain(m *testing.M) {
 	os.Exit(testkit.Run(m))
 }
 
-// Each harness gets its own ports so parallel tests never collide.
+// Each harness gets its own ports so parallel tests never collide: a block of
+// 10 game ports from 30000 and one of 10 query ports from 36000, 20 apart, so
+// that the two ranges of different harnesses stay apart as long as there are
+// fewer than 300 of them in a run (the ranges of the page tests start at 33000
+// and those of the instance tests below 30000).
 var portBlock atomic.Int32
 
 // lockedBuffer is a bytes.Buffer safe for concurrent use.
@@ -96,7 +100,7 @@ func newESMTuned(t *testing.T, supervisorKind string, tune func(*service.Options
 	}
 	blk := int(portBlock.Add(1))
 	h := &harness{t: t, root: root, src: t.TempDir(), supervisor: supervisorKind, http: &http.Client{},
-		gameLo: 30000 + blk*20, queryLo: 31000 + blk*20, tune: tune}
+		gameLo: 30000 + blk*20, queryLo: 36000 + blk*20, tune: tune}
 	cfg := map[string]any{
 		"listen":           "127.0.0.1:0",
 		"game_ports":       fmt.Sprintf("%d-%d", h.gameLo, h.gameLo+9),

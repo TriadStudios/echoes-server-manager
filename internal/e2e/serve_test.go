@@ -70,7 +70,7 @@ func TestServeEndsAtItsStopSignal(t *testing.T) {
 	cfg := map[string]any{
 		"listen":           "127.0.0.1:0",
 		"game_ports":       fmt.Sprintf("%d-%d", 30000+blk*20, 30000+blk*20+9),
-		"query_ports":      fmt.Sprintf("%d-%d", 31000+blk*20, 31000+blk*20+9),
+		"query_ports":      fmt.Sprintf("%d-%d", 36000+blk*20, 36000+blk*20+9),
 		"supervisor":       "process",
 		"stop_timeout":     "5s",
 		"ready_timeout":    "10s",
