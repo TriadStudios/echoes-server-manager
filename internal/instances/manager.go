@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,13 +29,14 @@ const (
 	backupsDir   = "backups"
 )
 
-func instDir(name string) string     { return instancesDir + "/" + name }
-func instFile(name string) string    { return instDir(name) + "/instance.json" }
-func secretsFile(name string) string { return instDir(name) + "/secrets.json" }
-func dataDir(name string) string     { return instDir(name) + "/data" }
-func consoleFile(name string) string { return instDir(name) + "/console.log" }
-func stateFile(name string) string   { return instDir(name) + "/run/state.json" }
-func serverLog(name string) string   { return instDir(name) + "/" + gameserver.ServerLogRel }
+func instDir(name string) string      { return instancesDir + "/" + name }
+func instFile(name string) string     { return instDir(name) + "/instance.json" }
+func revisionFile(name string) string { return instDir(name) + "/revision" }
+func secretsFile(name string) string  { return instDir(name) + "/secrets.json" }
+func dataDir(name string) string      { return instDir(name) + "/data" }
+func consoleFile(name string) string  { return instDir(name) + "/console.log" }
+func stateFile(name string) string    { return instDir(name) + "/run/state.json" }
+func serverLog(name string) string    { return instDir(name) + "/" + gameserver.ServerLogRel }
 
 // previousServerLog is where the server log of the run before the current
 // one is kept: each start begins a new server log.
@@ -80,6 +83,9 @@ type Options struct {
 // things an operator should know.
 type View struct {
 	Instance
+	// Revision is the instance's revision (see Condition): it counts the
+	// stored changes of the instance, from 1.
+	Revision  int64       `json:"revision"`
 	Secrets   SecretFlags `json:"secrets"`
 	Status    Status      `json:"status"`
 	Live      Live        `json:"live"`
@@ -127,6 +133,7 @@ type rt struct {
 
 	mu           sync.Mutex // guards everything below
 	cfg          Instance
+	revision     int64 // the instance's revision, 1 or more (see storeRevision)
 	status       Status
 	crashes      []time.Time
 	gen          uint64 // bumped whenever the current run ends or is replaced
@@ -279,7 +286,7 @@ func New(opts Options) (*Manager, error) {
 			m.log.Warn("skipping instance whose name does not match its folder", "folder", e.Name(), "name", in.Name)
 			continue
 		}
-		r := &rt{name: in.Name, cfg: in}
+		r := &rt{name: in.Name, cfg: in, revision: m.loadRevision(in.Name)}
 		sec, err := m.readSecrets(in.Name)
 		if err != nil {
 			m.log.Warn("cannot read the secrets of an instance", "instance", in.Name, "err", err)
@@ -484,7 +491,7 @@ func (m *Manager) publishState(name string, st Status, hidden bool) {
 
 func (m *Manager) view(in *rt) View {
 	in.mu.Lock()
-	v := View{Instance: in.cfg.clone(), Status: in.status, Scheduled: m.scheduledLocked(in)}
+	v := View{Instance: in.cfg.clone(), Revision: in.revision, Status: in.status, Scheduled: m.scheduledLocked(in)}
 	serverID := in.serverID
 	auto := in.auto
 	in.mu.Unlock()
@@ -627,7 +634,7 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 		Name: req.Name, DisplayName: req.Name, Channel: channel, Build: b.Version, World: req.Name,
 		MaxPlayers: DefaultMaxPlayers, Listed: channel == builds.ChannelLive, RestartOnCrash: true,
 		Backup: BackupPolicy{Keep: DefaultBackupKeep}, SecretDelivery: gameserver.SecretDelivery,
-		Created: now, Updated: now, Revision: 1,
+		Created: now, Updated: now,
 	}
 	in.normalize()
 	req.Settings.apply(&in)
@@ -654,7 +661,8 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 		m.st.RemoveAll(instDir(in.Name))
 		return View{}, err
 	}
-	r := &rt{name: in.Name, cfg: in}
+	// A revision file is made by the first change: none is revision 1.
+	r := &rt{name: in.Name, cfg: in, revision: 1}
 	r.setFilterLocked()
 	r.status = Status{Name: in.Name, Build: in.Build}
 	m.insts[in.Name] = r
@@ -697,7 +705,8 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 // The condition is checked once the instance's operation lock is held and
 // before the change is checked itself, and the change is written under the
 // same lock, so of several changes made for the same revision exactly one
-// is made. The view returned carries the revision the change made.
+// is made. The view returned carries the revision the change made, which is
+// stored (storeRevision) before the settings are.
 func (m *Manager) PatchIf(name string, req PatchRequest, cond Condition) (v View, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -710,9 +719,10 @@ func (m *Manager) PatchIf(name string, req PatchRequest, cond Condition) (v View
 	defer in.op.Unlock()
 	in.mu.Lock()
 	old := in.cfg.clone()
+	revision := in.revision
 	active := in.status.State.active()
 	in.mu.Unlock()
-	if err := cond.check(name, old.Revision); err != nil {
+	if err := cond.check(name, revision); err != nil {
 		return View{}, false, err
 	}
 	cfg := old.clone()
@@ -782,7 +792,9 @@ func (m *Manager) PatchIf(name string, req PatchRequest, cond Condition) (v View
 		in.mu.Unlock()
 	}
 	cfg.Updated = m.now()
-	cfg.Revision = old.Revision + 1
+	if err := m.bumpRevision(in, revision); err != nil {
+		return View{}, false, err
+	}
 	if err := m.st.WriteJSON(instFile(name), cfg, 0o600); err != nil {
 		return View{}, false, err
 	}
@@ -963,10 +975,10 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 
 // SetSecretsIf is SetSecrets that is made only when the instance meets cond
 // (see PatchIf). A change of secrets is a stored change of the instance,
-// which adds 1 to its revision: the revision is written to instance.json
-// before the secrets file, so a failure in between can only make a caller's
-// condition fail without a change, never let one pass after a change. It
-// returns the revision the change made.
+// which adds 1 to its revision: the revision is stored before the secrets
+// file, so a failure in between can only make a caller's condition fail
+// without a change, never let one pass after a change. It returns the
+// revision the change made.
 func (m *Manager) SetSecretsIf(name string, req SecretsRequest, cond Condition) (flags SecretFlags, revision int64, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
@@ -979,8 +991,9 @@ func (m *Manager) SetSecretsIf(name string, req SecretsRequest, cond Condition) 
 	defer in.op.Unlock()
 	in.mu.Lock()
 	cfg := in.cfg.clone()
+	revision = in.revision
 	in.mu.Unlock()
-	if err := cond.check(name, cfg.Revision); err != nil {
+	if err := cond.check(name, revision); err != nil {
 		return SecretFlags{}, 0, false, err
 	}
 	s, err := m.readSecrets(name)
@@ -1003,14 +1016,10 @@ func (m *Manager) SetSecretsIf(name string, req SecretsRequest, cond Condition) 
 	if err := m.checkLine(&cfg, before, cfg, s); err != nil {
 		return SecretFlags{}, 0, false, err
 	}
-	next := cfg
-	next.Revision++
-	if err := m.st.WriteJSON(instFile(name), next, 0o600); err != nil {
+	if err := m.bumpRevision(in, revision); err != nil {
 		return SecretFlags{}, 0, false, err
 	}
-	in.mu.Lock()
-	in.cfg.Revision = next.Revision
-	in.mu.Unlock()
+	revision++
 	if err := m.st.WriteJSON(secretsFile(name), s, 0o600); err != nil {
 		return SecretFlags{}, 0, false, err
 	}
@@ -1025,7 +1034,58 @@ func (m *Manager) SetSecretsIf(name string, req SecretsRequest, cond Condition) 
 		m.emitLocked(in)
 	}
 	in.mu.Unlock()
-	return m.secretFlags(name), next.Revision, active, nil
+	return m.secretFlags(name), revision, active, nil
+}
+
+// loadRevision reads the revision of the instance name from its revision
+// file. A file that is not there is revision 1: the instance was made, or
+// last changed, by a release without revisions, or has not been changed
+// since it was made. One that cannot be read or is not a revision (ESM
+// never writes one: it replaces the file whole) is revision 1 too, with a
+// warning in the log.
+func (m *Manager) loadRevision(name string) int64 {
+	b, err := m.st.ReadFile(revisionFile(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return 1
+	}
+	if err != nil {
+		m.log.Warn("cannot read the revision of an instance; taking it as 1", "instance", name, "err", err)
+		return 1
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || n < 1 {
+		m.log.Warn("the revision file of an instance does not hold a revision; taking it as 1", "instance", name)
+		return 1
+	}
+	return n
+}
+
+// bumpRevision adds 1 to the revision of in, which is current, and makes it
+// the instance's once it is stored (storeRevision). It is called before the
+// file the change is stored in (instance.json, secrets.json) is written, so
+// a failure in between can only leave a revision no change was made for,
+// which makes a caller's condition fail without a change, and never a
+// change that no revision stands for. When the new revision is stored and a
+// later write fails, the revision stays the new one, as the file has it.
+// in.op must be held, the lock of every change of the instance.
+func (m *Manager) bumpRevision(in *rt, current int64) error {
+	if err := m.storeRevision(in.name, current+1); err != nil {
+		return err
+	}
+	in.mu.Lock()
+	in.revision = current + 1
+	in.mu.Unlock()
+	return nil
+}
+
+// storeRevision writes the revision file of the instance name, a decimal
+// number and a line break, in place of the one there, whole or not at all
+// (store.WriteFile replaces it atomically). Releases from before revisions
+// read only the files they know in an instance's folder (instance.json,
+// secrets.json and what is under run, data and logs), so the extra file does
+// not matter to them.
+func (m *Manager) storeRevision(name string, rev int64) error {
+	return m.st.WriteFile(revisionFile(name), []byte(strconv.FormatInt(rev, 10)+"\n"), 0o600)
 }
 
 // Cluster groups instance names by their cluster field.
@@ -1153,8 +1213,12 @@ func (m *Manager) setBuild(in *rt, b string, prev []string) error {
 		cfg.PreviousBuilds = cfg.PreviousBuilds[:m.cfg.KeepPreviousBuilds]
 	}
 	cfg.Updated = m.now()
-	cfg.Revision++
 	cfg.normalize()
+	// The same as bumpRevision, with in.mu held already.
+	if err := m.storeRevision(in.name, in.revision+1); err != nil {
+		return err
+	}
+	in.revision++
 	if err := m.st.WriteJSON(instFile(in.name), cfg, 0o600); err != nil {
 		return err
 	}

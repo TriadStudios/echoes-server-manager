@@ -6,6 +6,9 @@
 // Layout under the ESM root:
 //
 //	instances/<name>/instance.json  settings
+//	instances/<name>/revision       the instance's revision, a number
+//	                                (missing: 1); earlier releases do not
+//	                                look at it
 //	instances/<name>/secrets.json   server and admin passwords (0600)
 //	instances/<name>/data/          the server's data folder
 //	instances/<name>/console.log    the server's stdout and stderr
@@ -114,14 +117,6 @@ type Instance struct {
 	PreviousBuilds []string        `json:"previous_builds"`
 	Created        time.Time       `json:"created"`
 	Updated        time.Time       `json:"updated"`
-	// Revision counts the stored changes of the instance's settings, from 1
-	// when it is made: every change of settings, change of secrets and
-	// switch of the build (an update, a rollback, an automatic update) adds
-	// 1. A caller that read the instance and wants to change it only if
-	// nothing changed since sends the revision it read (see Condition). One
-	// stored before revisions existed has none and is read as 1. It is
-	// never set by a request.
-	Revision int64 `json:"revision"`
 }
 
 // normalize replaces nil maps and slices with empty ones so the JSON form
@@ -145,10 +140,16 @@ func (in *Instance) normalize() {
 	if in.UpdateMaxWait == 0 {
 		in.UpdateMaxWait = config.Duration(DefaultUpdateMaxWait)
 	}
-	if in.Revision < 1 {
-		in.Revision = 1
-	}
 }
+
+// The revision of an instance counts the stored changes of it, from 1 when
+// it is made: every change of settings, change of secrets and switch of the
+// build (an update, a rollback, an automatic update) adds 1. A caller that
+// read the instance and wants to change it only if nothing changed since
+// sends the revision it read (see Condition). It is not a field of
+// Instance: instance.json is exactly what releases from before revisions
+// read (they refuse a field they do not know), so the revision is kept in
+// the file instances/<name>/revision next to it (see Manager.storeRevision).
 
 // Condition is what a change of an instance requires before it is made.
 // The zero value requires nothing.
