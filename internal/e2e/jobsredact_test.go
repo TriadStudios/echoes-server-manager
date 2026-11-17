@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
+	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/service"
@@ -191,6 +192,7 @@ func TestTheReadRoleSeesNoAuditDataInJobs(t *testing.T) {
 			t.Errorf("%s: the acting user of a job is %q (started as %q)", name, j.Actor.ActingUser, again.Actor.ActingUser)
 		}
 	}
+	h.waitAudit("end of the last job", func(e audit.Entry) bool { return e.Action == "job.end" && strings.HasPrefix(e.Target, again.ID+" ") })
 	log, _ := os.ReadFile(filepath.Join(h.root, "audit.log"))
 	if strings.Contains(string(log), secret) || strings.Contains(string(log), "hunter2") {
 		t.Errorf("the audit log has what the acting user wrote:\n%s", log)

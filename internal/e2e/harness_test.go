@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,12 +34,83 @@ func TestMain(m *testing.M) {
 	os.Exit(testkit.Run(m))
 }
 
-// Each harness gets its own ports so parallel tests never collide: a block of
-// 10 game ports from 30000 and one of 10 query ports from 36000, 20 apart, so
-// that the two ranges of different harnesses stay apart as long as there are
-// fewer than 300 of them in a run (the ranges of the page tests start at 33000
-// and those of the instance tests below 30000).
-var portBlock atomic.Int32
+// Each harness gets its own ports while it lives, so parallel tests never
+// collide: a block of 20 ports, the first 10 for games and the next 10 for
+// queries, taken from a pool of blocks that follow each other from portBase and
+// given back when the test ends (so a run of -count=10 does not use more than
+// the tests that run at the same time). The blocks must stay below the
+// ephemeral range of Linux (portCeiling and above), where the client sockets of
+// the tests and the 127.0.0.1:0 listeners of the services are given their
+// ports: a block in it is taken by one of them now and then, and a start fails
+// with port_in_use. They must also stay clear of the fixed ranges of the tests
+// of other packages, which run at the same time (see otherPortRanges). So at
+// most maxPortBlocks services can live at once, about 287, and one more fails
+// its test at once (nextPorts) and not by chance.
+const (
+	portBase    = 27000
+	portStride  = 20
+	portCeiling = 32768
+	// maxPortBlocks is how many blocks fit: the last one ends below portCeiling.
+	maxPortBlocks = (portCeiling - portBase - portStride) / portStride
+)
+
+// blockPool hands out the numbers 1 to max, and takes them back: the one that
+// was given back longest ago is given first.
+type blockPool struct {
+	mu   sync.Mutex
+	max  int
+	next int
+	free []int
+}
+
+func (p *blockPool) take() (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.free) > 0 {
+		n := p.free[0]
+		p.free = p.free[1:]
+		return n, true
+	}
+	if p.next >= p.max {
+		return 0, false
+	}
+	p.next++
+	return p.next, true
+}
+
+func (p *blockPool) give(n int) {
+	p.mu.Lock()
+	p.free = append(p.free, n)
+	p.mu.Unlock()
+}
+
+var portBlocks = &blockPool{max: maxPortBlocks}
+
+// portsOfBlock are the first game port and the first query port of block n.
+func portsOfBlock(n int) (game, query int) {
+	game = portBase + n*portStride
+	return game, game + 10
+}
+
+// portBlockFits says that block n, all 20 ports, is below portCeiling.
+func portBlockFits(n int) bool {
+	game, _ := portsOfBlock(n)
+	return game+portStride-1 < portCeiling
+}
+
+// nextPorts takes a block of ports for the test, and gives it back when the
+// test has ended and everything it started with it (cleanups run last to
+// first, and this is the first to be registered). A test that finds none free
+// fails.
+func nextPorts(t testing.TB) (game, query int) {
+	t.Helper()
+	n, ok := portBlocks.take()
+	if !ok {
+		t.Fatalf("more than %d services live at once: their ports would reach %d, the ephemeral range, where they collide with sockets of the tests", maxPortBlocks, portCeiling)
+	}
+	t.Cleanup(func() { portBlocks.give(n) })
+	return portsOfBlock(n)
+}
 
 // lockedBuffer is a bytes.Buffer safe for concurrent use.
 type lockedBuffer struct {
@@ -98,9 +168,9 @@ func newESMTuned(t *testing.T, supervisorKind string, tune func(*service.Options
 	if err != nil {
 		t.Fatal(err)
 	}
-	blk := int(portBlock.Add(1))
+	gameLo, queryLo := nextPorts(t)
 	h := &harness{t: t, root: root, src: t.TempDir(), supervisor: supervisorKind, http: &http.Client{},
-		gameLo: 30000 + blk*20, queryLo: 36000 + blk*20, tune: tune}
+		gameLo: gameLo, queryLo: queryLo, tune: tune}
 	cfg := map[string]any{
 		"listen":           "127.0.0.1:0",
 		"game_ports":       fmt.Sprintf("%d-%d", h.gameLo, h.gameLo+9),

@@ -159,6 +159,21 @@ func checkStepsAreWhole(t *testing.T, j jobs.Job) {
 	}
 }
 
+// waitAudit waits until the audit log has an entry that match says yes to.
+// The end of a job is recorded by the runner after the job shows as ended (the
+// hook that writes it runs once the job is over), so a test that has seen a job
+// end, and then reads the log, has to wait for its entry.
+func (h *harness) waitAudit(what string, match func(audit.Entry) bool) {
+	h.t.Helper()
+	testkit.Eventually(h.t, 20*time.Second, func() bool {
+		var al api.AuditList
+		if h.call("GET", "/api/v1/audit?limit=1000", h.admin, nil, &al) != http.StatusOK {
+			return false
+		}
+		return slices.ContainsFunc(al.Entries, match)
+	}, "the audit log has no %s", what)
+}
+
 // --- an update, a backup and a restore as jobs ---
 
 // An update with async=true is a job with its steps; the call that is not
@@ -294,6 +309,8 @@ func TestAsyncUpdateIsAJob(t *testing.T) {
 		t.Fatalf("a reader starts an update: %d %s", a.status, a.body)
 	}
 	// The audit log has the start, as accepted, and the end of the job.
+	h.waitAudit("end of the update job", func(e audit.Entry) bool { return e.Action == "job.end" && e.Target == j.ID+" update alpha" })
+	h.waitAudit("end of the failed update job", func(e audit.Entry) bool { return e.Action == "job.end" && e.Target == bad.ID+" update alpha" })
 	var al api.AuditList
 	h.must(http.StatusOK, "GET", "/api/v1/audit?limit=200", nil, &al)
 	var started, ended, endedBad bool
@@ -638,6 +655,9 @@ func TestAnInstallThatDownloadsIsCancelledByItsOwnRole(t *testing.T) {
 	if st := h.call("DELETE", "/api/v1/jobs/nope", h.admin, nil, &eb); st != http.StatusNotFound || eb.Error.Code != "not_found" {
 		t.Fatalf("a job that is not there: %d %+v", st, eb)
 	}
+	h.waitAudit("end of the cancelled install", func(e audit.Entry) bool {
+		return e.Action == "job.end" && strings.HasPrefix(e.Target, j.ID+" install ")
+	})
 	var al api.AuditList
 	h.must(http.StatusOK, "GET", "/api/v1/audit?limit=200", nil, &al)
 	var cancelEntry, endEntry bool
@@ -751,6 +771,10 @@ func TestASteamInstallJobShowsItsProgressAndTheSiteRoleCancelsIt(t *testing.T) {
 	if len(bl.Builds) != 0 {
 		t.Fatalf("builds after the cancel: %+v", bl)
 	}
+	// The end of the job is recorded after the job shows as ended: wait for it.
+	h.waitAudit("end of the cancelled Steam install", func(e audit.Entry) bool {
+		return e.Action == "job.end" && strings.HasPrefix(e.Target, j.ID+" install steam:main")
+	})
 	var al api.AuditList
 	h.must(http.StatusOK, "GET", "/api/v1/audit?limit=200", nil, &al)
 	var cancelEntry, endEntry bool
@@ -1072,6 +1096,7 @@ func TestAsyncSelfUpdateIsAJob(t *testing.T) {
 	if a := h.raw("POST", "/api/v1/box/self-update?async=true", h.admin, api.SelfUpdateRequest{Force: true}); a.status != http.StatusConflict || a.code() != "busy" {
 		t.Fatalf("a second self-update as a job: %d %s", a.status, a.body)
 	}
+	h.waitAudit("end of the self-update job", func(e audit.Entry) bool { return e.Action == "job.end" && e.Target == j.ID+" self_update esm" })
 	var al api.AuditList
 	h.must(http.StatusOK, "GET", "/api/v1/audit?limit=100", nil, &al)
 	var end bool

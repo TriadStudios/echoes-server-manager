@@ -88,6 +88,19 @@ func (jr *jobRig) call(role auth.Role, method, target, body string, more ...stri
 	return jr.do(method, target, body, h)
 }
 
+// waitAudit waits until the audit log has text in it: the end of a job is
+// written after the job shows as ended.
+func (jr *jobRig) waitAudit(text string) {
+	jr.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for !strings.Contains(jr.auditLog(), text) {
+		if time.Now().After(deadline) {
+			jr.t.Fatalf("the audit log has no %q:\n%s", text, jr.auditLog())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (jr *jobRig) job(id string) jobs.Job {
 	jr.t.Helper()
 	rec := jr.call(auth.RoleRead, "GET", "/api/v1/jobs/"+id, "")
@@ -170,7 +183,9 @@ func TestAJobGoesOnWhenItsRequestEnds(t *testing.T) {
 	if strings.Join(states, " ") != "running/ running/download running/restart done/restart" {
 		t.Fatalf("events %v", states)
 	}
-	// The audit log has the start as accepted and the end.
+	// The audit log has the start as accepted and the end (written after the job
+	// shows as ended, so it is waited for).
+	jr.waitAudit(j.ID + " self_update esm")
 	log := jr.auditLog()
 	if !strings.Contains(log, `"action":"box.self_update"`) || !strings.Contains(log, `"action":"job.end"`) ||
 		!strings.Contains(log, j.ID+" self_update esm") {
@@ -463,6 +478,7 @@ func TestTheActingUserOfAJobIsScrubbed(t *testing.T) {
 			t.Errorf("%s has the acting user as written: %s", what, body)
 		}
 	}
+	jr.waitAudit(j.ID + " self_update esm")
 	if strings.Contains(done.Actor.ActingUser, "hunter2") || strings.Contains(jr.auditLog(), "hunter2") || strings.Contains(jr.auditLog(), secret) {
 		t.Errorf("acting user %q, audit log:\n%s", done.Actor.ActingUser, jr.auditLog())
 	}
