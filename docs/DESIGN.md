@@ -1236,7 +1236,9 @@ skipped.
 - JSON in and out, snake_case field names, no polymorphic fields, no
   integers above 2^53.
 - Reads are GET. Every change is POST, PUT, PATCH or DELETE with a JSON body
-  (an empty body counts as `{}`), at most 1 MiB.
+  (an empty body counts as `{}`), at most 1 MiB. A body is exactly one JSON
+  value: anything after it, a second value or a closing brace or bracket
+  that nothing opened, is 400 `bad_request` and nothing is done.
 - One error shape everywhere: `{"error": {"code": "...", "message": "..."}}`
   with 400, 401, 403, 404, 405, 408, 409, 413, 415, 421, 422, 429 or 500. (The
   HTTP server itself answers malformed requests and request headers over
@@ -1607,13 +1609,17 @@ the box.
   `bind_ip`, `ports`, `secret_delivery`, `build` (which is changed by an
   update), and every field added to the call later. Those reach the
   server's command line or the box, and stay the admin's. The list is an
-  allow list, `sitePatchFields` in `internal/api/site.go`, matched against
-  the keys exactly as the caller wrote them: a key that only differs in
-  case, is a null, or is no field at all is refused as well, and the
-  check is made before anything is decoded. A test reads the JSON names
-  of the request's fields by reflection and fails until each of them is
-  classified, so that a new field is closed to the site role until
-  someone decides otherwise. An admin is not limited.
+  allow list, `sitePatchFields` in `internal/api/site.go`, checked twice.
+  First on the keys exactly as the caller wrote them, before anything is
+  decoded: a key that only differs in case, is a null, or is no field at
+  all is refused as well, and so is a body that is not exactly one JSON
+  object (400), never left to the decoder. Then on the request that was
+  decoded, the one that is applied: a field that is set and not on the
+  list is refused. So whatever way a body is read, nothing off the list
+  reaches the instance. A test reads the JSON names of the request's
+  fields by reflection and fails until each of them is classified, so that
+  a new field is closed to the site role until someone decides otherwise.
+  An admin is not limited.
 - **Beside the ladder.** `site` is not a step between `operator` and
   `admin`. `auth.Role.Allows` says that it includes `read`, `operator` and
   itself and nothing more (`admin` includes it), so a route that needs
@@ -1639,12 +1645,14 @@ the box.
   a control character (a line break and a tab too), a character that
   does not print (a no-break space, a mark that turns the text around),
   bytes that are not UTF-8, or the header sent twice are refused with 400
-  `bad_acting_user` before the call is made, and recorded as a failed call
-  of the token with nobody to act for. A refused header is not a failed
-  authentication: the token was valid. (Most control characters, and the
-  delete character, never get that far: the HTTP server answers a header
-  with one with a bare 400, to any caller.) Like any text of an entry it is
-  scrubbed of what looks like a token or a password switch.
+  `bad_acting_user` before the call is made. Like any call refused after
+  the token was known, a call that would change something is recorded as
+  failed, with the token and nobody to act for; a read is not recorded. A
+  refused header is not a failed authentication: the token was valid.
+  (Most control characters, and the delete character, never get that far:
+  the HTTP server answers a header with one with a bare 400, to any
+  caller.) Like any text of an entry it is scrubbed of what looks like a
+  token or a password switch.
 
 ## The web page
 
