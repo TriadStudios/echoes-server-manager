@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"unicode"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
+	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 )
 
 // The site role is for the token of a website's admin panel (see
@@ -103,13 +105,16 @@ var sitePatchFields = map[string]bool{
 	"channel":          true,
 }
 
-// limitPatch refuses with 403 a change call that names a field the site
-// role may not change, whatever its value (null too), before anything is
-// decoded or changed. It looks at the keys the caller wrote, exactly: a
-// key that is not on sitePatchFields is refused, also when it would only
-// differ in case, or is not a field at all. The body is left to be read
-// again. A caller with the admin role is not limited; a body that is not a
-// JSON object is left to decode, which answers 400.
+// limitPatch is the first of two checks that keep a change call (PATCH
+// /instances/{name}) of the site role to sitePatchFields. It refuses, with
+// 403, a body that has a key that is not on the list, whatever its value (a
+// null too), before anything is decoded or changed. It looks at the keys
+// the caller wrote, exactly: a key that only differs in case, or is no
+// field at all, is refused as well. For a caller who is not an admin a body
+// that is not exactly one JSON object (decodeJSON, as decode reads it) is
+// refused with 400, never left to decode: what the check cannot read is
+// not let through. The body is left to be read again. An admin is not
+// limited.
 func (c *call) limitPatch(r *http.Request) error {
 	if c.role.Allows(auth.RoleAdmin) {
 		return nil
@@ -120,8 +125,8 @@ func (c *call) limitPatch(r *http.Request) error {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	var keys map[string]json.RawMessage
-	if json.Unmarshal(b, &keys) != nil {
-		return nil
+	if decodeJSON(b, &keys) != nil {
+		return fault.BadRequestf("invalid JSON body: a change is exactly one JSON object")
 	}
 	var no []string
 	for k := range keys {
@@ -129,6 +134,53 @@ func (c *call) limitPatch(r *http.Request) error {
 			no = append(no, k)
 		}
 	}
+	return refusePatch(no)
+}
+
+// limitPatched is the second check: it looks at the request that decode
+// made of the body, the one that is applied, and refuses with 403 a field of
+// it that is set and not on sitePatchFields. Whatever the first check read
+// of the body, nothing the site role may not change gets through.
+func (c *call) limitPatched(req *instances.PatchRequest) error {
+	if c.role.Allows(auth.RoleAdmin) {
+		return nil
+	}
+	var no []string
+	for _, f := range setFields(reflect.ValueOf(req).Elem()) {
+		if !sitePatchFields[f] {
+			no = append(no, f)
+		}
+	}
+	return refusePatch(no)
+}
+
+// setFields lists the JSON names of the fields of the struct v, those of an
+// embedded struct included, that are not zero (for the pointers of a
+// request, that were given). A field without a JSON name is listed by its
+// Go name, which is on no list.
+func setFields(v reflect.Value) []string {
+	var out []string
+	for i := range v.NumField() {
+		f := v.Type().Field(i)
+		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+			out = append(out, setFields(v.Field(i))...)
+			continue
+		}
+		if v.Field(i).IsZero() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			name = f.Name
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// refusePatch is the 403 for the fields no (none: no error): it names them
+// (at most five, each cut short) and lists what the site role may change.
+func refusePatch(no []string) error {
 	if len(no) == 0 {
 		return nil
 	}

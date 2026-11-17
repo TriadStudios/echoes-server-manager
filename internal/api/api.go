@@ -777,6 +777,15 @@ func decode(r *http.Request, v any) error {
 	if err != nil {
 		return err
 	}
+	return decodeJSON(b, v)
+}
+
+// decodeJSON reads b, which is exactly one JSON value (and white space),
+// into v, and refuses what a field of v does not name. Anything after the
+// value is refused, whatever it is: a second value, but also a closing
+// bracket or brace that nothing opened, which Decoder.More does not see.
+// Blank b leaves v as it is.
+func decodeJSON(b []byte, v any) error {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return nil
 	}
@@ -785,8 +794,8 @@ func decode(r *http.Request, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return fault.BadRequestf("invalid JSON body: %v", err)
 	}
-	if dec.More() {
-		return fault.BadRequestf("invalid JSON body: more than one value")
+	if _, err := dec.Token(); err != io.EOF {
+		return fault.BadRequestf("invalid JSON body: there is more after the first value")
 	}
 	return nil
 }

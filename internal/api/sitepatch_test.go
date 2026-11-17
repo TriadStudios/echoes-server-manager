@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/auth"
+	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 )
 
@@ -149,8 +150,10 @@ func TestSiteTokenIsRefusedTheFieldsItMayNotChange(t *testing.T) {
 }
 
 // limitPatch lets through what the site role may send, in any combination
-// and with any value, and leaves what it cannot read to decode (400); an
-// admin is not limited at all; and the body can be read again afterwards.
+// and with any value, and refuses with 400 a body that is not exactly one
+// JSON object (it is not left to decode, which once let a closing brace
+// after the object hide what was in it); an admin is not limited at all;
+// and the body can be read again afterwards.
 func TestLimitPatchLooksAtTheNamesOfTheFields(t *testing.T) {
 	check := func(role auth.Role, body string) error {
 		t.Helper()
@@ -169,7 +172,7 @@ func TestLimitPatchLooksAtTheNamesOfTheFields(t *testing.T) {
 		}
 	}
 	all := `{"` + strings.Join(siteMayChange, `":1,"`) + `":1}`
-	for _, body := range []string{all, `{}`, ``, ` `, `null`, `[]`, `"x"`, `7`, `{`, `{"display_name":`, `not json`} {
+	for _, body := range []string{all, `{}`, ``, ` `, `null`, " {} \n", all + "\n"} {
 		if err := check(auth.RoleSite, body); err != nil {
 			t.Errorf("site role, body %q: %v", body, err)
 		}
@@ -182,6 +185,98 @@ func TestLimitPatchLooksAtTheNamesOfTheFields(t *testing.T) {
 		}
 		if err := check(auth.RoleAdmin, `{"`+f+`":null}`); err != nil {
 			t.Errorf("admin role, field %s: %v", f, err)
+		}
+	}
+	// Not one JSON object: refused, with what comes after the object or
+	// instead of it, so that nothing is read in two ways.
+	for _, body := range []string{
+		`[]`, `"x"`, `7`, `true`, `{`, `}`, `{"display_name":`, `not json`, `{"display_name":"x",}`, `{"display_name"}`,
+		`{}}`, `{}]`, `{} }`, `{} ]`, `{}x`, `{}{}`, `{} {}`, `{}, {}`, `{} 1`, `{}null`,
+		`{"display_name":"x"}}`, `{"display_name":"x"}]`, `{"display_name":"x"} }`, `{"display_name":"x"}x`,
+		`{"extra_args":["-Verbose"],"bind_ip":"127.0.0.1"}}`, `{"limits":{"memory_max":"4G"}}]`, `{"limits":{"memory_max":"4G"}} ]`,
+		`{"display_name":"x"}{"extra_args":["-x"]}`, `{"display_name":"x"} {"extra_args":["-x"]}`, `{"display_name":"x"}` + "\n" + `{"build":"1.0"}`,
+		`[{"display_name":"x"}]`, `{"display_name":"x"}` + "\x00",
+	} {
+		err := check(auth.RoleSite, body)
+		if fault.KindOf(err) != fault.BadRequest {
+			t.Errorf("site role, body %q: %v, want 400", body, err)
+		}
+		if err := check(auth.RoleAdmin, body); err != nil {
+			t.Errorf("admin role, body %q: %v (decode answers, not this)", body, err)
+		}
+	}
+}
+
+// limitPatched looks at the request that was decoded, which is what is
+// applied: a field that is set and not on the allow list is refused with
+// 403, whatever the body looked like.
+func TestLimitPatchedLooksAtTheRequestThatIsApplied(t *testing.T) {
+	site, admin := &call{role: auth.RoleSite}, &call{role: auth.RoleAdmin}
+	if err := site.limitPatched(&instances.PatchRequest{}); err != nil {
+		t.Errorf("nothing set: %v", err)
+	}
+	// One field set at a time, by reflection: not by any list of the code.
+	typ := reflect.TypeOf(instances.PatchRequest{})
+	var set func(v reflect.Value, name string) bool
+	set = func(v reflect.Value, name string) bool {
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			if f.Anonymous {
+				if set(v.Field(i), name) {
+					return true
+				}
+				continue
+			}
+			if n, _, _ := strings.Cut(f.Tag.Get("json"), ","); n == name {
+				v.Field(i).Set(reflect.New(f.Type.Elem()))
+				return true
+			}
+		}
+		return false
+	}
+	for _, f := range jsonFields(t, typ) {
+		var req instances.PatchRequest
+		if !set(reflect.ValueOf(&req).Elem(), f) {
+			t.Fatalf("cannot set %s", f)
+		}
+		err := site.limitPatched(&req)
+		var ae *apiError
+		switch may := slices.Contains(siteMayChange, f); {
+		case may && err != nil:
+			t.Errorf("site role, %s set: %v", f, err)
+		case !may && (!errors.As(err, &ae) || ae.status != http.StatusForbidden || !strings.Contains(err.Error(), "may not change "+f)):
+			t.Errorf("site role, %s set: %v", f, err)
+		}
+		if err := admin.limitPatched(&req); err != nil {
+			t.Errorf("admin role, %s set: %v", f, err)
+		}
+	}
+}
+
+// A body is exactly one JSON value: what follows it, a second value or a
+// closing bracket or brace that nothing opened, is refused with 400 on
+// every call that takes a body (decode.More does not see a closing one).
+func TestDecodeTakesOneValueOnly(t *testing.T) {
+	type body struct {
+		A int `json:"a"`
+	}
+	for _, c := range []struct {
+		in   string
+		want int // the value of a, -1 for a refusal
+	}{
+		{`{}`, 0}, {`{"a":3}`, 3}, {`{"a":3}` + "\n", 3}, {" \t" + `{"a":3}` + " \r\n\n", 3}, {``, 0}, {" \n", 0},
+		{`{}}`, -1}, {`{}]`, -1}, {`{} }`, -1}, {`{} ]`, -1}, {`{}x`, -1}, {`{}{}`, -1}, {`{} {}`, -1}, {`{},`, -1}, {`{} 1`, -1},
+		{`{"a":3}}`, -1}, {`{"a":3}]`, -1}, {`{"a":3} }`, -1}, {`{"a":3}{"a":4}`, -1}, {`{"a":3}null`, -1}, {`{"a":3}` + "\x00", -1},
+		{`{"b":3}`, -1}, {`{"a":3,"b":3}`, -1}, {`{`, -1}, {`[]`, -1}, {`"x"`, -1}, {`}`, -1},
+	} {
+		r := httptest.NewRequest("POST", "/", strings.NewReader(c.in))
+		var v body
+		err := decode(r, &v)
+		switch {
+		case c.want < 0 && fault.KindOf(err) != fault.BadRequest:
+			t.Errorf("body %q: %v (a=%d), want a refusal", c.in, err, v.A)
+		case c.want >= 0 && (err != nil || v.A != c.want):
+			t.Errorf("body %q: %v (a=%d), want a=%d", c.in, err, v.A, c.want)
 		}
 	}
 }

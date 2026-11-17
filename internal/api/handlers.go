@@ -513,6 +513,9 @@ func (s *Server) patchInstance(w http.ResponseWriter, r *http.Request, c *call) 
 	if err := decode(r, &req); err != nil {
 		return err
 	}
+	if err := c.limitPatched(&req); err != nil {
+		return err
+	}
 	v, restart, err := s.o.Instances.Patch(name, req)
 	if err != nil {
 		return err
