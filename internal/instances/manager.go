@@ -627,7 +627,7 @@ func (m *Manager) Create(req CreateRequest) (View, error) {
 		Name: req.Name, DisplayName: req.Name, Channel: channel, Build: b.Version, World: req.Name,
 		MaxPlayers: DefaultMaxPlayers, Listed: channel == builds.ChannelLive, RestartOnCrash: true,
 		Backup: BackupPolicy{Keep: DefaultBackupKeep}, SecretDelivery: gameserver.SecretDelivery,
-		Created: now, Updated: now,
+		Created: now, Updated: now, Revision: 1,
 	}
 	in.normalize()
 	req.Settings.apply(&in)
@@ -688,6 +688,17 @@ const outputSetAside = "server output set aside: secret_delivery changed to file
 // sets the output files aside (see setAsideOutput), and that needs the
 // server stopped.
 func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired bool, err error) {
+	return m.PatchIf(name, req, Condition{})
+}
+
+// PatchIf is Patch that is made only when the instance meets cond (see
+// Condition): a stored change since the caller read the instance, by anyone,
+// is refused (fault.Precondition, code ErrChangedCode) and nothing is done.
+// The condition is checked once the instance's operation lock is held and
+// before the change is checked itself, and the change is written under the
+// same lock, so of several changes made for the same revision exactly one
+// is made. The view returned carries the revision the change made.
+func (m *Manager) PatchIf(name string, req PatchRequest, cond Condition) (v View, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
 		return View{}, false, err
@@ -701,6 +712,9 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 	old := in.cfg.clone()
 	active := in.status.State.active()
 	in.mu.Unlock()
+	if err := cond.check(name, old.Revision); err != nil {
+		return View{}, false, err
+	}
 	cfg := old.clone()
 	portsGiven := req.Settings.apply(&cfg)
 	if err := cfg.Validate(); err != nil {
@@ -768,6 +782,7 @@ func (m *Manager) Patch(name string, req PatchRequest) (v View, restartRequired 
 		in.mu.Unlock()
 	}
 	cfg.Updated = m.now()
+	cfg.Revision = old.Revision + 1
 	if err := m.st.WriteJSON(instFile(name), cfg, 0o600); err != nil {
 		return View{}, false, err
 	}
@@ -942,40 +957,62 @@ func (m *Manager) secretFlags(name string) SecretFlags {
 // and problem report tokens. They are used from the next start;
 // restartRequired says the instance is running.
 func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags, restartRequired bool, err error) {
+	flags, _, restartRequired, err = m.SetSecretsIf(name, req, Condition{})
+	return flags, restartRequired, err
+}
+
+// SetSecretsIf is SetSecrets that is made only when the instance meets cond
+// (see PatchIf). A change of secrets is a stored change of the instance,
+// which adds 1 to its revision: the revision is written to instance.json
+// before the secrets file, so a failure in between can only make a caller's
+// condition fail without a change, never let one pass after a change. It
+// returns the revision the change made.
+func (m *Manager) SetSecretsIf(name string, req SecretsRequest, cond Condition) (flags SecretFlags, revision int64, restartRequired bool, err error) {
 	in, err := m.get(name)
 	if err != nil {
-		return SecretFlags{}, false, err
+		return SecretFlags{}, 0, false, err
 	}
 	if err := req.check(); err != nil {
-		return SecretFlags{}, false, err
+		return SecretFlags{}, 0, false, err
 	}
 	in.op.Lock()
 	defer in.op.Unlock()
-	s, err := m.readSecrets(name)
-	if err != nil {
-		return SecretFlags{}, false, err
-	}
-	before := s
-	s.change(req)
 	in.mu.Lock()
 	cfg := in.cfg.clone()
 	in.mu.Unlock()
+	if err := cond.check(name, cfg.Revision); err != nil {
+		return SecretFlags{}, 0, false, err
+	}
+	s, err := m.readSecrets(name)
+	if err != nil {
+		return SecretFlags{}, 0, false, err
+	}
+	before := s
+	s.change(req)
 	// With command-line delivery a new secret is a value on the command
 	// line like any other. One stored before is passed as it is, and named
 	// in the warning unsafe_stored_settings.
 	if field, why, bad := req.given().commandLineProblem(); cfg.OutputHidden() && bad {
-		return SecretFlags{}, false, fault.New(fault.Invalid, "unsafe_argument",
+		return SecretFlags{}, 0, false, fault.New(fault.Invalid, "unsafe_argument",
 			"%s: cannot go on the server command line, where this instance passes its secrets (secret_delivery %q): it %s",
 			field, gameserver.DeliveryCommandLine, why)
 	}
 	if err := checkPasswordsInSettings(cfg, s); err != nil {
-		return SecretFlags{}, false, err
+		return SecretFlags{}, 0, false, err
 	}
 	if err := m.checkLine(&cfg, before, cfg, s); err != nil {
-		return SecretFlags{}, false, err
+		return SecretFlags{}, 0, false, err
 	}
+	next := cfg
+	next.Revision++
+	if err := m.st.WriteJSON(instFile(name), next, 0o600); err != nil {
+		return SecretFlags{}, 0, false, err
+	}
+	in.mu.Lock()
+	in.cfg.Revision = next.Revision
+	in.mu.Unlock()
 	if err := m.st.WriteJSON(secretsFile(name), s, 0o600); err != nil {
-		return SecretFlags{}, false, err
+		return SecretFlags{}, 0, false, err
 	}
 	in.mu.Lock()
 	// A running server keeps the passwords it was started with; the new
@@ -988,7 +1025,7 @@ func (m *Manager) SetSecrets(name string, req SecretsRequest) (flags SecretFlags
 		m.emitLocked(in)
 	}
 	in.mu.Unlock()
-	return m.secretFlags(name), active, nil
+	return m.secretFlags(name), next.Revision, active, nil
 }
 
 // Cluster groups instance names by their cluster field.
@@ -1116,6 +1153,7 @@ func (m *Manager) setBuild(in *rt, b string, prev []string) error {
 		cfg.PreviousBuilds = cfg.PreviousBuilds[:m.cfg.KeepPreviousBuilds]
 	}
 	cfg.Updated = m.now()
+	cfg.Revision++
 	cfg.normalize()
 	if err := m.st.WriteJSON(instFile(in.name), cfg, 0o600); err != nil {
 		return err

@@ -114,6 +114,14 @@ type Instance struct {
 	PreviousBuilds []string        `json:"previous_builds"`
 	Created        time.Time       `json:"created"`
 	Updated        time.Time       `json:"updated"`
+	// Revision counts the stored changes of the instance's settings, from 1
+	// when it is made: every change of settings, change of secrets and
+	// switch of the build (an update, a rollback, an automatic update) adds
+	// 1. A caller that read the instance and wants to change it only if
+	// nothing changed since sends the revision it read (see Condition). One
+	// stored before revisions existed has none and is read as 1. It is
+	// never set by a request.
+	Revision int64 `json:"revision"`
 }
 
 // normalize replaces nil maps and slices with empty ones so the JSON form
@@ -137,6 +145,36 @@ func (in *Instance) normalize() {
 	if in.UpdateMaxWait == 0 {
 		in.UpdateMaxWait = config.Duration(DefaultUpdateMaxWait)
 	}
+	if in.Revision < 1 {
+		in.Revision = 1
+	}
+}
+
+// Condition is what a change of an instance requires before it is made.
+// The zero value requires nothing.
+type Condition struct {
+	// Revision, when it is not 0, is the revision the instance must be at:
+	// the one the caller read. An instance at another revision was changed
+	// since, and the change is refused with the code ErrChangedCode (kind
+	// fault.Precondition) and nothing is done.
+	Revision int64
+}
+
+// ErrChangedCode is the error code of a change refused because the
+// instance's revision is not the one the caller named.
+const ErrChangedCode = "changed"
+
+// check refuses a change made for a revision other than the current one of
+// the instance name. The check is made with the instance's operation lock
+// held, the lock of every change, so no change can come between it and the
+// write.
+func (c Condition) check(name string, current int64) error {
+	if c.Revision == 0 || c.Revision == current {
+		return nil
+	}
+	return fault.New(fault.Precondition, ErrChangedCode,
+		"the settings of instance %s changed since they were read: they are at revision %d now, and this change was made for revision %d; read them again and make the change anew",
+		name, current, c.Revision)
 }
 
 // Auto-update modes (Instance.AutoUpdate).
