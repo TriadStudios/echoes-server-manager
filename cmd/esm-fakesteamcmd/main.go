@@ -12,7 +12,10 @@
 //
 //	{"app_id": "1000001", "buildid": "100", "content": "<folder>",
 //	 "branch": "testing", "password": "<the branch password>",
-//	 "record": "<file>", "echo": false}
+//	 "record": "<file>", "echo": false, "slow_ms": 0}
+//
+// slow_ms makes app_update wait that long between its two progress lines, so
+// that a test can look at a download that is under way.
 //
 // app_update copies the content folder into the install folder (replacing
 // what was there, except steamapps/) and writes
@@ -35,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type control struct {
@@ -47,6 +51,8 @@ type control struct {
 	// Echo prints every command before running it, password and all, as
 	// SteamCMD may: ESM must mask its output.
 	Echo bool `json:"echo"`
+	// SlowMS is how long app_update waits after its first progress line.
+	SlowMS int `json:"slow_ms"`
 }
 
 type record struct {
@@ -268,7 +274,11 @@ func (s *session) appUpdate(args []string) int {
 		fmt.Printf("ERROR! Failed to install app '%s' (Invalid Password)\n", app)
 		return 5
 	}
-	fmt.Printf(" Update state (0x61) downloading, progress: 50.00 (1 / 2)\r Update state (0x61) downloading, progress: 100.00 (2 / 2)\n")
+	fmt.Printf(" Update state (0x61) downloading, progress: 50.00 (1 / 2)\r")
+	if s.c.SlowMS > 0 {
+		time.Sleep(time.Duration(s.c.SlowMS) * time.Millisecond)
+	}
+	fmt.Printf(" Update state (0x61) downloading, progress: 100.00 (2 / 2)\n")
 	if err := mirror(s.c.Content, s.dir); err != nil {
 		fmt.Printf("ERROR! Failed to install app '%s' (Disk write failure: %v)\n", app, err)
 		return 8

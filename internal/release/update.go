@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 )
 
 // Result says what an update did.
@@ -65,12 +67,17 @@ const LockStale = 15 * time.Minute
 // update of the same binary, from this process or another (the command line
 // and the service), gets ErrBusy instead of replacing the binary at the same
 // time. The lock is removed however the update ends.
+//
+// In a job its steps are verify_signature (look up the newest release, fetch
+// the signed list of hashes and check its signature), download (the binary,
+// with the bytes so far, and its hash) and place_binary.
 func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, force bool) (Result, error) {
 	unlock, err := lockUpdate(exe + LockSuffix)
 	if err != nil {
 		return Result{}, err
 	}
 	defer unlock()
+	jobs.Step(ctx, "verify_signature")
 	r, err := c.Latest(ctx)
 	if err != nil {
 		return Result{}, err
@@ -126,10 +133,12 @@ func (c *Client) Update(ctx context.Context, current, exe, goos, goarch string, 
 	if !ok {
 		return Result{}, fmt.Errorf("release %s: the signed %s does not list %s", r.Tag, SumsName, name)
 	}
+	jobs.Step(ctx, "download")
 	tmp, err := c.download(ctx, bin.URL, exe, want)
 	if err != nil {
 		return Result{}, fmt.Errorf("release %s: %w", r.Tag, err)
 	}
+	jobs.Step(ctx, "place_binary")
 	prev := exe + PreviousSuffix
 	// On Linux the update is marked pending just before the new binary goes
 	// in place (see MarkPending): the service unit puts the old binary back
@@ -161,7 +170,7 @@ func (c *Client) download(ctx context.Context, raw, exe, want string) (string, e
 		return "", fmt.Errorf("cannot write next to %s: %w", exe, err)
 	}
 	h := sha256.New()
-	err = c.get(ctx, raw, MaxBinaryBytes, io.MultiWriter(f, h))
+	err = c.get(ctx, raw, MaxBinaryBytes, true, io.MultiWriter(f, h))
 	if err == nil {
 		err = f.Sync()
 	}
