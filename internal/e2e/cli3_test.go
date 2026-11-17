@@ -13,6 +13,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
 	"github.com/TriadStudios/echoes-server-manager/internal/builds"
 	"github.com/TriadStudios/echoes-server-manager/internal/cli"
+	"github.com/TriadStudios/echoes-server-manager/internal/svcunit"
 	"github.com/TriadStudios/echoes-server-manager/internal/testkit"
 )
 
@@ -96,5 +97,18 @@ func TestCLIManifestSteamAndService(t *testing.T) {
 	unit, err := os.ReadFile(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "systemd", "user", "esm.service"))
 	if err != nil || !strings.Contains(string(unit), "serve --root \""+h.root+"\"") || !strings.Contains(string(unit), "Restart=always") {
 		t.Fatalf("unit: %v\n%s", err, unit)
+	}
+	// The unit runs the rollback script of a failed self-update before every
+	// start, and install wrote that script next to the binary.
+	exe, _ := os.Executable()
+	exe, _ = filepath.EvalSymlinks(exe)
+	t.Cleanup(func() { os.Remove(svcunit.ScriptPath(exe)) })
+	script, err := os.ReadFile(svcunit.ScriptPath(exe))
+	if err != nil || !bytes.Equal(script, svcunit.Script()) {
+		t.Fatalf("rollback script: %v\n%s", err, script)
+	}
+	if !strings.Contains(string(unit), "ExecStartPre=-/bin/sh \""+svcunit.ScriptPath(exe)+"\" \""+exe+"\"\n") ||
+		!strings.Contains(string(unit), "StartLimitIntervalSec=0\n") || !strings.Contains(out, svcunit.ScriptPath(exe)) {
+		t.Fatalf("unit without the rollback: %s\n%s", unit, out)
 	}
 }

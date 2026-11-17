@@ -80,7 +80,7 @@ func (e *env) updateSelf(args []string) error {
 	}
 	restart := "restart esm serve to run it"
 	if runtime.GOOS == "linux" {
-		restart = "restart the service to run it: systemctl --user restart esm"
+		restart = "restart the service to run it: systemctl --user restart esm (a unit written by this esm's service install puts the old binary back when the new one does not stay up)"
 	}
 	return e.result(res, fmt.Sprintf("esm updated from %s to %s at %s (the old binary is %s); %s",
 		res.From, res.To, res.Binary, res.Previous, restart))
@@ -123,14 +123,25 @@ func (e *env) serviceCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The unit runs this script before every start; without it the unit
+	// still works, only a failed self-update is not rolled back.
+	script, werr := svcunit.WriteScript(exe)
 	user := os.Getenv("USER")
 	if user == "" {
 		user = "<this user>"
 	}
-	return e.result(map[string]string{"unit": path, "exec": exe, "root": root},
-		fmt.Sprintf("wrote %s; start it with: systemctl --user daemon-reload && systemctl --user enable --now %s. "+
-			"To keep it running after you log out, an admin runs once: sudo loginctl enable-linger %s (ESM does not run this)",
-			path, svcunit.Name, user))
+	out := map[string]string{"unit": path, "exec": exe, "root": root}
+	line := fmt.Sprintf("wrote %s; start it with: systemctl --user daemon-reload && systemctl --user enable --now %s "+
+		"(when it runs already: systemctl --user daemon-reload && systemctl --user restart %s). "+
+		"To keep it running after you log out, an admin runs once: sudo loginctl enable-linger %s (ESM does not run this)",
+		path, svcunit.Name, svcunit.Name, user)
+	if werr != nil {
+		line += fmt.Sprintf(". WARNING: cannot write %s: %v; the unit works, but a self-update that does not come up is not rolled back", svcunit.ScriptPath(exe), werr)
+	} else {
+		out["rollback_script"] = script
+		line += fmt.Sprintf(". Before each start the unit runs %s, which puts the old binary back when a self-updated ESM does not come up", script)
+	}
+	return e.result(out, line)
 }
 
 // --- build manifest ---

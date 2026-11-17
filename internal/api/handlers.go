@@ -201,6 +201,12 @@ type Box struct {
 	// update_check false). Nothing is updated without being asked.
 	UpdateAvailable bool           `json:"update_available"`
 	Release         release.Status `json:"release"`
+	// LastSelfUpdate is the last self-update that did not come up: the new
+	// ESM failed to stay up, and the service unit put the old binary back
+	// (this ESM is that old binary). It stays until the next self-update
+	// puts a new binary in place; null when there is none. Only a rollback
+	// is recorded here.
+	LastSelfUpdate *SelfUpdateRecord `json:"last_self_update"`
 }
 
 // timeZone names the local time zone and its offset from UTC at now.
@@ -236,7 +242,7 @@ func (s *Server) box(w http.ResponseWriter, r *http.Request, c *call) error {
 		rs = s.o.Release.Status()
 	}
 	return writeJSON(w, http.StatusOK, Box{
-		UpdateAvailable: rs.Available, Release: rs,
+		UpdateAvailable: rs.Available, Release: rs, LastSelfUpdate: s.o.LastSelfUpdate,
 		Version: s.o.Version, Root: cfg.Root, OS: runtime.GOOS,
 		Supervisor: s.o.Supervisor.Kind(), LimitsEnforced: s.o.Supervisor.LimitsEnforced(),
 		GamePorts: cfg.GamePorts, QueryPorts: cfg.QueryPorts, Listen: cfg.Listen, TLS: s.o.TLS,

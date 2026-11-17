@@ -110,10 +110,11 @@ release. `esm update-self` (or the Box page's update button, admins only,
 there once a look found a newer release) downloads the newest release
 for this system, checks the signature with the built-in key and the
 binary's hash against the signed list, and only then puts the new binary
-in place; the old one stays next to it as `esm.previous` (to roll back,
-move it back). The page's button (`POST /api/v1/box/self-update`) then
-ends the service so that its service manager starts the new binary, and
-does that only when something
+in place; the old one stays next to it as `esm.previous` (to roll back by
+hand, move it back; a service made by `esm service install` does that by
+itself when the new ESM does not come up, see below). The page's button
+(`POST /api/v1/box/self-update`) then ends the service so that its
+service manager starts the new binary, and does that only when something
 will: on Linux, when systemd runs ESM (the unit of `esm service install`).
 Otherwise, and on Windows, the update is refused and nothing changes,
 unless the caller sets `exit_anyway` (the page asks first); ESM then
@@ -128,6 +129,55 @@ One self-update runs at a time: while it runs it holds the lock file
 `<binary>.update.lock` next to the binary, and another one, from the page
 or the command line, is refused. A lock older than 15 minutes was left by
 an update that did not finish and is taken over.
+
+**A new ESM that does not come up is replaced by the old one.** On Linux,
+when ESM runs as the service that `esm service install` writes, a
+self-update (from the page or from `esm update-self`) is not final until
+the new ESM has stayed up: the update writes `esm.update.pending` next to
+the binary, and the service's unit runs a small shell script
+(`esm.update.sh`, written by `esm service install` and kept up to date by
+ESM, see below) before every start. While the pending file is there, the
+script counts the starts; at the
+3rd start it moves the new binary aside as `esm.failed`, moves
+`esm.previous` back to `esm`, writes `esm.update.rolledback`, removes the
+pending file and starts the old ESM instead. So the new ESM gets two
+starts (systemd starts it again 5 seconds after it ends), and nobody has
+to log in to the box. The script does not need the new binary to run, and
+never keeps ESM from starting: with no update waiting it does nothing,
+and without `esm.previous` it says so in the service log and leaves the
+binary alone. A new ESM that has been up for 30 seconds removes the
+pending file: the update worked. (Restarting the service three times
+within 30 seconds of an update, by hand or otherwise, is counted like
+three failed starts.) An update that was killed before its new binary was
+in place leaves a pending file next to an `esm.previous` that is the
+binary that is there already (the same file, or the same bytes): there is
+nothing to put back, so the script drops the pending file at the next
+start without changing a binary, and an ESM that finds the same at its
+30 seconds does too. A binary put there by hand is then never rolled back
+by an old mark.
+
+The ESM that runs the update writes the pending file, so an update is
+protected when the ESM it starts from has this rollback: the update to the
+first release that has it is not, and the one after it is.
+
+The old ESM that is started after a rollback reports it: one audit entry
+(`box.self_update_rollback`, actor `system`), a warning in the service
+log, `last_self_update` in `GET /api/v1/box` (`from`, `to`, `time`,
+`rolled_back`), `esm status`, and a notice on the Box page. The report
+stays until the next self-update puts a new binary in place; it needs no
+acknowledging. `esm.failed` is the binary that did not come up, for
+whoever wants to find out why. A rollback puts the old program back and
+nothing else: files the new ESM changed (`esm.json`, for one) stay as it
+left them. On Windows nothing changes: no pending file is written, there
+is no unit, and a failed update is rolled back by hand (move
+`esm.previous` back). On Linux without that unit (ESM started by hand, or
+a unit without the script) the pending file is written but nobody
+counts the starts, so that is the same.
+
+A unit written by an earlier ESM has no script. To get the rollback, write
+the unit again and let systemd read it (see "Linux: run ESM as a
+service"): `esm service install --force`, then
+`systemctl --user daemon-reload && systemctl --user restart esm`.
 
 ### Making a release (maintainers)
 
@@ -379,10 +429,41 @@ systemctl --user enable --now esm
 ```
 
 `esm service install` writes `~/.config/systemd/user/esm.service`
-(`Restart=always`, `ExecStart=<this esm binary> serve --root <root>`) and
-runs nothing else. It uses `KillMode=process`: stopping or restarting ESM
-never stops game servers. Lingering (above) keeps the unit running after
-you log out; ESM prints the command but does not run it.
+(`Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0`,
+`ExecStart=<this esm binary> serve --root <root>`) and runs nothing else.
+It uses `KillMode=process`: stopping or restarting ESM never stops game
+servers. Lingering (above) keeps the unit running after you log out; ESM
+prints the command but does not run it.
+
+The unit also has `ExecStartPre=-/bin/sh <esm binary>.update.sh <esm
+binary>`: the script `esm service install` writes next to the binary
+(`esm.update.sh`, replaced when it differs), which puts the old binary
+back when a self-updated ESM does not come up (see "Releases and
+updates"). A self-update replaces the binary only, so ESM also rewrites
+the script at every start when it is there next to the binary and
+differs from the one built into that ESM; it never makes one that is not
+there, so a box that does not run as the unit stays clean, and the update
+brings the script its new binary expects. The `-` makes systemd ignore
+its failure, so it can never keep
+ESM from starting, and `StartLimitIntervalSec=0` keeps systemd from
+giving up on a start that keeps failing before the script gets to act.
+If the script cannot be written (a folder ESM cannot write to), the unit
+is still written and the command says so; only the rollback is then
+missing.
+
+**An existing unit has to be written again to get the rollback.** A unit
+that an earlier ESM wrote has no `ExecStartPre`. Write it again, then let
+systemd read it and restart ESM (game servers keep running):
+
+```sh
+esm --root ~/durinn service install --force
+systemctl --user daemon-reload
+systemctl --user restart esm
+```
+
+(Without `--force`, `esm service install` refuses to replace a unit that
+differs from the one it would write.) Also do this again if the binary
+moves to another folder, as the unit names the binary's path.
 
 ## Real server setup
 

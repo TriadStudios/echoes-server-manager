@@ -17,6 +17,7 @@
 <div><dt>Newest release</dt><dd class="mono">{{if $b.Release.Latest}}{{$b.Release.Latest}}{{else}}not known{{end}}</dd></div>
 <div><dt>Last looked</dt><dd>{{if not $b.Release.Checked.IsZero}}<time datetime="{{iso $b.Release.Checked}}">{{when $b.Release.Checked}}</time>{{else}}not yet{{end}}</dd></div>
 </dl>
+{{with $b.LastSelfUpdate}}<p class="alert warn"><strong class="tag">Warning</strong> {{if .To}}The update to ESM {{.To}}{{else}}A self-update{{end}} did not come up, so the old binary was put back{{if not .Time.IsZero}} on <time datetime="{{iso .Time}}">{{when .Time}}</time>{{end}}{{if .From}}: this is ESM {{.From}} again{{end}}. The binary that failed is kept next to ESM as <span class="mono">.failed</span>, and the service log says why it did not start. The next update replaces this notice.</p>{{end}}
 {{if $b.UpdateAvailable}}<p class="alert info"><strong class="tag">Update</strong> ESM {{$b.Release.Latest}} is out.</p>{{end}}
 {{if $b.Release.Note}}<p class="note">{{$b.Release.Note}}</p>{{end}}
 {{if and $v.Admin $b.UpdateAvailable}}<button type="button" class="btn primary" data-act="self-update" data-confirm="Put ESM {{$b.Release.Latest}} in place? ESM ends after the update, and its service manager, if it has one, starts the new version. Game servers keep running.">Update ESM to {{$b.Release.Latest}}</button>{{end}}
