@@ -146,9 +146,12 @@ info:
     100 and those that ended less than 24 hours ago, and are lost when ESM
     ends (a job that was running then is not resumed: look at the instance, the
     builds, or `GET /box` for what became of it). The roles to start a
-    job are those of the call; any reader looks at jobs, and the `read` role
-    gets the result and the error of a job on an instance with
-    `secret_delivery: command_line` with the same notice as everywhere else.
+    job are those of the call; any reader looks at jobs. The `read` role gets
+    a job without the audit-log data that it carries for the operator role and
+    above (who started it, the source of an install, the paths of a self-update;
+    see `GET /jobs`), also in the `job` events, and, of a job on an instance
+    with `secret_delivery: command_line`, the result and the error with the
+    same notice as everywhere else.
 
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks
@@ -881,6 +884,7 @@ paths:
               schema: { $ref: "#/components/schemas/Backup" }
         "202": { $ref: "#/components/responses/JobAccepted" }
         "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/restore:
@@ -1031,10 +1035,18 @@ paths:
       description: |
         The long calls that were started with `async=true` (see the
         description of this API): the last 100 and those that ended less than
-        24 hours ago, and every one that runs. Kept in memory only. The
-        `read` role gets, of a job on an instance with
-        `secret_delivery: command_line`, the notice in place of the reason in
-        its result and in place of the text of its error.
+        24 hours ago, and every one that runs. Kept in memory only. A job
+        shows what the audit log records of the call that started it, and the
+        `read` role gets less of it than the operator role and above: the
+        `actor` without its `id` and `acting_user`, an install's `target` as
+        its kind (`folder`, `archive`, an address as scheme and host, a Steam
+        source as it is), and a self-update's result without `binary` and
+        `previous`. The `target` filter is matched against the target as the
+        caller sees it. Of a job on an instance with
+        `secret_delivery: command_line` the `read` role also gets the notice in
+        place of the reason in its result and in place of the text of its error.
+        `acting_user` and the target are cut and scrubbed as an audit entry's
+        fields are.
       parameters:
         - name: state
           in: query
@@ -1365,6 +1377,8 @@ components:
       description: |
         Start the call as a job and answer 202 with it at once, instead of
         answering when the call is done. The call is checked as without it.
+        A value that is not true or false is 422 `invalid`, and no job is
+        started.
       schema: { type: boolean, default: false }
     JobId:
       name: id
@@ -1514,7 +1528,7 @@ components:
       type: object
       properties:
         kind: { type: string, enum: [user, token, socket] }
-        id: { type: string, description: User name, token id, or "socket". }
+        id: { type: string, description: "User name, token id, or \"socket\"." }
         role: { $ref: "#/components/schemas/Role" }
         csrf_token: { type: string, description: Only for cookie sessions. }
     PasswordChangeRequest:
@@ -1670,7 +1684,7 @@ components:
         latest: { type: string, description: The newest release's tag ("" when not known). }
         available: { type: boolean }
         url: { type: string, description: The newest release's page. }
-        note: { type: string, description: Why available cannot be known, or what failed (also that GitHub asked to wait, and until when); for a reused result, why it was reused. }
+        note: { type: string, description: "Why available cannot be known, or what failed (also that GitHub asked to wait, and until when); for a reused result, why it was reused." }
         reused:
           type: boolean
           description: Only in the answer to POST /box/release-check, when its result was returned without asking GitHub again, because the last look ended less than 60 seconds before or because GitHub has asked ESM to wait. Always false in GET /box.
@@ -1723,7 +1737,7 @@ components:
         started: { type: string, format: date-time }
         ended: { type: string, format: date-time, description: When the next step or the end of the job came; missing for the step that runs. }
         bytes: { type: integer, description: "How far a download has come (a step that moves bytes); missing when nothing is known." }
-        total: { type: integer, description: The bytes there are, when they are known. }
+        total: { type: integer, description: "The bytes there are, when they are known." }
         percent: { type: number, minimum: 0, maximum: 100, description: "How far the step has come, when that is known." }
     JobError:
       type: object
@@ -2275,7 +2289,7 @@ components:
     GameSetting:
       type: object
       properties:
-        key: { type: string, description: The rule key, exactly as the server reads it. }
+        key: { type: string, description: "The rule key, exactly as the server reads it." }
         group: { type: string, enum: [access, world, chat, reports] }
         label: { type: string }
         type:
@@ -2304,8 +2318,8 @@ components:
             properties:
               value: { type: string }
               label: { type: string }
-        max_length: { type: integer, description: Longest value of a string or list, in bytes. }
-        format: { type: string, enum: [url], description: url is an http or https base address, without a query or fragment. }
+        max_length: { type: integer, description: "Longest value of a string or list, in bytes." }
+        format: { type: string, enum: [url], description: "url is an http or https base address, without a query or fragment." }
         help: { type: string }
         caution: { type: boolean, description: The setting weakens the server's protection; help says how. }
         secret: { type: boolean, description: Not a rule. Set with the instance's secrets under secret_field; never shown. }

@@ -1383,7 +1383,10 @@ The code is `internal/jobs`; `internal/api/jobs.go` is the API's side of it.
   list, `cancelled`, with no result and no error.
 - **Who and what is recorded.** The job names its `actor`, the audit entry
   of the call that started it: kind, id, role and, for a site token, the
-  person it said it acts for. The call is recorded when it is made, as
+  person it said it acts for. The actor and the target are cut and scrubbed
+  as an audit entry's fields are (`audit.CleanActor`, `audit.Clean`), so
+  what a site token wrote as the person it acts for never reaches a job, an
+  event or an answer unscrubbed. The call is recorded when it is made, as
   accepted (like any call); the end of the job is recorded as `job.end`,
   with the same actor, `<id> <kind> <target>` as its target, whether the job
   was `done` and, if not, the error (or `cancelled`); a cancel is
@@ -1392,13 +1395,21 @@ The code is `internal/jobs`; `internal/api/jobs.go` is the API's side of it.
 - **Events and the read role.** Every start, step, end and cancel of a job is
   a `job` event with the whole job (with its instance, for an update, a
   backup or a restore), and the progress of a download at most four times a
-  second. Events are told in the order the changes were made. The result and
-  the error of a job on an instance with `secret_delivery: command_line` are
-  restricted like state events (see [Passwords](#passwords)): the `read`
-  role gets a status with the notice for its reason and the notice for the
-  text of the error; the steps and times are not secret. `GET /api/v1/jobs`
-  and `GET /api/v1/jobs/{id}` redact the same way, also for an instance
-  that is gone.
+  second. Events are told in the order the changes were made. A job holds
+  what the audit log records of the call, which is the operator role's and
+  above, so every job event is restricted like a state event of a hidden
+  instance (see [Passwords](#passwords)), also when it is asked for later:
+  the `read` role gets the job as `readView` shows it, with no `id` and
+  `acting_user` of the actor (its kind and role stay), the target of an
+  install as its kind (`folder`, `archive`, the scheme and host of an
+  address, a Steam source as it is) and a self-update's result without the
+  paths `binary` and `previous`. The result and the error of a job on an
+  instance with `secret_delivery: command_line` are redacted on top of that:
+  a status with the notice for its reason and the notice for the text of the
+  error; the steps and times are not secret. `GET /api/v1/jobs` and
+  `GET /api/v1/jobs/{id}` redact the same way (the filter `?target=` is
+  matched against the target as the caller sees it), also for an instance that
+  is gone. The operator, admin and site roles get the job whole.
 - **Memory only.** Jobs are in memory. The runner keeps the last 100 jobs
   and those that ended less than 24 hours ago (no more than 1000 that ended,
   whatever their age, so that memory is bounded); a job that runs is never

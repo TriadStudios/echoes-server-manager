@@ -476,9 +476,17 @@ and for one from a Steam source the site role too.
 Roles are those of the call: starting a job needs what the call without
 `async` needs (the site role's limits included: it installs from a Steam
 source only, and sends no `exit_anyway`), and every role that reads looks at
-jobs. For an instance with `secret_delivery: command_line` the read role gets
-the notice in place of the reason and of the text of an error, as it does
-everywhere. The call without `async` is unchanged and makes no job. A job
+jobs. A job carries what the audit log records of the call that started it,
+and that is for the operator role and above (the site role included): the
+read role gets the actor without its `id` and `acting_user` (its `kind` and
+`role` stay), the `target` of an install as its kind (`folder`, `archive`, the
+scheme and host of an address; a Steam source stays as it is), and the result
+of a self-update without the paths of the binary, in `GET /api/v1/jobs`, in
+`GET /api/v1/jobs/<id>` and in the `job` events, those asked for later with
+`Last-Event-ID` too. The `acting_user` and the target are cut and scrubbed as
+the fields of an audit entry are, for everybody. For an instance with
+`secret_delivery: command_line` the read role gets the notice in place of the
+reason and of the text of an error, as it does everywhere. The call without `async` is unchanged and makes no job. A job
 that ends writes an audit entry `job.end` (the call that started it was
 recorded when it was made). ESM keeps the last 100 jobs and those that ended
 less than 24 hours ago, **in memory only**: they are lost when ESM ends, and a
