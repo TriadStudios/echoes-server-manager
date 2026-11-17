@@ -480,8 +480,11 @@ jobs. A job carries what the audit log records of the call that started it,
 and that is for the operator role and above (the site role included): the
 read role gets the actor without its `id` and `acting_user` (its `kind` and
 `role` stay), the `target` of an install as its kind (`folder`, `archive`, the
-scheme and host of an address; a Steam source stays as it is), and the result
-of a self-update without the paths of the binary, in `GET /api/v1/jobs`, in
+scheme and host of an address; a Steam source stays as it is), the result of a
+self-update without the paths of the binary, and, of an install or a
+self-update that failed, the `code` of the error with a text that names no path
+(the text of such an error may name the binary of ESM and its update lock, the
+import folder or SteamCMD), in `GET /api/v1/jobs`, in
 `GET /api/v1/jobs/<id>` and in the `job` events, those asked for later with
 `Last-Event-ID` too. The `acting_user` and the target are cut and scrubbed as
 the fields of an audit entry are, for everybody. For an instance with

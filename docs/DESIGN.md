@@ -1402,8 +1402,15 @@ The code is `internal/jobs`; `internal/api/jobs.go` is the API's side of it.
   the `read` role gets the job as `readView` shows it, with no `id` and
   `acting_user` of the actor (its kind and role stay), the target of an
   install as its kind (`folder`, `archive`, the scheme and host of an
-  address, a Steam source as it is) and a self-update's result without the
-  paths `binary` and `previous`. The result and the error of a job on an
+  address, a Steam source as it is), a self-update's result without the
+  paths `binary` and `previous`, and, for an install or a self-update that
+  failed, the `code` of the error with a text that names no path (`pathFreeErrors`
+  has one per code, and a code it has not gets a text that only says that the
+  operator role is shown why): the text of such an error is the one the call
+  answers, and it may name the binary of ESM and its update lock, the import
+  folder, SteamCMD, or the file an OS error names. The errors of an update, a
+  backup and a restore keep their text (the read role is shown the same causes
+  of an update in the instance's own `update.last_error`). The result and the error of a job on an
   instance with `secret_delivery: command_line` are redacted on top of that:
   a status with the notice for its reason and the notice for the text of the
   error; the steps and times are not secret. `GET /api/v1/jobs` and

@@ -148,7 +148,8 @@ info:
     builds, or `GET /box` for what became of it). The roles to start a
     job are those of the call; any reader looks at jobs. The `read` role gets
     a job without the audit-log data that it carries for the operator role and
-    above (who started it, the source of an install, the paths of a self-update;
+    above (who started it, the source of an install, the paths of a self-update,
+    the text of the error of an install or a self-update that failed;
     see `GET /jobs`), also in the `job` events, and, of a job on an instance
     with `secret_delivery: command_line`, the result and the error with the
     same notice as everywhere else.
@@ -1040,8 +1041,11 @@ paths:
         `read` role gets less of it than the operator role and above: the
         `actor` without its `id` and `acting_user`, an install's `target` as
         its kind (`folder`, `archive`, an address as scheme and host, a Steam
-        source as it is), and a self-update's result without `binary` and
-        `previous`. The `target` filter is matched against the target as the
+        source as it is), a self-update's result without `binary` and
+        `previous`, and, of an install or a self-update that failed, the
+        `error` with its `code` and a text that names no path (the text of such
+        an error may name the binary of ESM and its update lock, the import
+        folder or SteamCMD). The `target` filter is matched against the target as the
         caller sees it. Of a job on an instance with
         `secret_delivery: command_line` the `read` role also gets the notice in
         place of the reason in its result and in place of the text of its error.

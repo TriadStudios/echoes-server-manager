@@ -96,12 +96,57 @@ func installTargetKind(target string) string {
 	return "folder"
 }
 
+// pathFreeErrors say, by the code of the error, what a failed install or
+// self-update went wrong with, for the read role. The text of such an error
+// is the one the call would have answered, and it may name a path of the
+// box: the binary of ESM and its update lock, the import folder, SteamCMD,
+// the file that an OS error names. The code stays.
+var pathFreeErrors = map[string]string{
+	"invalid":            "the request was not valid",
+	"no_source":          "there is no such Steam source",
+	"source_not_allowed": "the source is not one that ESM takes builds from",
+	"hash_mismatch":      "a sha256 did not match what was expected",
+	"too_large":          "the build is larger than ESM takes",
+	"bad_manifest":       "the build has no valid manifest, or its files do not match it",
+	"bad_archive":        "the archive could not be read",
+	"unsafe_archive":     "the archive holds something that a build may not hold",
+	"no_executable":      "the build has no server program for this system",
+	"build_exists":       "this build is installed already",
+	"download_failed":    "the download failed",
+	"steamcmd_failed":    "SteamCMD failed",
+	"steamcmd_missing":   "SteamCMD is not where ESM looks for it",
+	"steam_manifest":     "SteamCMD finished, but its app manifest could not be read",
+	"wrong_password":     "SteamCMD says the password of the branch is wrong",
+	"not_enough_space":   "there is not enough free disk space for the build",
+	"conflict":           "the request does not fit the state of ESM",
+	"update_failed":      "the self-update failed",
+	"up_to_date":         "this ESM is the newest release already",
+	"unknown_version":    "this ESM is not a release version",
+	"busy":               "an update is running, or ESM was updated already and ends in a moment",
+	"no_service_manager": "nothing would start ESM again after the update ends it",
+	"not_available":      "this ESM cannot update itself",
+	"shutting_down":      "ESM was shutting down; the job was stopped",
+}
+
+// pathFreeError is the text for the read role of an error with this code: the
+// one pathFreeErrors has, or, for a code it has not (an error of the system,
+// code "internal", most of all), one that only says that the operator role is
+// shown why.
+func pathFreeError(code string) string {
+	if msg, ok := pathFreeErrors[code]; ok {
+		return msg
+	}
+	return "the job failed; the operator role is shown why"
+}
+
 // readView is the job as a caller without the operator role sees it. A job
 // carries what the audit log records of the call that started it: who (the
 // id of the login or token, and the person a site token acts for), the
-// source of an install, and, of ESM's own update, the paths of the binary.
-// That is for the operator role and above; the read role gets the kind and
-// role of the actor, the kind of source, and no paths.
+// source of an install, and, of ESM's own update, the paths of the binary;
+// and an install or a self-update that failed carries the text of its error,
+// which may name a path. That is for the operator role and above; the read
+// role gets the kind and role of the actor, the kind of source, no paths, and
+// for those two kinds the code of the error with a text that names none.
 func readView(j jobs.Job) jobs.Job {
 	j.Actor.ID, j.Actor.ActingUser = "", ""
 	if j.Kind == jobs.KindInstall {
@@ -110,6 +155,11 @@ func readView(j jobs.Job) jobs.Job {
 	if r, ok := j.Result.(SelfUpdateResult); ok {
 		r.Binary, r.Previous = "", ""
 		j.Result = r
+	}
+	if j.Error != nil && (j.Kind == jobs.KindInstall || j.Kind == jobs.KindSelfUpdate) {
+		e := *j.Error
+		e.Message = pathFreeError(e.Code)
+		j.Error = &e
 	}
 	return j
 }
