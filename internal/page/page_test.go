@@ -580,6 +580,13 @@ func TestEveryScreen(t *testing.T) {
 		!strings.Contains(op["/builds"], "Installing builds needs the admin role") {
 		t.Error("installing builds is for admins only")
 	}
+	// An install that runs as a job can be cancelled: the admin's page has the
+	// button, hidden until an install runs; the others have none.
+	const cancelButton = `<button type="button" class="btn danger" data-act="cancel-job" data-job-cancel hidden>Cancel the install</button>`
+	if strings.Count(admin["/builds"], "data-job-cancel") != 1 || !strings.Contains(admin["/builds"], cancelButton) ||
+		strings.Contains(op["/builds"], "data-job-cancel") || strings.Contains(rd["/builds"], "data-job-cancel") {
+		t.Error("the button that cancels an install is the admin's, on the Builds screen only")
+	}
 
 	// Updates: a server has one status, and its card on the Overview has the
 	// form for an operator: the newest build chosen, the running one marked

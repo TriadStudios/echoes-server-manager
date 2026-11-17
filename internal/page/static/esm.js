@@ -184,6 +184,163 @@
   }
   // waitForRestart: end
 
+  // jobs: start
+  // A long call (an update, a backup, a restore, installing a build) is
+  // started as a job, with ?async=true, and followed: the page looks at
+  // GET /api/v1/jobs/{id} every JOB_EVERY ms and says which step the job is
+  // in, until it is not running any more. The call that starts it answers at
+  // once, so nothing waits on one connection, and a page that is left does not
+  // stop the job.
+  var JOB_EVERY = 1000;
+  // JOB_FAILS is how many looks in a row may fail before the page gives up
+  // (a restart of ESM, a proxy that is not answering): a job ESM does not
+  // know (404) is given up at once.
+  var JOB_FAILS = 5;
+
+  var STEP_WORDS = {
+    backup: 'backing up the world',
+    stop: 'stopping the server',
+    switch_build: 'switching to the new build',
+    start: 'starting the server',
+    wait_ready: 'waiting until the server is ready',
+    rollback: 'putting the old build back',
+    wait_save: 'waiting for the next world save',
+    copy: 'copying the save files',
+    prune: 'removing the oldest backups',
+    backup_current: 'keeping the current world as a backup',
+    put_in_place: 'putting the backup in place',
+    download: 'downloading',
+    unpack: 'unpacking',
+    verify: 'checking every file',
+    place: 'putting the build in place'
+  };
+
+  function stepWords(name) {
+    return Object.prototype.hasOwnProperty.call(STEP_WORDS, name) ? STEP_WORDS[name] : String(name).replace(/_/g, ' ');
+  }
+
+  function sizeText(n) {
+    if (n >= 1073741824) { return (n / 1073741824).toFixed(1) + ' GiB'; }
+    if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MiB'; }
+    if (n >= 1024) { return (n / 1024).toFixed(1) + ' KiB'; }
+    return n + ' bytes';
+  }
+
+  // stepProgress says how far the step that runs has come, when it says.
+  function stepProgress(job) {
+    var s = job.steps && job.steps.length ? job.steps[job.steps.length - 1] : null;
+    if (!s) { return ''; }
+    var pct = typeof s.percent === 'number' ? Math.floor(s.percent) + '%' : '';
+    if (s.total > 0 && pct) { return ' (' + pct + ', ' + sizeText(s.bytes) + ' of ' + sizeText(s.total) + ')'; }
+    if (pct) { return ' (' + pct + ')'; }
+    if (s.bytes > 0) { return ' (' + sizeText(s.bytes) + ')'; }
+    return '';
+  }
+
+  // jobText is the notice for a job that runs: what it does (label), and the
+  // step it is in.
+  function jobText(job, label) {
+    if (!job.step) { return label + '...'; }
+    return label + ': ' + stepWords(job.step) + stepProgress(job) + '...';
+  }
+
+  // followJob looks at job with io.get(id) (which resolves the job, or rejects
+  // with an error that may have a status) every JOB_EVERY ms until it is not
+  // running, and tells io.show(job) each time the notice for it changes, and
+  // the job that ended last of all. io brings the timers (later(fn, ms),
+  // cancel(h)) so that a test can run it without a page. It gives {done,
+  // stop}: done resolves with the job that ended, or rejects with the error
+  // of the look that gave up; stop() ends the following (the page goes away).
+  function followJob(job, io) {
+    var timer = null;
+    var over = false;
+    var fails = 0;
+    var shown = null;
+    var finish = null;
+    var fail = null;
+    var done = new Promise(function (resolve, reject) { finish = resolve; fail = reject; });
+    function show(j) {
+      var t = io.text(j);
+      if (t !== shown) {
+        shown = t;
+        io.show(j, t);
+      }
+    }
+    function look() {
+      io.get(job.id).then(function (j) {
+        if (over) { return; }
+        fails = 0;
+        if (j.state !== 'running') {
+          over = true;
+          finish(j);
+          return;
+        }
+        show(j);
+        timer = io.later(look, JOB_EVERY);
+      }, function (e) {
+        if (over) { return; }
+        fails++;
+        if ((e && e.status === 404) || fails >= JOB_FAILS) {
+          over = true;
+          fail(e);
+          return;
+        }
+        timer = io.later(look, JOB_EVERY);
+      });
+    }
+    show(job);
+    timer = io.later(look, JOB_EVERY);
+    return { done: done, stop: function () { over = true; io.cancel(timer); } };
+  }
+  // jobs: end
+
+  // The job that this page follows, for the button that cancels it.
+  var following = '';
+
+  function jobCancelButtons(on) {
+    each('[data-job-cancel]', function (b) { b.hidden = !on; });
+  }
+
+  // runJob starts the call at path as a job, says the step it is in until it
+  // ends, and resolves with the job when it is done. A job that failed
+  // rejects with the error of the call (its code too); one that was cancelled
+  // rejects with the code 'cancelled'.
+  async function runJob(path, body, label) {
+    var job = await call('POST', path + '?async=true', body);
+    following = job.id;
+    var follow = followJob(job, {
+      text: function (j) { return jobText(j, label); },
+      show: function (j, text) {
+        say(text);
+        jobCancelButtons(j.cancellable);
+      },
+      get: function (id) { return call('GET', '/api/v1/jobs/' + enc(id)); },
+      later: function (fn, ms) { return setTimeout(fn, ms); },
+      cancel: function (h) { clearTimeout(h); }
+    });
+    window.addEventListener('pagehide', follow.stop);
+    try {
+      job = await follow.done;
+    } catch (e) {
+      throw new Error(label + ': the page lost track of the job (' + e.message + '). It may still be running; load the page again to see.');
+    } finally {
+      window.removeEventListener('pagehide', follow.stop);
+      following = '';
+      jobCancelButtons(false);
+    }
+    if (job.state === 'failed') {
+      var err = new Error(job.error && job.error.message ? job.error.message : 'The job failed.');
+      err.code = job.error ? job.error.code : '';
+      throw err;
+    }
+    if (job.state === 'cancelled') {
+      var stop = new Error(label + ' was cancelled.');
+      stop.code = 'cancelled';
+      throw stop;
+    }
+    return job;
+  }
+
   // navigate: start
   // withoutFragment is the address u with no fragment.
   function withoutFragment(u) {
@@ -277,13 +434,21 @@
     },
     backup: async function (b) {
       say('Backing up ' + b.dataset.name + '. A running server is first given time for its next world save.');
-      await call('POST', inst(b.dataset.name) + '/backup');
+      await runJob(inst(b.dataset.name) + '/backup', null, 'Backing up ' + b.dataset.name);
       done('backup');
     },
     restore: async function (b) {
       say('Restoring. The server stops and starts again; this can take a while.');
-      await call('POST', inst(b.dataset.name) + '/restore', { backup: b.dataset.id });
+      await runJob(inst(b.dataset.name) + '/restore', { backup: b.dataset.id }, 'Restoring ' + b.dataset.name);
       done('restored');
+    },
+    // cancel-job stops the install that this page follows (only an install
+    // can be cancelled, and not once it puts its build in place); the page
+    // that follows it says that it was cancelled.
+    'cancel-job': async function () {
+      if (!following) { return; }
+      say('Cancelling the install...');
+      await call('DELETE', '/api/v1/jobs/' + enc(following));
     },
     'remove-build': async function (b) {
       await call('DELETE', '/api/v1/builds/' + enc(b.dataset.id));
@@ -365,7 +530,7 @@
       var to = val(f, 'to');
       if (!window.confirm('Update ' + f.dataset.name + ' to build ' + to + '? It is backed up, stopped and started on the new build.')) { return; }
       say('Updating: backing up, stopping, starting build ' + to + ' and waiting until it is ready.');
-      await call('POST', inst(f.dataset.name) + '/update', { to: to });
+      await runJob(inst(f.dataset.name) + '/update', { to: to }, 'Updating ' + f.dataset.name + ' to build ' + to);
       done('updated');
     },
     policy: async function (f) {
@@ -382,7 +547,14 @@
       var sum = val(f, 'sha256').trim();
       if (sum) { body.sha256 = sum.toLowerCase(); }
       say('Checking and installing. A download can take a while.');
-      await call('POST', '/api/v1/builds', body);
+      try {
+        await runJob('/api/v1/builds', body, 'Installing ' + body.source);
+      } catch (e) {
+        // A cancel is no failure: nothing was installed, and it says so.
+        if (e.code !== 'cancelled') { throw e; }
+        say('The install was cancelled. Nothing was installed.');
+        return;
+      }
       done('installed');
     },
     // password changes the login's own password: the current one is
