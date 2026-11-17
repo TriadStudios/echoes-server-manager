@@ -40,7 +40,9 @@ info:
     a Steam source only (`"source": "steam:<name>"`; a folder, an archive
     or an https source is 403 `forbidden`), `POST /builds/prune` and
     `POST /box/self-update`, which with `exit_anyway` true is 403
-    `forbidden`. Everything else that needs `admin` is 403 for it: tokens,
+    `forbidden`. It also looks at jobs, and cancels the jobs that install
+    from a Steam source (`DELETE /jobs/{id}`). Everything else that needs
+    `admin` is 403 for it: tokens,
     logins, the audit log (and the `audit` events), creating and deleting
     instances, secrets, a Steam password, deleting a build, the health
     check.
@@ -128,6 +130,26 @@ info:
     `auth.limited` entry when the address is limited. A login or setup that
     works is always recorded.
 
+    The long calls (`POST /instances/{name}/update`, `/backup` and
+    `/restore`, `POST /builds` and `POST /box/self-update`) run inside
+    their request by default: the answer comes when they are done, and a
+    client that goes away may cancel what they do. With `?async=true` the
+    call is checked as ever (the same 4xx answers, at once), a job is
+    started and the answer is 202 with the job and its address in
+    `Location: /api/v1/jobs/{id}`. A job has its own context, so it goes on
+    whatever the client does; it says which step it is in and has the times of
+    the steps (and, for a download, the bytes so far), so a panel can show how
+    far it is. It is read with `GET /jobs/{id}` or from the `job` events,
+    and ends as `done` with the result the call would have answered, or
+    `failed` with its error, or, for an install that was cancelled with
+    `DELETE /jobs/{id}`, `cancelled`. Jobs are kept in memory only, the last
+    100 and those that ended less than 24 hours ago, and are lost when ESM
+    ends (a job that was running then is not resumed: look at the instance, the
+    builds, or `GET /box` for what became of it). The roles to start a
+    job are those of the call; any reader looks at jobs, and the `read` role
+    gets the result and the error of a job on an instance with
+    `secret_delivery: command_line` with the same notice as everywhere else.
+
     The web page at `/` is a client of this API like any other: each of
     its screens gets its data through these calls, as the user who looks
     at it, and every change it makes is one of these calls.
@@ -151,6 +173,7 @@ tags:
   - name: box
   - name: builds
   - name: instances
+  - name: jobs
   - name: events
   - name: tokens
 paths:
@@ -410,6 +433,21 @@ paths:
         `last_self_update` in `GET /box`. A unit written by an older ESM
         has no such script; `esm service install --force` writes the
         current one.
+
+        With `async=true` it is a job of kind `self_update` (target
+        `esm`) with the steps `verify_signature` (look up the newest
+        release, fetch the signed list and check its signature), `download`
+        (the binary, with `bytes`, `total` and `percent`), `place_binary`
+        and `restart`. The call answers 202 at once for what it can tell
+        without the release server: 403 for `exit_anyway` from a site token,
+        409 `not_available`, `no_service_manager` and `busy`, and 422
+        `update_failed` when releases are not looked up at all. What only the
+        release server tells (409 `up_to_date` or `unknown_version`) ends
+        the job as `failed` with that code. The job ends as `done`, with the
+        result of the synchronous call, when ESM is about to end; ESM then
+        goes, and its jobs with it: read `GET /box` for the new version.
+      parameters:
+        - $ref: "#/components/parameters/Async"
       requestBody:
         content:
           application/json:
@@ -420,10 +458,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SelfUpdateResult" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/box/firewall:
     get:
       tags: [box]
@@ -475,6 +516,23 @@ paths:
         and the answer is 409 `not_enough_space`. After a new install, the
         source's builds beyond the newest `keep_steam_builds` by build id
         that no instance uses are removed.
+
+        With `async=true` it is a job of kind `install` (target: the source,
+        without the query of a URL). What the request alone tells (a source
+        that is not allowed, a missing or wrong sha256, a Steam source that
+        does not exist, 403 for a site token's folder, archive or address) is
+        answered at once as without `async`; what needs the file or the
+        network (an archive's sha256, a download, SteamCMD, the manifest) ends
+        the job as `failed` with the same code. Its steps are `download` (an
+        address or a Steam source, with `bytes`, `total` and `percent` as far
+        as the server or SteamCMD tell them), `unpack` (an archive is
+        unpacked, a folder or the files of a Steam app are copied), `verify`
+        (the manifest and the hash of every file) and `place`. The job result
+        is the Build the synchronous call answers (its 200 or 201 is not told).
+        Until `place` begins nothing is installed and the job can be cancelled
+        with `DELETE /jobs/{id}`.
+      parameters:
+        - $ref: "#/components/parameters/Async"
       requestBody:
         required: true
         content:
@@ -491,9 +549,12 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Build" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/builds/{version}:
     delete:
       tags: [builds]
@@ -765,9 +826,20 @@ paths:
         puts the old build back, not the saves: what the new build already
         wrote stays (restore the backup the update made for that). An
         instance that was stopped is stopped again after the new build
-        proved ready. Always waits.
+        proved ready. Always waits, unless `async=true`.
+
+        With `async=true` it is a job of kind `update` (target: the
+        instance). Everything the request alone tells is answered at once as
+        without `async` (404 for the instance, 422 `no_build` and
+        `channel_mismatch`, 409 `same_build` and `busy`). Its steps are
+        `backup`, `stop` (of a running server), `switch_build`, `start` and
+        `wait_ready`, then `stop` again for a server that was stopped, or
+        `rollback` after a build that did not get ready (the job then ends as
+        `failed`, with 422 `update_failed` for its error). The result of a
+        `done` job is the Status.
       parameters:
         - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/Async"
       requestBody:
         required: true
         content:
@@ -779,16 +851,27 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Status" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/backup:
     post:
       tags: [instances]
       summary: Back up the save files now (operator)
-      description: A running server is given up to backup_save_wait to write its next world save first.
+      description: |
+        A running server is given up to backup_save_wait to write its next
+        world save first.
+
+        With `async=true` it is a job of kind `backup` (target: the
+        instance) with the steps `wait_save` (of a running server), `copy`
+        and `prune`; the result of a `done` job is the Backup. The 404 for
+        an instance that is not there is answered at once.
       parameters:
         - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/Async"
       requestBody: { $ref: "#/components/requestBodies/Empty" }
       responses:
         "201":
@@ -796,14 +879,27 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Backup" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
         "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/restore:
     post:
       tags: [instances]
       summary: Put a backup's save files back (operator)
-      description: A running server is stopped first and started again after; the current save files are backed up first (reason pre-restore).
+      description: |
+        A running server is stopped first and started again after; the current
+        save files are backed up first (reason pre-restore).
+
+        With `async=true` it is a job of kind `restore` (target: the
+        instance) with the steps `stop` (of a running server),
+        `backup_current`, `put_in_place` and, for a server that ran, `start`
+        and `wait_ready`; the result of a `done` job is the Status. The 404 for
+        an instance or a backup that is not there and the 422 `backup_damaged`
+        are answered at once.
       parameters:
         - $ref: "#/components/parameters/Name"
+        - $ref: "#/components/parameters/Async"
       requestBody:
         required: true
         content:
@@ -815,8 +911,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Status" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/instances/{name}/status:
     get:
       tags: [instances]
@@ -925,13 +1024,87 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /api/v1/jobs:
+    get:
+      tags: [jobs]
+      summary: List the jobs, newest first
+      description: |
+        The long calls that were started with `async=true` (see the
+        description of this API): the last 100 and those that ended less than
+        24 hours ago, and every one that runs. Kept in memory only. The
+        `read` role gets, of a job on an instance with
+        `secret_delivery: command_line`, the notice in place of the reason in
+        its result and in place of the text of its error.
+      parameters:
+        - name: state
+          in: query
+          description: Only jobs in this state.
+          schema: { $ref: "#/components/schemas/JobState" }
+        - name: target
+          in: query
+          description: Only jobs on this target (an instance name, a build source, or esm).
+          schema: { type: string }
+      responses:
+        "200":
+          description: Jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobList" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /api/v1/jobs/{id}:
+    get:
+      tags: [jobs]
+      summary: One job
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [jobs]
+      summary: Cancel an install (the role that starts it; site, for a Steam source)
+      description: |
+        Stops a job of kind `install` that has not begun its `place` step:
+        nothing has been put in place then, and nothing is. The caller needs the
+        role that started the job: `admin` for an install from a folder, an
+        archive or an address (403 `forbidden` otherwise), and for one from a
+        Steam source `admin` or `site`. Every other job (an update, a backup,
+        a restore or ESM's own update, which run to their end), one that has
+        ended and an install that is placing its build is 409
+        `not_cancellable`. The job is not removed: it ends as `cancelled`,
+        with no result and no error, and stays in the list. The call answers
+        when the job has stopped, or after 5 seconds with the job as it is then
+        (`cancelling` true). Cancelling a job that is being cancelled changes
+        nothing.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses:
+        "200":
+          description: The job, cancelled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/events:
     get:
       tags: [events]
       summary: Server-Sent Events stream
       description: |
-        Each event has `id:`, `event:` (state, log, build, update or audit) and
-        `data:` with the Event as JSON. A comment line is sent every 15
+        Each event has `id:`, `event:` (state, log, build, update, job or audit)
+        and `data:` with the Event as JSON. A `job` event carries the whole
+        Job each time it changes: it started, went to another step, moved on in
+        a step (a download, at most four times a second) or ended; its
+        `instance` is the instance of an update, backup or restore. Readers get
+        them as `GET /jobs` shows them. A comment line is sent every 15
         seconds to keep the connection open. Reconnect with the
         `Last-Event-ID` header to get the events missed meanwhile, as long as
         they are still held in memory. Audit events are sent to admins only.
@@ -956,7 +1129,7 @@ paths:
           schema: { type: string }
         - name: types
           in: query
-          description: Comma-separated event types (state, log, build, update, audit).
+          description: Comma-separated event types (state, log, build, update, job, audit).
           schema: { type: string }
         - name: Last-Event-ID
           in: header
@@ -1186,6 +1359,19 @@ components:
       in: query
       description: Return only when the server is running or has failed.
       schema: { type: boolean, default: false }
+    Async:
+      name: async
+      in: query
+      description: |
+        Start the call as a job and answer 202 with it at once, instead of
+        answering when the call is done. The call is checked as without it.
+      schema: { type: boolean, default: false }
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job id, as the job says it.
+      schema: { type: string }
   requestBodies:
     Empty:
       description: An empty object (or no body).
@@ -1198,6 +1384,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    JobAccepted:
+      description: The call was checked and a job was started (async=true).
+      headers:
+        Location:
+          description: The job, `/api/v1/jobs/{id}`.
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Job" }
     RateLimited:
       description: Too many failed attempts from this client or for this user name, or too many failed authentications from this client address (calls without a valid login).
       headers:
@@ -1264,7 +1459,10 @@ components:
                 names a map), update_failed, backup_damaged, start_failed,
                 not_ready, stop_timeout (422: the server did not exit within
                 stop_timeout after its one stop signal and was left
-                running), stop_failed, rate_limited, internal.
+                running), stop_failed, not_cancellable (409: only an install
+                can be cancelled, and not once it places its build), rate_limited,
+                shutting_down (503: ESM is ending, no job is started; also the
+                code of a job that ESM's end stopped), internal.
             message: { type: string }
     Duration:
       description: A duration such as "90s" or "1h30m", or a number of seconds.
@@ -1507,6 +1705,71 @@ components:
           type: boolean
           description: ESM ends in a moment and its service manager starts the new binary. False after exit_anyway with nothing to start ESM again; ESM ends all the same.
         note: { type: string }
+    JobState:
+      type: string
+      enum: [running, done, failed, cancelled]
+    JobStep:
+      type: object
+      required: [name, started]
+      properties:
+        name:
+          type: string
+          description: |
+            update: backup, stop, switch_build, start, wait_ready, rollback.
+            backup: wait_save, copy, prune. restore: stop, backup_current,
+            put_in_place, start, wait_ready. install: download, unpack,
+            verify, place. self_update: verify_signature, download,
+            place_binary, restart. Only the steps that ran are listed.
+        started: { type: string, format: date-time }
+        ended: { type: string, format: date-time, description: When the next step or the end of the job came; missing for the step that runs. }
+        bytes: { type: integer, description: "How far a download has come (a step that moves bytes); missing when nothing is known." }
+        total: { type: integer, description: The bytes there are, when they are known. }
+        percent: { type: number, minimum: 0, maximum: 100, description: "How far the step has come, when that is known." }
+    JobError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, description: The code the call would have answered with. }
+        message: { type: string }
+    Job:
+      type: object
+      required: [id, kind, target, actor, state, step, steps, started, cancellable]
+      properties:
+        id: { type: string, pattern: "^job_[0-9a-f]{24}$", description: "Random, URL-safe: job_ and 24 hexadecimal digits." }
+        kind: { type: string, enum: [update, backup, restore, install, self_update] }
+        target:
+          type: string
+          description: The instance (update, backup, restore), the source of the build (install; a URL without its query), or esm (self_update).
+        actor: { $ref: "#/components/schemas/Actor" }
+        state: { $ref: "#/components/schemas/JobState" }
+        step: { type: string, description: "The step the job is in; of a finished job, the one it ended in; empty before the first." }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/JobStep" }
+        started: { type: string, format: date-time }
+        ended: { type: string, format: date-time, description: Missing while the job runs. }
+        result:
+          description: |
+            Of a `done` job, what the call answers without `async`: a Status
+            (update, restore), a Backup, a Build or a SelfUpdateResult.
+          oneOf:
+            - $ref: "#/components/schemas/Status"
+            - $ref: "#/components/schemas/Backup"
+            - $ref: "#/components/schemas/Build"
+            - $ref: "#/components/schemas/SelfUpdateResult"
+        error: { $ref: "#/components/schemas/JobError" }
+        cancellable:
+          type: boolean
+          description: "A cancel would be taken now: an install that has not begun to place its build (the role the caller needs aside)."
+        cancelling:
+          type: boolean
+          description: A cancel was asked for and the job has not stopped yet; missing otherwise.
+    JobList:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/Job" }
     SteamSource:
       type: object
       properties:
@@ -2249,7 +2512,7 @@ components:
       properties:
         id: { type: integer }
         time: { type: string, format: date-time }
-        type: { type: string, enum: [state, log, build, update, audit] }
+        type: { type: string, enum: [state, log, build, update, job, audit] }
         instance: { type: string }
         data:
           oneOf:
@@ -2257,4 +2520,5 @@ components:
             - $ref: "#/components/schemas/LogLine"
             - $ref: "#/components/schemas/BuildEvent"
             - $ref: "#/components/schemas/UpdateEvent"
+            - $ref: "#/components/schemas/Job"
             - $ref: "#/components/schemas/AuditEntry"

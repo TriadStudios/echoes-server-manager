@@ -15,10 +15,10 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 )
 
-var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeAudit, events.TypeUpdate}
+var eventTypes = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeAudit, events.TypeUpdate, events.TypeJob}
 
 // events streams events as Server-Sent Events. Each event has an id, a
-// type (state, log, build or audit) and the event as JSON data. A client
+// type (state, log, build, audit, update or job) and the event as JSON data. A client
 // that reconnects with Last-Event-ID gets the events it missed while they
 // are still in memory. Audit events are only sent to admins. Of an
 // instance that passes its passwords on the server command line the read
@@ -48,7 +48,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, c *call) error {
 	}
 	if !c.role.Allows(auth.RoleAdmin) {
 		if len(f.Types) == 0 {
-			f.Types = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeUpdate}
+			f.Types = []string{events.TypeState, events.TypeLog, events.TypeBuild, events.TypeUpdate, events.TypeJob}
 		} else if f.Types = slices.DeleteFunc(f.Types, func(t string) bool { return t == events.TypeAudit }); len(f.Types) == 0 {
 			return errStatus(http.StatusForbidden, "forbidden", "audit events need the admin role")
 		}

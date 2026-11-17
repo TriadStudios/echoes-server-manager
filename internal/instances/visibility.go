@@ -137,3 +137,16 @@ func (m *Manager) setAsideOutput(name string) error {
 	}
 	return nil
 }
+
+// OutputHidden reports whether the read role is kept from the server output
+// and failure details of the named instance, and whether the instance is
+// there at all (found).
+func (m *Manager) OutputHidden(name string) (hidden, found bool) {
+	in := m.lookup(name)
+	if in == nil {
+		return false, false
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.cfg.OutputHidden(), true
+}

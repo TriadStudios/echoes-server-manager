@@ -43,6 +43,7 @@ import (
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/fault"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
+	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
 	"github.com/TriadStudios/echoes-server-manager/internal/release"
 	"github.com/TriadStudios/echoes-server-manager/internal/steam"
 	"github.com/TriadStudios/echoes-server-manager/internal/supervisor"
@@ -128,6 +129,13 @@ type Options struct {
 	// something does.
 	Release    *release.Checker
 	SelfUpdate func(ctx context.Context, force, exitAnyway bool) (res release.Result, restarting bool, err error)
+	// SelfUpdateCheck, when set, says in advance whether SelfUpdate would
+	// refuse for what does not need the release server (nothing to start
+	// ESM again, an update running already). A self-update that is started
+	// as a job (?async=true) is refused at once with its answer, as the
+	// synchronous call is; what only the release server tells (ESM is the
+	// newest already) ends the job as failed.
+	SelfUpdateCheck func(exitAnyway bool) error
 	// LastSelfUpdate, when set, is the self-update that was rolled back
 	// before this ESM started; GET /box shows it.
 	LastSelfUpdate *SelfUpdateRecord
@@ -146,6 +154,8 @@ type Server struct {
 	doctorBusy atomic.Bool         // a health check is running
 	// logDownloads holds a token for each log download that runs.
 	logDownloads chan struct{}
+	// jobs runs the calls that are started with ?async=true.
+	jobs *jobs.Runner
 }
 
 // access says who may call a route.
@@ -271,6 +281,13 @@ func init() {
 	r("POST", p+"/instances/{name}/update", required, oper, "instance.update", (*Server).update)
 	r("POST", p+"/instances/{name}/backup", required, oper, "instance.backup", (*Server).backup)
 	r("POST", p+"/instances/{name}/restore", required, oper, "instance.restore", (*Server).restore)
+	// The long calls above, started with ?async=true, are jobs: any reader
+	// looks at them. Cancelling one takes the role that started it (see
+	// cancelJob): an install is the admin's (the site role's from a Steam
+	// source), and nothing but an install can be cancelled.
+	r("GET", p+"/jobs", required, read, "job.list", (*Server).listJobs)
+	r("GET", p+"/jobs/{id}", required, read, "job.get", (*Server).getJob)
+	r("DELETE", p+"/jobs/{id}", required, oper, "job.cancel", (*Server).cancelJob)
 	r("GET", p+"/instances/{name}/status", required, read, "instance.status", (*Server).status)
 	r("GET", p+"/instances/{name}/logs", required, read, "instance.logs", (*Server).logs)
 	r("GET", p+"/instances/{name}/logs/download", required, read, "instance.logs.download", (*Server).logsDownload)
@@ -315,6 +332,7 @@ func New(o Options) *Server {
 	}
 	s := &Server{o: o, log: o.Logger, mux: http.NewServeMux(), paths: http.NewServeMux(), allow: map[string][]string{},
 		lim: newLimits(o.Now), logDownloads: make(chan struct{}, maxLogDownloads)}
+	s.jobs = jobs.New(jobs.Options{Logger: o.Logger, Notify: s.publishJob, Restrict: s.jobHidden, Ended: s.jobEnded, Classify: classifyJob})
 	s.main = &listener{hosts: newHostSet(o.Listen, o.PublicHosts), tls: o.TLS, https: o.HTTPS,
 		behindProxy: o.Config != nil && o.Config.BehindTLSProxy,
 		hostHint:    "use localhost, or add the name to public_hosts in esm.json"}

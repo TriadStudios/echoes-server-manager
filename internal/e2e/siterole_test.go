@@ -95,6 +95,9 @@ var siteCases = map[string]siteCase{
 	"POST /api/v1/instances/{name}/update":               {allowed: true, body: api.UpdateRequest{To: "1.0"}, status: 404, code: "not_found"},
 	"POST /api/v1/instances/{name}/backup":               answers(404, "not_found"),
 	"POST /api/v1/instances/{name}/restore":              {allowed: true, body: api.RestoreRequest{Backup: "b"}, status: 404, code: "not_found"},
+	"GET /api/v1/jobs":                                   answers(200, ""),
+	"GET /api/v1/jobs/{id}":                              answers(404, "not_found"),
+	"DELETE /api/v1/jobs/{id}":                           answers(404, "not_found"),
 	"GET /api/v1/instances/{name}/status":                answers(404, "not_found"),
 	"GET /api/v1/instances/{name}/logs":                  answers(404, "not_found"),
 	"GET /api/v1/instances/{name}/logs/download":         answers(404, "not_found"),
@@ -126,12 +129,13 @@ func routePath(path string) string {
 }
 
 // For every route there is, a site token gets exactly the answer a site
-// token should: the operator's calls and the four more that are open to it
-// (changing an instance's settings, installing from a Steam source, pruning
-// builds and updating ESM), and 403 on everything else. The table has a
-// line for every route; a new route has to be put in it, which is the
-// moment to decide what the site role does there. The operator and read
-// tokens meet exactly the roles of the routes, as before.
+// token should: the operator's calls (the jobs, which it reads and, of an
+// install from a Steam source, cancels, among them) and the four more that
+// are open to it (changing an instance's settings, installing from a Steam
+// source, pruning builds and updating ESM), and 403 on everything else. The
+// table has a line for every route; a new route has to be put in it, which
+// is the moment to decide what the site role does there. The operator and
+// read tokens meet exactly the roles of the routes, as before.
 func TestSiteRoleOnEveryRoute(t *testing.T) {
 	t.Parallel()
 	h := newESM(t)
