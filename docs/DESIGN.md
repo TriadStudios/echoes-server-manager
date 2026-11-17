@@ -771,6 +771,13 @@ asks the instance's `bind_ip`, or 127.0.0.1 when that is empty, and is
 bounded by a short timeout (200 ms by default). It is also how a server
 that ESM finds running at its start is checked again.
 
+The query port is UDP, so a request or its reply may be lost. A request
+that gets no reply is sent again, as clients of the protocol do, after a
+quarter of the time the query has (at least 50 ms, at most 250 ms), until
+that time is up; every copy sent allows one more challenge reply, since a
+slow server answers each of them. The same goes for the query ESM makes
+for the player count before an automatic update (one second).
+
 The ready line is the server saying it registered its dedicated session
 (`[SESSION] Dedicated session '<name>' registered (map <map>, <n> slots)`):
 from then on it is in the server list and can be joined. The Steam logon
@@ -2058,8 +2065,11 @@ are marked CONFIRMED or UNCONFIRMED. A first real server ran on a Linux host
 
 The fake server used by the tests follows these assumptions, with one
 difference on purpose: it binds the query port on 127.0.0.1 only, where a
-real server listens on every address. When a real host proves an assumption
-wrong, it changes in the adapter and the fake, and nowhere else.
+real server listens on every address. It also gives its ready signals (the
+status file, the ready line) only once its query port answers, so a test
+that asks the query port the moment it sees either gets its answer. When a
+real host proves an assumption wrong, it changes in the adapter and the
+fake, and nowhere else.
 
 ## Phases
 
