@@ -191,6 +191,13 @@ esm --url https://<your-host> list
 lines in the process list.) `--url` must be https unless it points to this
 machine: over plain http the token would cross the network in clear.
 
+A token has a role. `read` looks at everything but tokens, logins, the audit
+log and backup downloads. `operator` also starts, stops, restarts, updates
+(to a build that is installed), backs up and restores servers and downloads
+backups. `admin` does everything, installing builds included. `site` is for
+the token of a website's admin panel, and only a token has it (a login
+cannot): see [A token for a website's admin panel](#a-token-for-a-websites-admin-panel).
+
 ### Logins and passwords
 
 `esm user list` shows the logins: name, role, last login and how many
@@ -253,7 +260,8 @@ default, TLS only, for API tokens. Add it to `esm.json` and restart ESM
   nothing) or 30 days before the ten years are up, and keeps the key, so
   the public key pin stays the same.
 - It takes API tokens only, each with its role
-  (`esm token create --role read --name panel`). A browser login, setup
+  (`esm token create --role read --name panel`; `site` for a website, see
+  below). A browser login, setup
   and the web page are refused there unless you set `"page": true`; calls
   that work only on the box (`esm user passwd`) stay refused.
 
@@ -290,6 +298,57 @@ and logins from that address go on working, and the audit log records
 only a couple of entries of it a minute.
 The API listener also ends the connection after each 401 or 429. See
 [The API listener](docs/DESIGN.md#the-api-listener) for the details.
+
+### A token for a website's admin panel
+
+A website that manages ESM through the API listener, while it signs its
+own employees in (with single sign-on, say) and decides what
+each may do, calls ESM with one token of the `site` role:
+
+```sh
+esm token create --role site --name panel
+```
+
+It may do what an `operator` may (look at everything, start, stop, restart,
+update to an installed build, back up, restore, download a backup, read
+logs and events, and looking for a newer ESM release, as every role may),
+and four calls more:
+
+- change an instance's settings, world rules and `auto_update`
+  (`PATCH /api/v1/instances/<name>`);
+- install a build from a Steam source of `esm.json`, and only from one:
+  `{"source": "steam:<name>"}` (`POST /api/v1/builds`). A folder, an archive
+  or an https address is a program that runs with ESM's own rights, and
+  gets 403;
+- remove the builds nothing uses (`POST /api/v1/builds/prune`);
+- update ESM itself (`POST /api/v1/box/self-update`), but not with
+  `"exit_anyway": true`, which ends ESM with nothing to start it again: ESM
+  never stays down because of the site (403).
+
+Everything else is 403 for it: tokens, logins, the audit log, creating and
+deleting instances, passwords and tokens of a server, deleting a build, the
+health check. Its role is not a step between `operator` and `admin`: a call
+that needs `admin` stays closed to it unless it is one of the four.
+
+The audit log records each call that changes something with the id of the
+token (`esm token create` prints it; `GET /api/v1/tokens` lists ids with
+names). To have it name the person the website acts for, send their name in
+`X-ESM-Acting-User` (up to 64 characters, no control characters, once):
+
+```sh
+curl --cacert api-listener.crt --pinnedpubkey "$PIN" -X POST \
+  -H "Authorization: Bearer $ESM_TOKEN" -H "X-ESM-Acting-User: jane@example.com" \
+  -H "Content-Type: application/json" -d '{}' \
+  https://esm.example.com:8743/api/v1/instances/alpha/restart
+```
+
+The entry then has `"actor": {"kind": "token", "id": "tok_...", "role":
+"site", "acting_user": "jane@example.com"}`. ESM does not check the name and
+decides nothing by it: it only records what the token says, and only from
+a `site` token (from any other caller the header is not looked at). A name
+that is too long or has a control character is refused with 400, and the
+call is not made. The website must keep the token to itself and enforce its
+employees' rights itself; whoever has the token has the site role.
 
 ### Linux: keep servers running
 
@@ -792,7 +851,9 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
 - Every call that changes something or tries to (whether it works, fails
   or is refused), and every call refused for lack of a role, is written to
   an append-only audit log. A read refused for a missing login (401) or a
-  host name that is not ESM's (421) is not.
+  host name that is not ESM's (421) is not. The call of a `site` token also
+  names the person it says it acts for (`X-ESM-Acting-User`); that name is
+  a note, never used to decide anything.
 - Builds are checked against their manifest (SHA-256 of every file) before
   they are installed, archives are unpacked with path checks, downloads must
   be https with a known SHA-256, and installed files are read-only. A local
@@ -803,7 +864,8 @@ More in [docs/DESIGN.md](docs/DESIGN.md#passwords).
   (the secrets files with users, tokens and server passwords) and reach the
   unix socket, which acts as admin. So only the admin role installs builds;
   the operator role cannot (it can still update an instance to a build an
-  admin installed). Install only builds you trust.
+  admin installed), and the `site` role only from a Steam source you put in
+  `esm.json`. Install only builds you trust.
 - ESM only ever signals or stops processes it started itself (it checks the
   process start time and executable before touching a pid).
 - A stop is one SIGINT; ESM never sends a second signal and never kills a
