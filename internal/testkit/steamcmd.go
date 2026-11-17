@@ -60,9 +60,10 @@ type SteamControl struct {
 	Record   string `json:"record"`
 	// Echo makes the fake print each command, the password included.
 	Echo bool `json:"echo"`
-	// SlowMS makes the fake wait this many milliseconds in the middle of its
-	// download, so that a test can look at it, and cancel it.
-	SlowMS int `json:"slow_ms"`
+	// WaitFor is a file: the fake stops in the middle of its download until
+	// it exists, so that a test can look at the download, cancel it, or let
+	// it go on by creating the file.
+	WaitFor string `json:"wait_for"`
 }
 
 // FakeSteamCMD copies the fake SteamCMD into dir (its own copy, so its

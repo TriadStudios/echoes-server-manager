@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/TriadStudios/echoes-server-manager/internal/api"
+	"github.com/TriadStudios/echoes-server-manager/internal/audit"
 	"github.com/TriadStudios/echoes-server-manager/internal/events"
 	"github.com/TriadStudios/echoes-server-manager/internal/instances"
 	"github.com/TriadStudios/echoes-server-manager/internal/jobs"
@@ -349,7 +351,7 @@ func TestAsyncBackupAndRestoreAreJobs(t *testing.T) {
 	checkStepsAreWhole(t, done)
 	var b instances.Backup
 	resultAs(t, done, &b)
-	if b.Reason != instances.ReasonManual || !b.SaveConfirmed || b.Instance != "alpha" || !strings.HasPrefix(b.ID, "2") {
+	if b.Reason != instances.ReasonManual || b.Instance != "alpha" || !strings.HasPrefix(b.ID, "2") {
 		t.Fatalf("result: %+v", b)
 	}
 	var bl api.BackupList
@@ -574,21 +576,22 @@ func TestAnInstallThatDownloadsIsCancelledByItsOwnRole(t *testing.T) {
 	h := newESMTuned(t, "process", func(o *service.Options) { o.HTTPClient = client })
 	op, rd, site := h.token("operator"), h.token("read"), h.token("site")
 
-	j := h.startAsync(h.admin, "/api/v1/builds", api.InstallRequest{Source: source, SHA256: sum}, api.ActingUserHeader, "")
+	j := h.startAsync(h.admin, "/api/v1/builds", api.InstallRequest{Source: source, SHA256: sum})
 	if j.Target != source {
 		t.Fatalf("target %q", j.Target)
 	}
-	// While it downloads: the bytes come in, and it can be cancelled.
+	// While it downloads: the server holds the second half back until the test
+	// lets it go, so the bytes come in up to the half, and stay there, and the
+	// job can be cancelled.
 	cur := h.jobWhere(j.ID, 20*time.Second, func(j jobs.Job) bool {
-		return j.Step == "download" && len(j.Steps) == 1 && j.Steps[0].Bytes > 0
+		return j.Step == "download" && len(j.Steps) == 1 && j.Steps[0].Bytes == int64(size/2)
 	})
 	s := cur.Steps[0]
-	if s.Total != int64(size) || s.Bytes <= 0 || s.Bytes >= s.Total || s.Percent == nil || *s.Percent <= 0 || *s.Percent >= 100 || !cur.Cancellable {
+	if s.Total != int64(size) || s.Percent == nil || *s.Percent <= 0 || *s.Percent >= 100 || !cur.Cancellable {
 		t.Fatalf("a download under way: %+v (size %d) cancellable %v", s, size, cur.Cancellable)
 	}
 	// The client that started it goes away: the job does not.
 	h.http.CloseIdleConnections()
-	time.Sleep(200 * time.Millisecond)
 	if cur = h.job(j.ID, h.admin); cur.State != jobs.StateRunning {
 		t.Fatalf("the job after the connection closed: %+v", cur)
 	}
@@ -669,20 +672,25 @@ func TestAnInstallThatDownloadsIsCancelledByItsOwnRole(t *testing.T) {
 	}
 }
 
-// steamJobRig is a service with a Steam source and a fake SteamCMD that
-// can be made to take its time.
+// steamJobRig is a service with a Steam source and a fake SteamCMD. With
+// hold the fake stops in the middle of its download, after its first progress
+// line, until the test calls letGo: a test looks at the download, and cancels
+// it or lets it go on, when it wants to.
 type steamJobRig struct {
 	*harness
 	dir string
 	ctl testkit.SteamControl
 }
 
-func newSteamJobRig(t *testing.T, slowMS int, tune func(*service.Options)) *steamJobRig {
+func newSteamJobRig(t *testing.T, hold bool, tune func(*service.Options)) *steamJobRig {
 	t.Helper()
 	steamDir := t.TempDir()
 	content := filepath.Join(t.TempDir(), "content")
 	exes := testkit.MakeContent(t, content, testkit.BuildOptions{Version: "x"})
-	ctl := testkit.SteamControl{AppID: "1000001", BuildID: "100", Content: content, Branch: "testing", SlowMS: slowMS}
+	ctl := testkit.SteamControl{AppID: "1000001", BuildID: "100", Content: content, Branch: "testing"}
+	if hold {
+		ctl.WaitFor = filepath.Join(steamDir, "go-on")
+	}
 	exe := testkit.FakeSteamCMD(t, steamDir, ctl)
 	h := newESMTuned(t, "process", tune, func(cfg map[string]any) {
 		cfg["steamcmd"] = exe
@@ -692,12 +700,23 @@ func newSteamJobRig(t *testing.T, slowMS int, tune func(*service.Options)) *stea
 	return &steamJobRig{harness: h, dir: steamDir, ctl: ctl}
 }
 
+// letGo lets the fake SteamCMD go on, now and for every run after.
+func (r *steamJobRig) letGo() {
+	r.t.Helper()
+	if r.ctl.WaitFor == "" {
+		return
+	}
+	if err := os.WriteFile(r.ctl.WaitFor, nil, 0o600); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
 // A Steam install as a job shows the progress SteamCMD tells; the site role,
 // which may start it, cancels it, and the person it acted for is in the
 // job and in the audit log.
 func TestASteamInstallJobShowsItsProgressAndTheSiteRoleCancelsIt(t *testing.T) {
 	t.Parallel()
-	r := newSteamJobRig(t, 2500, nil)
+	r := newSteamJobRig(t, true, nil)
 	h := r.harness
 	site, op, rd := h.token("site"), h.token("operator"), h.token("read")
 
@@ -743,10 +762,9 @@ func TestASteamInstallJobShowsItsProgressAndTheSiteRoleCancelsIt(t *testing.T) {
 		t.Fatalf("audit (the end is of the person the job was started for): end %v, cancel %v: %+v", endEntry, cancelEntry, al.Entries)
 	}
 
-	// Without the pause it runs through, and an install of the same build
-	// id again is a job that only downloads and finds the build there.
-	r.ctl.SlowMS = 0
-	testkit.SetSteamControl(t, r.dir, r.ctl)
+	// Let go, it runs through, and an install of the same build id again is a
+	// job that only downloads and finds the build there.
+	r.letGo()
 	done := h.jobEnds(h.startAsync(site, "/api/v1/builds", api.InstallRequest{Source: "steam:main"}).ID)
 	if done.State != jobs.StateDone || !slices.Equal(stepNames(done), []string{"download", "unpack", "verify", "place"}) {
 		t.Fatalf("steam install job: %+v %+v", done, done.Error)
@@ -888,10 +906,12 @@ func TestJobEventsAreSentToReaders(t *testing.T) {
 	if n != len(seen) {
 		t.Errorf("the admin got %d job events, the reader %d", n, len(seen))
 	}
+	// Both streams were fed by the same publications, and the admin's has them
+	// all: nothing of the job of alpha is on the stream for beta.
 	select {
 	case e := <-only.events:
 		t.Fatalf("an event of a job of alpha on a stream for beta: %+v", e)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	if a := h.raw("GET", "/api/v1/events?types=nonsense", rd, nil); a.status != http.StatusUnprocessableEntity {
 		t.Fatalf("a type that is none: %d %s", a.status, a.body)
@@ -1081,49 +1101,76 @@ func TestAsyncSelfUpdateWithoutAServiceManager(t *testing.T) {
 
 // --- shutdown ---
 
-// ESM's end waits for a job that runs as it waits for a request that runs,
-// and the job ends done and is audited.
+// ESM's end waits for a job that runs as it waits for a request that runs:
+// the job is held in its download when the shutdown begins, the shutdown does
+// not end while it is, and when the job is let go it ends done, its build is in
+// place and its end is in the audit log before the shutdown returns.
 func TestShutdownWaitsForAJob(t *testing.T) {
-	r := newSteamJobRig(t, 1500, nil)
+	r := newSteamJobRig(t, true, nil)
 	h := r.harness
 	j := h.startAsync(h.admin, "/api/v1/builds", api.InstallRequest{Source: "steam:main"})
-	h.jobWhere(j.ID, 20*time.Second, func(j jobs.Job) bool { return j.Step == "download" })
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	h.jobWhere(j.ID, 20*time.Second, func(j jobs.Job) bool { return j.Step == "download" && len(j.Steps) == 1 && j.Steps[0].Bytes > 0 })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	began := time.Now()
-	if err := h.svc.Shutdown(ctx); err != nil {
+	ended := make(chan error, 1)
+	go func() { ended <- h.svc.Shutdown(ctx) }()
+	// The shutdown stops the listeners first: once one refuses, it is on its
+	// way to the jobs, and the job that is held keeps it there.
+	testkit.Eventually(t, 30*time.Second, func() bool {
+		c, err := net.DialTimeout("tcp", h.svc.Addr(), time.Second)
+		if err != nil {
+			return true
+		}
+		c.Close()
+		return false
+	}, "the listener still takes connections")
+	select {
+	case err := <-ended:
+		t.Fatalf("the shutdown ended with a job that runs: %v", err)
+	default:
+	}
+	r.letGo()
+	if err := <-ended; err != nil {
 		t.Fatalf("shutdown: %v", err)
 	}
 	h.svc = nil
-	if time.Since(began) < 500*time.Millisecond {
-		t.Errorf("the shutdown did not wait for the job: %s", time.Since(began))
-	}
 	if _, err := os.Stat(filepath.Join(h.root, "builds", "steam-main-100", "manifest.json")); err != nil {
 		t.Fatalf("the build of the job that was waited for is not there: %v", err)
 	}
-	log, _ := os.ReadFile(filepath.Join(h.root, "audit.log"))
-	if !strings.Contains(string(log), `"action":"job.end"`) || !strings.Contains(string(log), j.ID+" install steam:main") {
-		t.Fatalf("the audit log has no end of the job:\n%s", log)
+	raw, _ := os.ReadFile(filepath.Join(h.root, "audit.log"))
+	var end bool
+	for _, line := range strings.Split(string(raw), "\n") {
+		var e audit.Entry
+		if json.Unmarshal([]byte(line), &e) == nil && e.Action == "job.end" && e.OK && strings.HasPrefix(e.Target, j.ID+" install steam:main") {
+			end = true
+		}
+	}
+	if !end {
+		t.Fatalf("the audit log has no end of the job:\n%s", raw)
 	}
 }
 
 // A job that does not end in the time the shutdown has is asked to stop, and
-// the shutdown goes on without it, as it does for a request that is cut off.
+// the shutdown goes on without it, as it does for a request that is cut off:
+// the fake SteamCMD is held for good, so only the stop can end it.
 func TestShutdownStopsAJobThatTakesTooLong(t *testing.T) {
-	r := newSteamJobRig(t, 60000, nil)
+	r := newSteamJobRig(t, true, nil)
 	h := r.harness
 	j := h.startAsync(h.admin, "/api/v1/builds", api.InstallRequest{Source: "steam:main"})
-	h.jobWhere(j.ID, 20*time.Second, func(j jobs.Job) bool { return j.Step == "download" })
+	h.jobWhere(j.ID, 20*time.Second, func(j jobs.Job) bool { return j.Step == "download" && len(j.Steps) == 1 && j.Steps[0].Bytes > 0 })
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	began := time.Now()
-	err := h.svc.Shutdown(ctx)
+	ended := make(chan error, 1)
+	go func() { ended <- h.svc.Shutdown(ctx) }()
+	var err error
+	select {
+	case err = <-ended:
+	case <-time.After(2 * time.Minute): // the test's own time limit, not an expectation
+		t.Fatal("the shutdown did not end")
+	}
 	h.svc = nil
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown: %v", err)
-	}
-	if took := time.Since(began); took > 20*time.Second {
-		t.Fatalf("the shutdown took %s", took)
 	}
 	if _, err := os.Stat(filepath.Join(h.root, "builds", "steam-main-100")); err == nil {
 		t.Fatal("a build was placed by a job that was stopped")

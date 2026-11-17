@@ -12,10 +12,11 @@
 //
 //	{"app_id": "1000001", "buildid": "100", "content": "<folder>",
 //	 "branch": "testing", "password": "<the branch password>",
-//	 "record": "<file>", "echo": false, "slow_ms": 0}
+//	 "record": "<file>", "echo": false, "wait_for": "<file>"}
 //
-// slow_ms makes app_update wait that long between its two progress lines, so
-// that a test can look at a download that is under way.
+// wait_for makes app_update stop after its first progress line until that
+// file exists, so that a test can look at a download that is under way, and
+// let it go on when it wants to. It gives up after two minutes.
 //
 // app_update copies the content folder into the install folder (replacing
 // what was there, except steamapps/) and writes
@@ -51,8 +52,9 @@ type control struct {
 	// Echo prints every command before running it, password and all, as
 	// SteamCMD may: ESM must mask its output.
 	Echo bool `json:"echo"`
-	// SlowMS is how long app_update waits after its first progress line.
-	SlowMS int `json:"slow_ms"`
+	// WaitFor is a file that app_update waits for, after its first progress
+	// line, until it exists.
+	WaitFor string `json:"wait_for"`
 }
 
 type record struct {
@@ -275,8 +277,9 @@ func (s *session) appUpdate(args []string) int {
 		return 5
 	}
 	fmt.Printf(" Update state (0x61) downloading, progress: 50.00 (1 / 2)\r")
-	if s.c.SlowMS > 0 {
-		time.Sleep(time.Duration(s.c.SlowMS) * time.Millisecond)
+	if s.c.WaitFor != "" && !waitForFile(s.c.WaitFor) {
+		fmt.Printf("ERROR! Failed to install app '%s' (the test did not let the download go on)\n", app)
+		return 9
 	}
 	fmt.Printf(" Update state (0x61) downloading, progress: 100.00 (2 / 2)\n")
 	if err := mirror(s.c.Content, s.dir); err != nil {
@@ -291,6 +294,22 @@ func (s *session) appUpdate(args []string) int {
 	}
 	fmt.Printf("Success! App '%s' fully installed.\n", app)
 	return 0
+}
+
+// waitLimit is the longest app_update waits for the file of wait_for: a
+// test that forgets to create it does not leave a process behind for ever.
+const waitLimit = 2 * time.Minute
+
+// waitForFile waits until the file exists, and says whether it does.
+func waitForFile(path string) bool {
+	deadline := time.Now().Add(waitLimit)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 // mirror makes dst hold exactly what src holds (steamapps/ in dst stays).

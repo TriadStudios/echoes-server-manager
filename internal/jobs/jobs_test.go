@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -407,7 +408,6 @@ func TestAJobGoesOnWhenTheRequestIsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancelRequest() // the client goes away
-	time.Sleep(20 * time.Millisecond)
 	if g, _ := r.Get(j.ID); g.State != StateRunning {
 		t.Fatalf("the job ended with the request: %+v", g)
 	}
@@ -577,14 +577,22 @@ func TestCloseWaitsForJobsThenStopsThem(t *testing.T) {
 		defer cancel()
 		closed <- r.Close(ctx)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	// Close has begun once the runner takes no more jobs (a job that is taken
+	// before that ends at once); the job that is held keeps it from ending.
+	for {
+		_, err := r.Start(Spec{Kind: KindBackup, Target: "b"}, func(context.Context) (any, error) { return nil, nil })
+		if errors.Is(err, ErrClosed) {
+			break
+		}
+		if err != nil && !errors.Is(err, ErrBusy) {
+			t.Fatalf("a job started while closing: %v", err)
+		}
+		runtime.Gosched()
+	}
 	select {
 	case err := <-closed:
 		t.Fatalf("Close did not wait for the job: %v", err)
 	default:
-	}
-	if _, err := r.Start(Spec{Kind: KindBackup, Target: "b"}, func(context.Context) (any, error) { return nil, nil }); !errors.Is(err, ErrClosed) {
-		t.Fatalf("a job started while closing: %v", err)
 	}
 	close(gate)
 	if err := <-closed; err != nil {

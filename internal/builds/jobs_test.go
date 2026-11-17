@@ -175,8 +175,10 @@ func TestADownloadTellsItsBytesAndStopsWhenCancelled(t *testing.T) {
 	var cur jobs.Job
 	testkit.Eventually(t, 10*time.Second, func() bool {
 		cur, _ = run.Get(j.ID)
-		return len(cur.Steps) == 1 && cur.Steps[0].Bytes > 0
-	}, "no bytes of the download: %+v", &cur)
+		// The server holds the second half back, so the bytes come in up to
+		// the half and stay there.
+		return len(cur.Steps) == 1 && cur.Steps[0].Bytes == int64(len(data)/2)
+	}, "the download is not at its half: %+v", &cur)
 	s := cur.Steps[0]
 	if s.Name != "download" || s.Total != int64(len(data)) || s.Bytes != int64(len(data)/2) || s.Percent == nil || !cur.Cancellable {
 		t.Fatalf("download step: %+v cancellable %v", s, cur.Cancellable)
