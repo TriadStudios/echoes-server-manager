@@ -4,10 +4,13 @@
 //
 // Requests are authenticated by a bearer token (Authorization: Bearer), by
 // the session cookie of a logged-in user (with X-CSRF-Token on every
-// change), or by arriving on the unix socket (admin). One call, setting a
-// login's password without the current one, is answered on the socket
-// only. Tokens are never read from URLs. The API listener, a second TCP
-// listener for clients on other machines (APIListenerHandler), takes API
+// change), or by arriving on the unix socket (admin). A token may have the
+// site role, for the admin panel of a website: the operator's calls and a
+// short list more (see route.site and site.go), and it may name the person
+// it acts for (X-ESM-Acting-User, recorded in the audit log). One call,
+// setting a login's password without the current one, is answered on the
+// socket only. Tokens are never read from URLs. The API listener, a second
+// TCP listener for clients on other machines (APIListenerHandler), takes API
 // tokens only unless its page is on. Every call that changes something
 // (or tries to) writes an audit entry, and so does every call refused for
 // lack of a role (403); a read refused for a missing login (401) does not.
@@ -166,6 +169,12 @@ type route struct {
 	// login marks the calls of logging in and out (setup, login, logout),
 	// which a listener that takes API tokens only does not answer.
 	login bool
+	// site opens a route that needs more than the operator role to a token
+	// of the site role as well, and to that role only (see allows). A route
+	// that needs the operator role or less is open to the site role without
+	// it. A call that is open to the site role in part says so in its
+	// handler (see call.adminOnlyIf).
+	site bool
 }
 
 // Route describes a registered API endpoint.
@@ -176,6 +185,10 @@ type Route struct {
 	// SocketOnly marks an endpoint that answers only on the unix socket
 	// (which acts as admin); over TCP it is refused for every caller.
 	SocketOnly bool
+	// Site says that a token of the site role passes the endpoint's role
+	// check (a few calls then refuse some of what they are asked for: see
+	// call.adminOnlyIf).
+	Site bool
 }
 
 // Routes lists every API endpoint.
@@ -186,7 +199,8 @@ func Routes() []Route {
 		if rt.access != required && rt.access != local {
 			role = ""
 		}
-		out = append(out, Route{Method: rt.method, Path: rt.path, Role: role, SocketOnly: rt.access == local})
+		out = append(out, Route{Method: rt.method, Path: rt.path, Role: role, SocketOnly: rt.access == local,
+			Site: rt.access == required && rt.allows(auth.RoleSite)})
 	}
 	return out
 }
@@ -206,6 +220,13 @@ func init() {
 		routes = append(routes, route{method: method, path: path, access: ac, role: role, action: action, h: h,
 			login: loginActions[action]})
 	}
+	// rs is r for a route that the site role may call although it needs the
+	// admin role: the only way a route is opened to that role beyond the
+	// operator's. A call open to it in part refuses the rest in its handler.
+	rs := func(method, path string, ac access, role auth.Role, action string, h handler) {
+		r(method, path, ac, role, action, h)
+		routes[len(routes)-1].site = true
+	}
 	const p = "/api/v1"
 	r("GET", p+"/setup", public, "", "setup.status", (*Server).setupStatus)
 	r("POST", p+"/setup", public, "", "setup", (*Server).setup)
@@ -220,21 +241,24 @@ func init() {
 	// read the box (a cookie session still sends the CSRF token, as for
 	// every POST).
 	r("POST", p+"/box/release-check", required, read, "box.release_check", (*Server).releaseCheck)
-	// Replacing ESM's own binary: admin only, and only when asked.
-	r("POST", p+"/box/self-update", required, admin, "box.self_update", (*Server).selfUpdate)
+	// Replacing ESM's own binary: admin only, and only when asked. The site
+	// role may, but not with exit_anyway: ESM must not stay down because of
+	// a site token (see selfUpdate).
+	rs("POST", p+"/box/self-update", required, admin, "box.self_update", (*Server).selfUpdate)
 	r("GET", p+"/steam", required, read, "steam.list", (*Server).listSteam)
 	r("PUT", p+"/steam/{name}/password", required, admin, "steam.password", (*Server).steamPassword)
 	r("GET", p+"/builds", required, read, "build.list", (*Server).listBuilds)
 	// Installing a build is installing a program that runs with ESM's own
 	// rights: admin only. Switching an instance to an installed build is
-	// an operator's update.
-	r("POST", p+"/builds", required, admin, "build.install", (*Server).installBuild)
+	// an operator's update. The site role installs from a Steam source
+	// only, one the admin put in esm.json (see installBuild).
+	rs("POST", p+"/builds", required, admin, "build.install", (*Server).installBuild)
 	r("DELETE", p+"/builds/{version}", required, admin, "build.delete", (*Server).deleteBuild)
-	r("POST", p+"/builds/prune", required, admin, "build.prune", (*Server).pruneBuilds)
+	rs("POST", p+"/builds/prune", required, admin, "build.prune", (*Server).pruneBuilds)
 	r("GET", p+"/instances", required, read, "instance.list", (*Server).listInstances)
 	r("POST", p+"/instances", required, admin, "instance.create", (*Server).createInstance)
 	r("GET", p+"/instances/{name}", required, read, "instance.get", (*Server).getInstance)
-	r("PATCH", p+"/instances/{name}", required, admin, "instance.change", (*Server).patchInstance)
+	rs("PATCH", p+"/instances/{name}", required, admin, "instance.change", (*Server).patchInstance)
 	r("DELETE", p+"/instances/{name}", required, admin, "instance.delete", (*Server).deleteInstance)
 	r("PUT", p+"/instances/{name}/secrets", required, admin, "instance.secrets", (*Server).putSecrets)
 	r("POST", p+"/instances/{name}/start", required, oper, "instance.start", (*Server).start)
@@ -558,10 +582,17 @@ func (s *Server) authenticate(r *http.Request, rt route, c *call) error {
 	if err != nil {
 		return err
 	}
-	if !c.role.Allows(rt.role) {
+	if !rt.allows(c.role) {
 		return errStatus(http.StatusForbidden, "forbidden", "this needs the %s role; you have %s", rt.role, c.role)
 	}
 	return nil
+}
+
+// allows reports whether a caller with role passes the route's role check:
+// the role includes the one the route needs, or it is the site role and the
+// route is open to it (route.site).
+func (rt route) allows(role auth.Role) bool {
+	return role.Allows(rt.role) || (rt.site && role == auth.RoleSite)
 }
 
 // identify works out who is calling. No credentials is not an error (the
@@ -585,6 +616,16 @@ func (s *Server) identify(r *http.Request, c *call) error {
 		c.actor = audit.Actor{Kind: audit.ActorToken, ID: t.ID, Role: string(t.Role)}
 		c.role = t.Role
 		c.authed = true
+		// Only the site role may say who it acts for; from any other the
+		// header is not read. It is checked once the token is known to be
+		// valid, so a bad one is no failed authentication.
+		if t.Role == auth.RoleSite {
+			who, err := actingUser(r)
+			if err != nil {
+				return err
+			}
+			c.actor.ActingUser = who
+		}
 		return nil
 	}
 	ck, err := r.Cookie(auth.SessionCookieName)

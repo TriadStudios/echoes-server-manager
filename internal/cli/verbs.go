@@ -569,17 +569,17 @@ func (e *env) build(args []string) error {
 
 func (e *env) token(args []string) error {
 	fs := e.flags("token")
-	role := fs.String("role", "", "read, operator or admin")
+	role := fs.String("role", "", "read, operator, admin or site")
 	name := fs.String("name", "", "a name to recognise the token by")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 || pos[0] != "create" {
-		return usageErr("token needs create --role read|operator|admin [--name NAME]")
+		return usageErr("token needs create --role read|operator|admin|site [--name NAME]")
 	}
 	if *role == "" {
-		return usageErr("token create needs --role read, operator or admin")
+		return usageErr("token create needs --role read, operator, admin or site")
 	}
 	c, err := e.client()
 	if err != nil {

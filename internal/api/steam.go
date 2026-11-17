@@ -55,6 +55,9 @@ func (s *Server) selfUpdate(w http.ResponseWriter, r *http.Request, c *call) err
 		return err
 	}
 	c.target = "esm"
+	if err := c.adminOnlyIf(req.ExitAnyway, "exit_anyway ends ESM with nothing to start it again, and needs the admin role: ESM must not stay down because of a site token"); err != nil {
+		return err
+	}
 	if s.o.SelfUpdate == nil {
 		return errStatus(http.StatusConflict, "not_available", "this ESM cannot update itself")
 	}

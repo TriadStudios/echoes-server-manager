@@ -359,7 +359,14 @@ func (s *Server) installBuild(w http.ResponseWriter, r *http.Request, c *call) e
 		return err
 	}
 	c.target = builds.RedactSource(req.Source)
-	if name, ok := strings.CutPrefix(strings.TrimSpace(req.Source), steam.SourcePrefix); ok {
+	name, isSteam := strings.CutPrefix(strings.TrimSpace(req.Source), steam.SourcePrefix)
+	// A folder, an archive or an address is a program that runs with ESM's own
+	// rights: only an admin installs one. A Steam source is one the admin put
+	// in esm.json, so the site role may run it.
+	if err := c.adminOnlyIf(!isSteam, "only an admin installs a build from a folder, an archive or an address; the site role installs from a Steam source only (source steam:<name>)"); err != nil {
+		return err
+	}
+	if isSteam {
 		return s.installSteam(w, r, c, name, req)
 	}
 	b, err := s.o.Builds.Install(r.Context(), req.Source, req.SHA256)

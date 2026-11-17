@@ -45,7 +45,7 @@ var (
 	ErrLongPassword   = fmt.Errorf("password must be at most %d bytes", MaxPasswordLength)
 	ErrBadUsername    = errors.New("username must be 1-64 characters: letters, digits, '.', '_' or '-', starting with a letter or digit")
 	ErrUserExists     = errors.New("user already exists")
-	ErrBadRole        = errors.New("role must be read, operator or admin")
+	ErrBadRole        = errors.New("role must be read, operator, admin or site")
 	ErrNotFound       = errors.New("not found")
 	ErrBadToken       = errors.New("invalid token")
 	ErrNoSession      = errors.New("not logged in")
@@ -401,6 +401,9 @@ func (m *Manager) addUserLocked(username, password string, role Role) (User, err
 	if !role.Valid() {
 		return User{}, ErrBadRole
 	}
+	if !role.CanLogin() {
+		return User{}, fmt.Errorf("%w: a login's role is read, operator or admin; %s is for API tokens only", ErrBadRole, role)
+	}
 	if err := CheckPassword(password); err != nil {
 		return User{}, err
 	}
@@ -668,6 +671,11 @@ func dummyHash(iter int) PasswordHash {
 // change or a reset), no session is opened: it would outlive the change,
 // which ends the sessions made with the old password.
 func (m *Manager) newSession(username string, role Role, verified PasswordHash) (*Session, error) {
+	// A browser session never has the site role, whatever users.json says
+	// (a hand-edited file): that role is for API tokens only.
+	if !role.CanLogin() {
+		return nil, fmt.Errorf("%w: a login cannot have the %q role, which is for API tokens only", ErrForbidden, role)
+	}
 	id, err := randomToken(32)
 	if err != nil {
 		return nil, err
