@@ -384,7 +384,9 @@ and four calls more:
 Everything else is 403 for it: tokens, logins, the audit log, creating and
 deleting instances, passwords and tokens of a server, deleting a build, the
 health check. Its role is not a step between `operator` and `admin`: a call
-that needs `admin` stays closed to it unless it is one of the four.
+that needs `admin` stays closed to it unless it is one of the four. It looks
+at [jobs](#long-calls-as-jobs-for-a-panel) like every role, and cancels the
+installs from a Steam source, which it may start.
 
 The audit log records each call that changes something with the id of the
 token (`esm token create` prints it; `GET /api/v1/tokens` lists ids with
@@ -405,6 +407,89 @@ a `site` token (from any other caller the header is not looked at). A name
 that is too long or has a control character is refused with 400, and the
 call is not made. The website must keep the token to itself and enforce its
 employees' rights itself; whoever has the token has the site role.
+
+### Long calls as jobs (for a panel)
+
+An update, a backup, a restore, the install of a build (a Steam download can
+take long) and ESM's own update run inside their request, and answer when
+they are done. A panel that wants to show how far one is, or that must not
+lose it to a dropped connection, starts it as a **job**: the same call with
+`?async=true`. ESM checks the call as it always does (the same 4xx answers,
+at once), starts the job, and answers 202 Accepted with the job and its
+address in `Location`:
+
+```sh
+curl --cacert api-listener.crt --pinnedpubkey "$PIN" -i -X POST \
+  -H "Authorization: Bearer $ESM_TOKEN" -H "Content-Type: application/json" \
+  -d '{"to": "1.1.0"}' \
+  "https://esm.example.com:8743/api/v1/instances/alpha/update?async=true"
+# HTTP/1.1 202 Accepted
+# Location: /api/v1/jobs/job_3f9a1c07b2e44d8a91c0e5f2
+# {"id":"job_3f9a1c07b2e44d8a91c0e5f2","kind":"update","target":"alpha","state":"running","step":"", ...}
+```
+
+The job runs with a context of its own: the client may go away, and ESM goes
+on with it. It is read with `GET /api/v1/jobs/<id>` (or, newest first,
+`GET /api/v1/jobs`, which takes `?state=running` and `?target=alpha`), and
+every change of it is also an event of type `job` on
+`GET /api/v1/events`. A job has
+
+- `kind` (`update`, `backup`, `restore`, `install` or `self_update`) and
+  `target` (the instance, the source of the build, or `esm`);
+- `actor`, who started it, as the audit log records the call (a token's id and
+  role, and the person a site token said it acted for);
+- `state`: `running`, then `done`, `failed` or `cancelled`;
+- `step`, the step it is in, and `steps`, the steps it went through with
+  `started` and `ended` (and, for a download, `bytes`, `total` and
+  `percent` as far as the server or SteamCMD tell them);
+- `started` and `ended`;
+- when it is `done`, the `result`: what the call answers without
+  `async` (the status of the instance, the backup, the build, or the result of
+  the self-update); when it `failed`, the `error`, with the `code` and
+  `message` of an error answer.
+
+The steps, as far as they apply (a server that is stopped has no `stop`):
+
+| Job | Steps |
+|-----|-------|
+| `update` | `backup`, `stop`, `switch_build`, `start`, `wait_ready`; then `rollback` if the new build did not get ready (the job `failed`) |
+| `backup` | `wait_save` (of a running server), `copy`, `prune` |
+| `restore` | `stop`, `backup_current`, `put_in_place`, `start`, `wait_ready` |
+| `install` | `download` (a web address or Steam), `unpack`, `verify`, `place` |
+| `self_update` | `verify_signature` (the release is looked up and its signed list of hashes checked), `download`, `place_binary`, `restart` |
+
+A self-update job ends `done` when the new binary is in place and ESM is
+about to end; ESM then ends, and its jobs with it, so the caller looks at
+`GET /api/v1/box` for the new version. What only the
+release server can tell (ESM is the newest release already: `up_to_date`)
+ends that job `failed`; the checks that need no release server (nothing to
+start ESM again, an update that runs) are answered at once.
+
+An install can be stopped while it downloads, unpacks or verifies, with
+`DELETE /api/v1/jobs/<id>`: nothing has been put in place then, and the job
+ends `cancelled`. Once it puts the build in place (step `place`), or for any
+other job (an update, a backup, a restore and ESM's own update run to their
+end), it is 409 `not_cancellable`. Whoever cancels needs the role that starts
+the job: the admin for an install from a folder, an archive or an address,
+and for one from a Steam source the site role too.
+
+Roles are those of the call: starting a job needs what the call without
+`async` needs (the site role's limits included: it installs from a Steam
+source only, and sends no `exit_anyway`), and every role that reads looks at
+jobs. For an instance with `secret_delivery: command_line` the read role gets
+the notice in place of the reason and of the text of an error, as it does
+everywhere. The call without `async` is unchanged and makes no job. A job
+that ends writes an audit entry `job.end` (the call that started it was
+recorded when it was made). ESM keeps the last 100 jobs and those that ended
+less than 24 hours ago, **in memory only**: they are lost when ESM ends, and a
+job that ran then is not resumed (look at the instance or the builds to see
+what became of it). At most 32 jobs run at once (429 `busy`). When ESM is
+stopped it waits for the jobs that run, like it waits for requests, for up to
+30 seconds, and then stops them.
+
+`esm jobs` and `esm job <id>` show them on the box. The web page runs the
+Overview's Update, Back up and Restore, and the Builds install, as jobs, and
+says the step they are in.
 
 ### Linux: keep servers running
 
@@ -660,7 +745,9 @@ checks, tokens, and the form that changes your password), every server
 (state, players, memory against its ceiling, settings, live log, backups,
 timed restarts), builds, clusters and the audit log, and it starts, stops,
 restarts, updates, backs up, restores, installs builds and changes
-settings. Each screen shows only what the API returns;
+settings. An update, a backup, a restore and an install run as
+[jobs](#long-calls-as-jobs-for-a-panel): the page says the step they are in,
+and an install can be cancelled while it downloads. Each screen shows only what the API returns;
 where ESM cannot know something yet (CPU use per server, the player list,
 whether players can reach the box from outside), the page says so. A
 server's settings screen has a field for every game setting ESM knows by
@@ -694,6 +781,8 @@ esm logs alpha -n 100 -f
 esm backup alpha
 esm update alpha --to 1.1.0                  # goes back to the old build if the new one never gets ready
 esm restore alpha 20260101T120000Z-manual
+esm jobs --state running                     # the long calls that a panel or the page started
+esm job job_3f9a1c07b2e44d8a91c0e5f2         # one job: its steps and how long each took
 esm stop alpha
 esm list --json
 esm build install steam:main                 # a new build of a Steam source, if there is one
